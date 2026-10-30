@@ -64,6 +64,7 @@ pub struct VersoApp {
     pub(crate) output_open: bool,
     pub(crate) status: String,
     pub(crate) controls: crate::control_ui::Controls,
+    pub(crate) scripts: crate::scripts_ui::ScriptsState,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
 }
@@ -114,6 +115,7 @@ impl VersoApp {
             status: effect_errors.first().cloned().unwrap_or_default(),
             pending: Vec::new(),
             controls: Default::default(),
+            scripts: Default::default(),
         })
     }
 
@@ -445,6 +447,7 @@ impl eframe::App for VersoApp {
         self.last_frame = now;
         self.handle_keys(ctx);
         self.poll_controls(self.frame_dt);
+        self.run_scripts(self.frame_dt);
         self.apply_pending();
         self.render();
         ctx.request_repaint();
@@ -496,6 +499,7 @@ impl eframe::App for VersoApp {
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
         self.control_window(&ctx);
+        self.scripts_window(&ctx);
         self.output_window(&ctx);
     }
 }

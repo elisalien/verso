@@ -11,7 +11,9 @@ pub mod modulation;
 mod source;
 
 pub use command::Command;
-pub use composition::{BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master};
+pub use composition::{
+    BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master, Script,
+};
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
 pub use source::{Generator, Source};
 
@@ -29,6 +31,8 @@ pub enum Error {
     NoEffect(usize),
     #[error("modulator {0} does not exist")]
     NoModulator(usize),
+    #[error("script {0} does not exist")]
+    NoScript(usize),
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

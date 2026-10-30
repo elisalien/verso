@@ -1,7 +1,9 @@
 use crate::control::{MidiKey, MidiMapping};
 use crate::effect::edit_chain;
 use crate::modulation::Modulator;
-use crate::{BlendMode, Clip, Composition, EffectEdit, EffectTarget, Error, FaderSide, Result};
+use crate::{
+    BlendMode, Clip, Composition, EffectEdit, EffectTarget, Error, FaderSide, Result, Script,
+};
 
 /// A single change to a composition.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +89,13 @@ pub enum Command {
         index: usize,
         modulator: Modulator,
     },
+    /// Adds a script; its name is made unique.
+    AddScript(Script),
+    SetScript {
+        index: usize,
+        script: Script,
+    },
+    RemoveScript(usize),
     /// Binds a MIDI control, replacing any mapping of the same control.
     MapMidi(MidiMapping),
     UnmapMidi(MidiKey),
@@ -165,6 +174,24 @@ impl Composition {
                     .modulators
                     .get_mut(index)
                     .ok_or(Error::NoModulator(index))? = modulator
+            }
+            Command::AddScript(mut script) => {
+                let base = script.name.clone();
+                let mut n = 1;
+                while self.scripts.iter().any(|s| s.name == script.name) {
+                    n += 1;
+                    script.name = format!("{base} {n}");
+                }
+                self.scripts.push(script);
+            }
+            Command::SetScript { index, script } => {
+                *self.scripts.get_mut(index).ok_or(Error::NoScript(index))? = script
+            }
+            Command::RemoveScript(index) => {
+                if index >= self.scripts.len() {
+                    return Err(Error::NoScript(index));
+                }
+                self.scripts.remove(index);
             }
             Command::MapMidi(mapping) => {
                 self.midi.retain(|m| m.key != mapping.key);
@@ -443,6 +470,24 @@ mod tests {
         assert_eq!(comp.midi[0].action, Action::Set(Param::Master));
         comp.apply(Command::UnmapMidi(key)).unwrap();
         assert!(comp.midi.is_empty());
+    }
+
+    #[test]
+    fn script_names_stay_unique() {
+        let mut comp = Composition::new("t", 1, 1);
+        let script = Script {
+            name: "Chase".into(),
+            source: String::new(),
+            enabled: true,
+        };
+        comp.apply(Command::AddScript(script.clone())).unwrap();
+        comp.apply(Command::AddScript(script)).unwrap();
+        assert_eq!(comp.scripts[1].name, "Chase 2");
+        comp.apply(Command::RemoveScript(0)).unwrap();
+        assert!(matches!(
+            comp.apply(Command::RemoveScript(4)),
+            Err(Error::NoScript(4))
+        ));
     }
 
     #[test]

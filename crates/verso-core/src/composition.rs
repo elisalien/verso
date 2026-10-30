@@ -72,6 +72,14 @@ impl Clip {
     }
 }
 
+/// Lua automation saved with the composition; see the `verso-script` crate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Script {
+    pub name: String,
+    pub source: String,
+    pub enabled: bool,
+}
+
 /// Layers mixed together first, then onto the composition as one image.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Group {
@@ -208,6 +216,8 @@ pub struct Composition {
     pub modulators: Vec<Modulator>,
     #[serde(default)]
     pub midi: Vec<MidiMapping>,
+    #[serde(default)]
+    pub scripts: Vec<Script>,
 }
 
 impl Composition {
@@ -230,6 +240,7 @@ impl Composition {
             effects: Vec::new(),
             modulators: Vec::new(),
             midi: Vec::new(),
+            scripts: Vec::new(),
         }
     }
 

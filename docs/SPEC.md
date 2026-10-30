@@ -128,8 +128,8 @@ Un effet manquant (fichier absent) est sauté, pas bloquant.
 2. **ISF** (`.fs`) : filtres à une passe et une image d'entrée, traduits en
    GLSL 4.50 puis en WGSL par `naga`. Non supportés pour l'instant : multi-passe,
    buffers persistants, entrées audio, plusieurs images.
-3. **Scripts** (v0.3) : Lua (`mlua`) pour automations et contrôle ;
-   WASM (`wasmtime`) pour la logique sandboxée.
+3. **Scripts** : Lua pour les automations (voir § 8, Scripts). WASM reste une
+   option pour plus tard.
 
 Tout shader est validé par `naga` avant d'être envoyé au GPU : un effet cassé
 affiche une erreur au chargement au lieu de faire planter le rendu.
@@ -164,7 +164,7 @@ Un groupe est rendu à la position de sa couche la plus basse.
 | OSC (`rosc`) | Contrôle réseau, adresses stables par paramètre | v0.3 ✅ |
 | Audio (`cpal` + `realfft`) | Niveaux par bande, beats, tempo détecté | v0.3 ✅ |
 | Tap tempo, horloge en beats | Synchro des LFO | v0.3 ✅ |
-| Scripts Lua | Automations | v0.3, à faire |
+| Scripts Lua (`mlua`, Lua 5.4) | Automations | v0.3 ✅ |
 | Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
 | NDI | Vidéo réseau entrée/sortie | v0.4 |
 | Ableton Link | Synchro tempo | v0.4 |
@@ -216,6 +216,18 @@ Ajout par clic droit sur un fader ou un paramètre d'effet. Les valeurs
 modulées ne sont jamais écrites dans la composition : une copie modulée est
 rendue à chaque frame.
 
+### Scripts
+
+Lua 5.4 embarqué (`verso-script`), scripts enregistrés dans la composition et
+édités dans la fenêtre Scripts. Un script peut définir `frame(t)` (chaque frame :
+`t.time`, `t.dt`, `t.beats`, `t.bpm`, `t.audio.*`) et `beat(n)` (à chaque beat).
+API : `verso.set(adresse, valeur)`, `verso.trigger(adresse)`, `verso.get(adresse)`,
+`verso.layers()`, `verso.columns()`, `verso.log(...)`, sur le même espace
+d'adresses que l'OSC. Bac à sable : bibliothèques `math`, `string`, `table`,
+`utf8` seulement (pas d'`io`, `os`, `require`, `load`) et budget de 5 millions
+d'instructions par appel : une boucle infinie arrête le script, pas le rendu.
+Un script en erreur s'arrête jusqu'à sa prochaine modification.
+
 ## 9. Sorties et mapping (v0.5)
 
 - Sortie plein écran par moniteur, fenêtre flottante.
@@ -229,7 +241,7 @@ rendue à chaque frame.
 |---|---|---|
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
 | v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
-| v0.3 Contrôle | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio) ✅ ; Lua à faire | Set piloté entièrement par contrôleur |
+| v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
 | v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
 
@@ -252,6 +264,7 @@ Verso/
 │   ├── verso-core/         modèle, commandes, horloge (sans GPU)
 │   ├── verso-media/        décodage images et vidéo FFmpeg (sans GPU)
 │   ├── verso-control/      OSC, MIDI, analyse audio, tap tempo
+│   ├── verso-script/       scripts Lua en bac à sable
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel

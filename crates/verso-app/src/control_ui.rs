@@ -289,6 +289,9 @@ impl VersoApp {
         if ui.button("Control…").clicked() {
             self.controls.window_open = !self.controls.window_open;
         }
+        if ui.button("Scripts…").clicked() {
+            self.scripts.window_open = !self.scripts.window_open;
+        }
         ui.separator();
 
         // Beat light: on during the first quarter of each beat.

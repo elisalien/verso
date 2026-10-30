@@ -4,10 +4,11 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.3 in progress. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.3. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
-> control with MIDI learn, audio analysis, tap tempo and LFO or audio modulation.
+> control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
+> Lua scripts.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 ## Requirements
@@ -43,6 +44,7 @@ cargo run --release -p verso-app
 | `T` or **TAP** | Tap tempo |
 | Right-click a fader or effect parameter | Add an LFO or audio modulation |
 | **Control…** | OSC port, MIDI inputs and mappings, audio input, modulators |
+| **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
 | `Esc` | Clear all layers |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 
@@ -53,6 +55,7 @@ cargo run --release -p verso-app
 | `verso-core` | Composition model and commands, no GPU dependency |
 | `verso-media` | Image decoding and FFmpeg video playback, no GPU dependency |
 | `verso-control` | OSC, MIDI, audio analysis and tap tempo |
+| `verso-script` | Sandboxed Lua 5.4 scripts |
 | `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
@@ -68,6 +71,14 @@ and [effects/scanlines.fs](effects/scanlines.fs) for one example of each.
 Listen from the Control window (default port 7000). Values are 0–1; indices
 start at 1. Examples: `/layer/2/opacity 0.5`, `/column/3/launch`,
 `/layer/1/effect/1/radius 0.8`. The full list is in [docs/SPEC.md](docs/SPEC.md).
+
+## Scripts
+
+Lua scripts define `frame(t)` and/or `beat(n)` and drive the composition with
+`verso.set(address, value)`, `verso.trigger(address)` and `verso.get(address)`,
+using the OSC addresses. See [scripts/beat-chase.lua](scripts/beat-chase.lua).
+Scripts are saved in the composition and run sandboxed (no file or OS access,
+endless loops are stopped).
 
 ## Test
 

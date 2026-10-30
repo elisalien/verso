@@ -6,6 +6,7 @@ mod effects_ui;
 mod grid;
 mod media;
 mod panels;
+mod scripts_ui;
 mod theme;
 mod widgets;
 

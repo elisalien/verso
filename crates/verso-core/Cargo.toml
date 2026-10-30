@@ -1,0 +1,11 @@
+[package]
+name = "verso-core"
+description = "Verso composition model, commands and clock (GPU-free)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+ron.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,173 @@
+# Verso — Spécification et architecture
+
+Verso est un logiciel de VJing et de mapping vidéo libre (GPL-3.0), multiplateforme
+(Windows, macOS, Linux), écrit en Rust sur wgpu.
+
+Le workflow s'inspire des logiciels de VJ à grille de clips (couches × colonnes),
+familier aux VJ. Verso est une implémentation **clean-room** : la spécification
+provient de la documentation publique, des conventions du métier et de l'usage.
+Aucun code, asset, format propriétaire ou élément visuel d'un logiciel tiers n'est
+repris ou désassemblé.
+
+## 1. Principes
+
+1. **Jouable à chaque phase.** Chaque version livrée doit servir en live, même limitée.
+2. **Le rendu ne bloque jamais.** Décodage, I/O et UI ne peuvent pas faire rater une frame.
+3. **Un seul modèle de données.** UI, MIDI, OSC et scripts modifient le même état via des commandes.
+4. **Standards ouverts d'abord.** HAP, ISF, OSC, MIDI, NDI, Spout, Syphon, Ableton Link.
+5. **Portabilité.** Tout code spécifique à un OS est isolé derrière un trait.
+
+## 2. Vocabulaire
+
+| Terme | Définition |
+|---|---|
+| Composition | Document racine : couches, colonnes, effets globaux, sorties, réglages. |
+| Couche (layer) | Piste verticale de la pile de rendu. Joue au plus un clip à la fois. |
+| Colonne | Scène : déclencher une colonne lance le clip de cette colonne sur chaque couche. |
+| Clip | Cellule de la grille : une source + transform + chaîne d'effets + réglages de lecture. |
+| Source | Générateur de pixels : fichier vidéo, image, shader génératif, entrée live. |
+| Effet | Traitement de pixels (ISF, WGSL, natif). Placé sur clip, couche, groupe ou composition. |
+| Groupe | Ensemble de couches avec son propre blend, opacité et effets. |
+| Deck | Jeu de clips alternatif. Changer de deck change les clips, pas les couches. |
+| Paramètre | Valeur animable (float, int, bool, couleur, choix) avec plage et modulation. |
+| Sortie (output) | Destination du rendu : fenêtre, écran, slices, Spout/Syphon/NDI. |
+
+## 3. Pipeline de rendu
+
+```
+Source → effets clip → transform clip
+       → blend dans la couche (crossfade de transition)
+       → effets couche → blend dans le groupe
+       → effets groupe → blend dans la composition
+       → effets composition → master (opacité, crossfader A/B)
+       → sorties (fenêtre, slices + warping, partage de texture)
+```
+
+- Les couches se composent de bas (index 0) en haut.
+- Chaque couche rend dans une texture de taille composition, puis se mélange
+  dans un accumulateur en ping-pong (deux textures alternées).
+- Format interne : `Rgba16Float`, alpha prémultiplié. Le HDR interne évite le
+  banding des blends successifs.
+- Modes de mélange v0.1 : Alpha, Add, Multiply, Screen, Lighten, Darken, Difference.
+  Les modes sont des shaders, donc la liste est extensible.
+
+## 4. Architecture des threads
+
+| Thread | Rôle | Contrainte |
+|---|---|---|
+| UI | egui, entrées clavier/souris, édition | Envoie des commandes. Ne touche pas au GPU de rendu. |
+| Rendu | Applique les commandes, horloge, rendu wgpu, présentation | Cadence fixe (vsync de la sortie principale). |
+| Décodage (N) | Un worker par clip vidéo actif | File de frames pré-décodées, budget mémoire. |
+| I/O | MIDI, OSC, Link, NDI | Convertit les messages en commandes. |
+
+La communication passe par des canaux (`crossbeam-channel`) :
+
+- `Command` (UI/I/O → rendu) : déclencher un clip, changer un paramètre, ajouter un effet…
+- `Snapshot` (rendu → UI) : état publié en lecture (clips actifs, niveaux, timecode).
+
+En v0.1, UI et rendu partagent le thread principal (eframe). Le découpage en
+commandes est respecté dès maintenant pour permettre la séparation plus tard.
+
+## 5. Modèle de données (crate `verso-core`)
+
+```
+Composition
+├── settings (résolution, fps, bpm)
+├── columns: Vec<Column>          nom, couleur
+├── layers: Vec<Layer>
+│   ├── blend, opacity, bypass, solo
+│   ├── clips: Vec<Option<Clip>>  une cellule par colonne
+│   ├── active: Option<ClipIndex>
+│   └── effects: Vec<Effect>
+├── groups: Vec<Group>             (v0.2)
+├── effects: Vec<Effect>
+└── master: opacity, crossfader
+```
+
+- Le modèle est sérialisable (`serde`, RON). Le fichier projet est `*.verso`.
+- Aucune dépendance GPU dans `verso-core` : il est testable sans carte graphique.
+- Les identifiants stables (`LayerId`, `ClipId`) arriveront avec l'édition
+  (déplacement de couches) ; v0.1 utilise des index.
+
+## 6. Médias
+
+| Format | Chemin de décodage | Phase |
+|---|---|---|
+| HAP / HAP Alpha / HAP Q | Démuxage MOV, Snappy, upload direct BC1/BC3/BC7 | v0.2 |
+| H.264 / H.265 / ProRes | FFmpeg (`ffmpeg-next`), décodage hardware si dispo | v0.2 |
+| Images, séquences, GIF | crate `image` | v0.1 |
+| Shaders génératifs | WGSL natif, ISF transpilé | v0.1 / v0.2 |
+
+Le HAP est le format recommandé en live : décodage CPU minimal, scrubbing et
+lecture inversée sans coût. Les codecs inter-frames (H.264/H.265) ont un scrubbing
+lent ; l'UI le signalera et proposera une conversion HAP via FFmpeg.
+
+## 7. Plugins
+
+1. **WGSL natif** : un fichier `.wgsl` avec un en-tête de métadonnées
+   (nom, catégorie, paramètres). Format de référence.
+2. **ISF** : fichiers `.fs` + JSON. Transpilation GLSL → WGSL via `naga`.
+   Une liste de compatibilité suit les shaders non supportés.
+3. **Scripts** (v0.3) : Lua (`mlua`) pour automations et contrôle ;
+   WASM (`wasmtime`) pour la logique sandboxée.
+
+FFGL n'est pas visé : il impose OpenGL, incompatible avec un rendu wgpu sans
+interop coûteuse.
+
+## 8. Contrôle et I/O
+
+| Protocole | Usage | Phase |
+|---|---|---|
+| MIDI (`midir`) | Contrôleurs, learn de paramètres | v0.3 |
+| OSC (`rosc`) | Contrôle réseau, adresses stables par paramètre | v0.3 |
+| Audio (`cpal`) | FFT, détection d'enveloppe, BPM | v0.3 |
+| Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
+| NDI | Vidéo réseau entrée/sortie | v0.4 |
+| Ableton Link | Synchro tempo | v0.4 |
+| SMPTE / LTC | Timecode | v0.4 |
+| DMX / Art-Net / sACN | Lumières, pixel mapping | plus tard |
+
+Chaque paramètre a une adresse stable, par exemple
+`/composition/layers/2/clips/4/video/opacity`. MIDI, OSC et scripts utilisent
+le même espace d'adresses.
+
+## 9. Sorties et mapping (v0.5)
+
+- Sortie plein écran par moniteur, fenêtre flottante.
+- Slices : rectangle d'entrée dans la composition → quad de sortie.
+- Warping : grille de Bézier par slice, edge blending, masques.
+- Configuration de sortie séparée de la composition (dépend de la salle).
+
+## 10. Feuille de route
+
+| Version | Contenu | Critère de sortie |
+|---|---|---|
+| **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
+| v0.2 Médias | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps |
+| v0.3 Contrôle | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur |
+| v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
+| v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
+
+## 11. Risques techniques
+
+| Risque | Mitigation |
+|---|---|
+| Interop Spout/Syphon avec wgpu (textures DX11/Metal partagées) | Spike dès v0.1 via les hooks HAL de wgpu ; repli sur copie CPU |
+| Textures BC (HAP) indisponibles sur un GPU | Feature `TEXTURE_COMPRESSION_BC` vérifiée au démarrage ; repli décompression CPU |
+| Couverture ISF du frontend GLSL de `naga` | Liste de compatibilité, réécriture manuelle des shaders populaires |
+| Latence FFmpeg et scrubbing | File pré-décodée par clip, recommandation HAP |
+| Charge de travail solo | Phases courtes, critère de sortie mesurable, tests sur `verso-core` |
+
+## 12. Structure du dépôt
+
+```
+Verso/
+├── Cargo.toml              workspace
+├── crates/
+│   ├── verso-core/         modèle, commandes, horloge (sans GPU)
+│   ├── verso-render/       moteur wgpu : sources, blend, composition
+│   │   ├── src/shaders/    WGSL des sources, blends et sortie
+│   │   └── tests/          rendu GPU vérifié au pixel
+│   └── verso-app/          application eframe/egui (binaire `verso`)
+└── docs/                   spécification, décisions
+```

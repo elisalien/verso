@@ -1,0 +1,16 @@
+[package]
+name = "verso-app"
+description = "Verso VJ application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "verso"
+path = "src/main.rs"
+
+[dependencies]
+verso-core.workspace = true
+verso-render.workspace = true
+eframe.workspace = true
+rfd = "0.17.2"

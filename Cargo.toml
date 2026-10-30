@@ -12,6 +12,7 @@ repository = "https://github.com/verso-vj/verso"
 verso-core = { path = "crates/verso-core" }
 verso-render = { path = "crates/verso-render" }
 verso-media = { path = "crates/verso-media" }
+verso-control = { path = "crates/verso-control" }
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1", features = ["derive"] }

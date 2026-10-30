@@ -1,6 +1,7 @@
 //! Effect chains in the Properties panel and the Effects browser tab.
 
 use eframe::egui::{self, Color32, Sense, Vec2};
+use verso_core::control::{Action, Param};
 use verso_core::{Command, Effect, EffectEdit, EffectTarget, ParamValue};
 use verso_render::ParamKind;
 
@@ -125,12 +126,31 @@ impl VersoApp {
                             for param in &def.params {
                                 ui.label(&param.name);
                                 let value = def.value(&effect, param);
-                                if let Some(value) = param_widget(ui, &param.kind, value) {
+                                let (response, changed) = param_widget(ui, &param.kind, value);
+                                let controllable = matches!(
+                                    param.kind,
+                                    ParamKind::Float { .. } | ParamKind::Bool { .. }
+                                );
+                                let control = Param::Effect {
+                                    target,
+                                    index,
+                                    name: param.name.clone(),
+                                };
+                                let learning = controllable
+                                    && self.learnable(
+                                        ui,
+                                        response.rect,
+                                        Action::Set(control.clone()),
+                                    );
+                                if let Some(value) = changed.filter(|_| !learning) {
                                     self.send(edit(EffectEdit::SetParam {
                                         index,
                                         name: param.name.clone(),
                                         value,
                                     }));
+                                }
+                                if controllable {
+                                    self.modulation_menu(&response, control);
                                 }
                                 ui.end_row();
                             }
@@ -257,41 +277,48 @@ fn target_key(target: EffectTarget) -> (u8, usize, usize) {
     }
 }
 
-/// Edits one parameter; returns the new value when it changed.
-fn param_widget(ui: &mut egui::Ui, kind: &ParamKind, value: ParamValue) -> Option<ParamValue> {
+/// Edits one parameter; returns its widget and the new value when it changed.
+fn param_widget(
+    ui: &mut egui::Ui,
+    kind: &ParamKind,
+    value: ParamValue,
+) -> (egui::Response, Option<ParamValue>) {
+    let result = |r: egui::Response, v: ParamValue| {
+        let new = r.changed().then_some(v);
+        (r, new)
+    };
     match (kind, value) {
-        (ParamKind::Float { min, max, .. }, ParamValue::Float(mut v)) => ui
-            .add(egui::Slider::new(&mut v, *min..=*max))
-            .changed()
-            .then_some(ParamValue::Float(v)),
-        (ParamKind::Bool { .. }, ParamValue::Bool(mut v)) => ui
-            .checkbox(&mut v, "")
-            .changed()
-            .then_some(ParamValue::Bool(v)),
-        (ParamKind::Color { .. }, ParamValue::Color(mut v)) => ui
-            .color_edit_button_rgba_unmultiplied(&mut v)
-            .changed()
-            .then_some(ParamValue::Color(v)),
-        (ParamKind::Point { min, max, .. }, ParamValue::Point(mut v)) => {
-            let changed = ui
-                .horizontal(|ui| {
-                    let x = ui.add(
-                        egui::DragValue::new(&mut v[0])
-                            .range(*min..=*max)
-                            .speed(0.01)
-                            .prefix("x "),
-                    );
-                    let y = ui.add(
-                        egui::DragValue::new(&mut v[1])
-                            .range(*min..=*max)
-                            .speed(0.01)
-                            .prefix("y "),
-                    );
-                    x.changed() || y.changed()
-                })
-                .inner;
-            changed.then_some(ParamValue::Point(v))
+        (ParamKind::Float { min, max, .. }, ParamValue::Float(mut v)) => {
+            let r = ui.add(egui::Slider::new(&mut v, *min..=*max));
+            result(r, ParamValue::Float(v))
         }
-        _ => None,
+        (ParamKind::Bool { .. }, ParamValue::Bool(mut v)) => {
+            let r = ui.checkbox(&mut v, "");
+            result(r, ParamValue::Bool(v))
+        }
+        (ParamKind::Color { .. }, ParamValue::Color(mut v)) => {
+            let r = ui.color_edit_button_rgba_unmultiplied(&mut v);
+            result(r, ParamValue::Color(v))
+        }
+        (ParamKind::Point { min, max, .. }, ParamValue::Point(mut v)) => {
+            let inner = ui.horizontal(|ui| {
+                let x = ui.add(
+                    egui::DragValue::new(&mut v[0])
+                        .range(*min..=*max)
+                        .speed(0.01)
+                        .prefix("x "),
+                );
+                let y = ui.add(
+                    egui::DragValue::new(&mut v[1])
+                        .range(*min..=*max)
+                        .speed(0.01)
+                        .prefix("y "),
+                );
+                x.changed() || y.changed()
+            });
+            let new = inner.inner.then_some(ParamValue::Point(v));
+            (inner.response, new)
+        }
+        _ => (ui.label("?"), None),
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "verso-control"
+description = "Verso control inputs: OSC, MIDI, audio analysis and tempo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cpal = "0.18.2"
+midir = "0.11.1"
+realfft = "3.5.1"
+rosc = "0.11.4"
+thiserror.workspace = true

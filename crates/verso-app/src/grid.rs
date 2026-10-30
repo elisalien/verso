@@ -1,6 +1,7 @@
 //! Clip grid: composition row, column headers, one row per layer.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Vec2};
+use verso_core::control::{Action, Param};
 use verso_core::{Clip, Command, EffectTarget, FaderSide, Generator, Source};
 
 use crate::app::{PropsTab, VersoApp};
@@ -119,17 +120,18 @@ impl VersoApp {
             }
             ui.label(egui::RichText::new("Composition").strong());
             let mut opacity = self.comp.master.opacity;
-            if widgets::fader(
+            let fader = widgets::fader(
                 ui,
                 &mut opacity,
                 Vec2::new(ui.available_width(), 16.0),
                 theme::ACCENT,
                 1.0,
-            )
-            .changed()
-            {
+            );
+            let learning = self.learnable(ui, fader.rect, Action::Set(Param::Master));
+            if fader.changed() && !learning {
                 self.send(Command::SetMasterOpacity(opacity));
             }
+            self.modulation_menu(&fader, Param::Master);
         });
         if response.clicked() {
             self.props_tab = PropsTab::Composition;
@@ -166,7 +168,8 @@ impl VersoApp {
             },
         );
         let response = response.on_hover_text("Click to launch the column");
-        if response.clicked() {
+        let learning = self.learnable(ui, rect, Action::LaunchColumn(column));
+        if response.clicked() && !learning {
             self.send(Command::TriggerColumn(column));
         }
         response.context_menu(|ui| {
@@ -225,20 +228,21 @@ impl VersoApp {
             inner.right_bottom(),
         );
         let mut fader_ui = ui.new_child(egui::UiBuilder::new().max_rect(fader_rect));
-        if widgets::vfader(
+        let fader = widgets::vfader(
             &mut fader_ui,
             &mut opacity,
             fader_rect.size(),
             theme::ACCENT,
             1.0,
-        )
-        .changed()
-        {
+        );
+        let learning = self.learnable(ui, fader_rect, Action::Set(Param::LayerOpacity(index)));
+        if fader.changed() && !learning {
             self.send(Command::SetLayerOpacity {
                 layer: index,
                 opacity,
             });
         }
+        self.modulation_menu(&fader, Param::LayerOpacity(index));
 
         let controls = Rect::from_min_max(
             inner.min,
@@ -247,16 +251,23 @@ impl VersoApp {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(controls));
         child.vertical(|ui| {
             ui.horizontal(|ui| {
-                if widgets::square_button(ui, "X", "Eject the playing clip").clicked() {
+                let eject = widgets::square_button(ui, "X", "Eject the playing clip");
+                if !self.learnable(ui, eject.rect, Action::EjectLayer(index)) && eject.clicked() {
                     self.send(Command::EjectLayer(index));
                 }
-                if widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass").changed() {
+                let toggle = widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass");
+                if !self.learnable(ui, toggle.rect, Action::Set(Param::LayerBypass(index)))
+                    && toggle.changed()
+                {
                     self.send(Command::SetLayerBypass {
                         layer: index,
                         bypass,
                     });
                 }
-                if widgets::toggle(ui, &mut solo, "S", theme::SOLO, "Solo").changed() {
+                let toggle = widgets::toggle(ui, &mut solo, "S", theme::SOLO, "Solo");
+                if !self.learnable(ui, toggle.rect, Action::Set(Param::LayerSolo(index)))
+                    && toggle.changed()
+                {
                     self.send(Command::SetLayerSolo { layer: index, solo });
                 }
                 ui.label(egui::RichText::new(name).strong());
@@ -395,6 +406,8 @@ impl VersoApp {
             });
             self.selected_clip = Some((layer, column));
             self.props_tab = PropsTab::Clip;
+        } else if self.learnable(ui, rect, Action::LaunchClip { layer, column }) {
+            // Learn mode picks the cell instead of launching it.
         } else if response.clicked() {
             self.selected_clip = Some((layer, column));
             self.selected_layer = layer;
@@ -443,9 +456,11 @@ impl VersoApp {
             if response.double_clicked() {
                 value = 0.5;
             }
-            if value != self.comp.master.crossfader {
+            let learning = self.learnable(ui, rect, Action::Set(Param::Crossfader));
+            if value != self.comp.master.crossfader && !learning {
                 self.send(Command::SetCrossfader(value));
             }
+            self.modulation_menu(&response, Param::Crossfader);
             let painter = ui.painter_at(rect);
             let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 4.0));
             painter.rect_filled(track, 2.0, theme::BG_DEEP);

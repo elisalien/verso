@@ -5,7 +5,9 @@
 
 mod command;
 mod composition;
+pub mod control;
 mod effect;
+pub mod modulation;
 mod source;
 
 pub use command::Command;
@@ -25,6 +27,8 @@ pub enum Error {
     NoClip,
     #[error("effect {0} does not exist")]
     NoEffect(usize),
+    #[error("modulator {0} does not exist")]
+    NoModulator(usize),
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

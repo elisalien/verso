@@ -1,4 +1,6 @@
+use crate::control::{MidiKey, MidiMapping};
 use crate::effect::edit_chain;
+use crate::modulation::Modulator;
 use crate::{BlendMode, Clip, Composition, EffectEdit, EffectTarget, Error, FaderSide, Result};
 
 /// A single change to a composition.
@@ -79,6 +81,15 @@ pub enum Command {
         target: EffectTarget,
         edit: EffectEdit,
     },
+    AddModulator(Modulator),
+    RemoveModulator(usize),
+    SetModulator {
+        index: usize,
+        modulator: Modulator,
+    },
+    /// Binds a MIDI control, replacing any mapping of the same control.
+    MapMidi(MidiMapping),
+    UnmapMidi(MidiKey),
     SetMasterOpacity(f32),
     SetCrossfader(f32),
     SetBpm(f32),
@@ -142,6 +153,24 @@ impl Composition {
             Command::SetGroupBlend { group, blend } => self.group_mut(group)?.blend = blend,
             Command::SetGroupBypass { group, bypass } => self.group_mut(group)?.bypass = bypass,
             Command::EditEffects { target, edit } => edit_chain(self.effects_mut(target)?, edit)?,
+            Command::AddModulator(modulator) => self.modulators.push(modulator),
+            Command::RemoveModulator(index) => {
+                if index >= self.modulators.len() {
+                    return Err(Error::NoModulator(index));
+                }
+                self.modulators.remove(index);
+            }
+            Command::SetModulator { index, modulator } => {
+                *self
+                    .modulators
+                    .get_mut(index)
+                    .ok_or(Error::NoModulator(index))? = modulator
+            }
+            Command::MapMidi(mapping) => {
+                self.midi.retain(|m| m.key != mapping.key);
+                self.midi.push(mapping);
+            }
+            Command::UnmapMidi(key) => self.midi.retain(|m| m.key != key),
             Command::SetCrossfader(value) => self.master.crossfader = value.clamp(0.0, 1.0),
             Command::SetBpm(bpm) => self.bpm = bpm.clamp(20.0, 500.0),
             Command::SetMasterOpacity(opacity) => self.master.opacity = opacity.clamp(0.0, 1.0),
@@ -390,6 +419,30 @@ mod tests {
         comp.apply(Command::EjectLayer(0)).unwrap();
         assert_eq!(comp.layer_gain(0), 0.0);
         assert_eq!(comp.layer_level(0), comp.layers[0].opacity);
+    }
+
+    #[test]
+    fn midi_mapping_replaces_same_control() {
+        use crate::control::{Action, Param};
+        let mut comp = Composition::new("t", 2, 2);
+        let key = MidiKey::Cc {
+            channel: 0,
+            controller: 1,
+        };
+        comp.apply(Command::MapMidi(MidiMapping {
+            key,
+            action: Action::ClearAll,
+        }))
+        .unwrap();
+        comp.apply(Command::MapMidi(MidiMapping {
+            key,
+            action: Action::Set(Param::Master),
+        }))
+        .unwrap();
+        assert_eq!(comp.midi.len(), 1);
+        assert_eq!(comp.midi[0].action, Action::Set(Param::Master));
+        comp.apply(Command::UnmapMidi(key)).unwrap();
+        assert!(comp.midi.is_empty());
     }
 
     #[test]

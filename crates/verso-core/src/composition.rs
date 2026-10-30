@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::control::MidiMapping;
+use crate::modulation::Modulator;
 use crate::{Effect, EffectTarget, Error, Generator, Result, Source};
 
 /// How a layer is mixed onto the layers below it.
@@ -202,6 +204,10 @@ pub struct Composition {
     pub master: Master,
     #[serde(default)]
     pub effects: Vec<Effect>,
+    #[serde(default)]
+    pub modulators: Vec<Modulator>,
+    #[serde(default)]
+    pub midi: Vec<MidiMapping>,
 }
 
 impl Composition {
@@ -222,6 +228,8 @@ impl Composition {
             groups: Vec::new(),
             master: Master::default(),
             effects: Vec::new(),
+            modulators: Vec::new(),
+            midi: Vec::new(),
         }
     }
 

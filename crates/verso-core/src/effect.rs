@@ -39,7 +39,7 @@ impl Effect {
 }
 
 /// Where an effect chain lives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EffectTarget {
     Composition,
     Group(usize),

@@ -160,18 +160,61 @@ Un groupe est rendu à la position de sa couche la plus basse.
 
 | Protocole | Usage | Phase |
 |---|---|---|
-| MIDI (`midir`) | Contrôleurs, learn de paramètres | v0.3 |
-| OSC (`rosc`) | Contrôle réseau, adresses stables par paramètre | v0.3 |
-| Audio (`cpal`) | FFT, détection d'enveloppe, BPM | v0.3 |
+| MIDI (`midir`) | Contrôleurs, MIDI learn | v0.3 ✅ |
+| OSC (`rosc`) | Contrôle réseau, adresses stables par paramètre | v0.3 ✅ |
+| Audio (`cpal` + `realfft`) | Niveaux par bande, beats, tempo détecté | v0.3 ✅ |
+| Tap tempo, horloge en beats | Synchro des LFO | v0.3 ✅ |
+| Scripts Lua | Automations | v0.3, à faire |
 | Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
 | NDI | Vidéo réseau entrée/sortie | v0.4 |
 | Ableton Link | Synchro tempo | v0.4 |
 | SMPTE / LTC | Timecode | v0.4 |
 | DMX / Art-Net / sACN | Lumières, pixel mapping | plus tard |
 
-Chaque paramètre a une adresse stable, par exemple
-`/composition/layers/2/clips/4/video/opacity`. MIDI, OSC et scripts utilisent
-le même espace d'adresses.
+### Espace d'adresses
+
+OSC, MIDI et modulation partagent les mêmes cibles (`verso_core::control`).
+Adresses OSC, indices à partir de 1, valeurs normalisées 0–1 (un message sans
+valeur vaut un appui) :
+
+```
+/master  /crossfader  /bpm  /clear
+/column/N/launch
+/layer/N/opacity|bypass|solo|transition|eject
+/layer/N/clip/M/launch
+/group/N/opacity|bypass
+/composition/effect/I/<param>|bypass
+/group/N/effect/I/<param>   /layer/N/effect/I/<param>
+/layer/N/clip/M/effect/I/<param>
+```
+
+Les déclencheurs réagissent au passage au-dessus de 0,5 (le relâchement d'un
+bouton ne fait rien). Port OSC par défaut : 7000, écoute activée depuis la
+fenêtre Control.
+
+### MIDI learn
+
+Mode Learn (bouton ou touche `L`) : cliquer un contrôle (cellule, en-tête de
+colonne, fader, B/S/X de couche, crossfader, paramètre d'effet) le choisit, le
+prochain message MIDI (CC ou note) lui est associé. Les mappings sont
+enregistrés dans la composition.
+
+### Analyse audio
+
+FFT 1024 points, pas de 512 échantillons. Bandes : grave 20–150 Hz, médium
+150–2000 Hz, aigu 2–16 kHz, plus le niveau RMS. Gain automatique par bande
+(pic décroissant sur ~10 s, plancher à un quart de la bande la plus forte).
+Beats : montée de l'énergie grave au-dessus de 1,3× sa moyenne sur 1 s, 300 ms
+minimum entre deux beats. Tempo : autocorrélation de l'enveloppe d'attaque sur
+8 s, entre 70 et 180 BPM ; option pour suivre le tempo détecté.
+
+### Modulation
+
+Un modulateur déplace un paramètre d'une fraction (−1 à 1) de sa plage :
+LFO (sinus, triangle, scie, carré, aléatoire) en beats du tempo, ou bande audio.
+Ajout par clic droit sur un fader ou un paramètre d'effet. Les valeurs
+modulées ne sont jamais écrites dans la composition : une copie modulée est
+rendue à chaque frame.
 
 ## 9. Sorties et mapping (v0.5)
 
@@ -186,7 +229,7 @@ le même espace d'adresses.
 |---|---|---|
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
 | v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
-| v0.3 Contrôle | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur |
+| v0.3 Contrôle | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio) ✅ ; Lua à faire | Set piloté entièrement par contrôleur |
 | v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
 
@@ -208,6 +251,7 @@ Verso/
 ├── crates/
 │   ├── verso-core/         modèle, commandes, horloge (sans GPU)
 │   ├── verso-media/        décodage images et vidéo FFmpeg (sans GPU)
+│   ├── verso-control/      OSC, MIDI, analyse audio, tap tempo
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel

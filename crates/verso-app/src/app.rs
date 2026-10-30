@@ -55,12 +55,15 @@ pub struct VersoApp {
     pub(crate) files: crate::panels::FileBrowser,
     start: Instant,
     last_frame: Instant,
+    /// Seconds since the previous frame.
+    frame_dt: f64,
     path: Option<PathBuf>,
     pub(crate) selected_clip: Option<(usize, usize)>,
     pub(crate) selected_layer: usize,
     pub(crate) props_tab: PropsTab,
     pub(crate) output_open: bool,
     pub(crate) status: String,
+    pub(crate) controls: crate::control_ui::Controls,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
 }
@@ -102,6 +105,7 @@ impl VersoApp {
             files: Default::default(),
             start: Instant::now(),
             last_frame: Instant::now(),
+            frame_dt: 0.0,
             path: None,
             selected_clip: None,
             selected_layer: 0,
@@ -109,6 +113,7 @@ impl VersoApp {
             output_open: false,
             status: effect_errors.first().cloned().unwrap_or_default(),
             pending: Vec::new(),
+            controls: Default::default(),
         })
     }
 
@@ -160,9 +165,7 @@ impl VersoApp {
         let queue = &self.render_state.queue;
         let mut encoder = device.create_command_encoder(&Default::default());
         let time = self.start.elapsed().as_secs_f32();
-        let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f64();
-        self.last_frame = now;
+        let dt = self.frame_dt;
 
         let errors = self.media.update(
             device,
@@ -175,9 +178,10 @@ impl VersoApp {
         if let Some(error) = errors.last() {
             self.status = error.clone();
         }
+        let rendered = self.modulated();
         let views = self.media.layer_views(&self.comp);
         self.renderer
-            .render(device, queue, &mut encoder, &self.comp, &views, time);
+            .render(device, queue, &mut encoder, &rendered, &views, time);
         drop(views);
 
         let mut new_cells = Vec::new();
@@ -246,7 +250,8 @@ impl VersoApp {
             egui::Key::Num9,
         ];
         let columns = self.comp.columns.len();
-        let (mut commands, mut toggle_output) = (Vec::new(), false);
+        let (mut commands, mut toggle_output, mut tap, mut learn) =
+            (Vec::new(), false, false, false);
         ctx.input(|i| {
             for (column, key) in keys.iter().enumerate() {
                 if i.key_pressed(*key) && column < columns {
@@ -257,9 +262,17 @@ impl VersoApp {
                 commands.push(Command::ClearAll);
             }
             toggle_output = i.key_pressed(egui::Key::F2);
+            tap = i.key_pressed(egui::Key::T);
+            learn = i.key_pressed(egui::Key::L);
         });
         self.pending.extend(commands);
         self.output_open ^= toggle_output;
+        if tap {
+            self.tap_tempo();
+        }
+        if learn {
+            self.toggle_learn();
+        }
     }
 
     fn save(&mut self, save_as: bool) {
@@ -377,20 +390,11 @@ impl VersoApp {
                         .monospace(),
                 );
                 ui.separator();
-                let mut bpm = self.comp.bpm;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut bpm)
-                            .range(20.0..=500.0)
-                            .speed(0.1)
-                            .suffix(" BPM"),
-                    )
-                    .changed()
-                {
-                    self.send(Command::SetBpm(bpm));
-                }
-                ui.separator();
                 ui.label(egui::RichText::new(&self.comp.name).color(theme::TEXT_DIM));
+                ui.separator();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.control_bar(ui);
+                });
             });
         });
     }
@@ -436,7 +440,11 @@ impl VersoApp {
 
 impl eframe::App for VersoApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
+        self.frame_dt = (now - self.last_frame).as_secs_f64();
+        self.last_frame = now;
         self.handle_keys(ctx);
+        self.poll_controls(self.frame_dt);
         self.apply_pending();
         self.render();
         ctx.request_repaint();
@@ -487,6 +495,7 @@ impl eframe::App for VersoApp {
 
         let ctx = ui.ctx().clone();
         self.handle_dropped_files(&ctx);
+        self.control_window(&ctx);
         self.output_window(&ctx);
     }
 }

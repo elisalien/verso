@@ -39,6 +39,22 @@ impl SourceTemplate {
         all
     }
 
+    /// Template for an image or video file; `None` for unsupported files.
+    pub fn from_path(path: &std::path::Path) -> Option<SourceTemplate> {
+        let name = path.file_stem()?.to_string_lossy().into_owned();
+        let source = match verso_media::MediaKind::of(path)? {
+            verso_media::MediaKind::Image => Source::Image {
+                path: path.to_owned(),
+            },
+            verso_media::MediaKind::Video => Source::Video {
+                path: path.to_owned(),
+                speed: 1.0,
+                looping: true,
+            },
+        };
+        Some(SourceTemplate { name, source })
+    }
+
     pub fn clip(&self) -> Clip {
         Clip {
             name: self.name.clone(),
@@ -49,6 +65,7 @@ impl SourceTemplate {
 
 impl VersoApp {
     pub(crate) fn grid(&mut self, ui: &mut egui::Ui) {
+        self.cell_rects.clear();
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(3.0);
             ui.horizontal(|ui| {
@@ -254,21 +271,28 @@ impl VersoApp {
         let selected = self.selected_clip == Some((layer, column));
         let drop_hover = response.dnd_hover_payload::<SourceTemplate>().is_some();
         let painter = ui.painter_at(rect);
+        self.cell_rects.push((rect, (layer, column)));
 
-        match (clip, self.cell_textures.get(&(layer, column))) {
-            (Some(clip), Some(&texture)) => {
+        let texture = clip.and_then(|clip| {
+            if clip.source.is_procedural() {
+                self.cell_textures
+                    .get(&(layer, column))
+                    .map(|&id| (id, None))
+            } else {
+                self.media
+                    .clip_texture(&self.comp, layer, column)
+                    .map(|(id, size)| (id, Some(size)))
+            }
+        });
+        match (clip, texture) {
+            (Some(clip), Some((texture, media_size))) => {
                 let image = rect.shrink(1.0);
                 let tint = if active || response.hovered() {
                     Color32::WHITE
                 } else {
                     Color32::from_gray(150)
                 };
-                painter.image(
-                    texture,
-                    image,
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    tint,
-                );
+                painter.image(texture, image, cover_uv(media_size, image.size()), tint);
                 let label = Rect::from_min_max(
                     image.left_bottom() - Vec2::new(0.0, 15.0),
                     image.right_bottom(),
@@ -282,8 +306,23 @@ impl VersoApp {
                     theme::TEXT,
                 );
             }
-            (Some(_), None) => {
+            (Some(clip), None) => {
                 painter.rect_filled(rect, 2.0, theme::BG_RAISED);
+                let failed = self.media.failed(&clip.source);
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    if failed { "Missing" } else { "Loading…" },
+                    FontId::proportional(10.5),
+                    if failed { theme::WARN } else { theme::TEXT_DIM },
+                );
+                painter.text(
+                    rect.left_bottom() + Vec2::new(4.0, -3.0),
+                    Align2::LEFT_BOTTOM,
+                    &clip.name,
+                    FontId::proportional(10.5),
+                    theme::TEXT_DIM,
+                );
             }
             (None, _) => {
                 painter.rect_filled(rect, 2.0, theme::BG_PANEL);
@@ -385,5 +424,27 @@ impl VersoApp {
             ui.label(egui::RichText::new("B").strong());
             ui.label(egui::RichText::new("Crossfader").color(theme::TEXT_DIM));
         });
+    }
+}
+
+/// UV rectangle that crops an image of `size` to fill `target` without
+/// distortion. `None` (procedural previews) uses the whole texture.
+fn cover_uv(size: Option<(u32, u32)>, target: Vec2) -> Rect {
+    let full = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let Some((w, h)) = size else { return full };
+    let image_aspect = w as f32 / h.max(1) as f32;
+    let target_aspect = target.x / target.y.max(1.0);
+    if image_aspect > target_aspect {
+        let keep = target_aspect / image_aspect;
+        Rect::from_min_max(
+            egui::pos2(0.5 - keep / 2.0, 0.0),
+            egui::pos2(0.5 + keep / 2.0, 1.0),
+        )
+    } else {
+        let keep = image_aspect / target_aspect;
+        Rect::from_min_max(
+            egui::pos2(0.0, 0.5 - keep / 2.0),
+            egui::pos2(1.0, 0.5 + keep / 2.0),
+        )
     }
 }

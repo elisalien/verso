@@ -5,11 +5,13 @@
 //! read the result of the previous one. A final pass applies the master and
 //! writes the output texture.
 
+mod media;
 mod thumbnails;
 
 use bytemuck::{Pod, Zeroable};
 use verso_core::{Composition, Source};
 
+pub use media::{MediaTexture, MediaView};
 pub use thumbnails::Thumbnails;
 
 /// Internal format: HDR so successive blends do not band.
@@ -45,19 +47,45 @@ struct OutputParams {
     _pad: [f32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct MediaParams {
+    scale: [f32; 2],
+    _pad: [f32; 2],
+}
+
+impl MediaParams {
+    /// Fits an image of `media` size inside a target of `target` size.
+    fn fit(media: (u32, u32), target: (u32, u32)) -> Self {
+        let media_aspect = media.0 as f32 / media.1.max(1) as f32;
+        let target_aspect = target.0 as f32 / target.1.max(1) as f32;
+        let scale = if media_aspect > target_aspect {
+            [1.0, target_aspect / media_aspect]
+        } else {
+            [media_aspect / target_aspect, 1.0]
+        };
+        Self {
+            scale,
+            _pad: [0.0; 2],
+        }
+    }
+}
+
 impl GeneratorParams {
-    fn new(source: &Source, time: f32, aspect: f32) -> Self {
+    /// Parameters for a procedural source; `None` for file-based sources.
+    fn new(source: &Source, time: f32, aspect: f32) -> Option<Self> {
         let (kind, color, speed) = match *source {
             Source::Solid { color } => (SOLID_KIND, color, 0.0),
             Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
+            Source::Image { .. } | Source::Video { .. } => return None,
         };
-        Self {
+        Some(Self {
             time,
             speed,
             kind,
             aspect,
             color,
-        }
+        })
     }
 }
 
@@ -99,6 +127,7 @@ struct LayerSlot {
     target: Target,
     generator_params: wgpu::Buffer,
     generator_group: wgpu::BindGroup,
+    media_params: wgpu::Buffer,
     blend_params: wgpu::Buffer,
     /// Blend bind group reading accumulator 0 or 1 as base.
     blend_groups: [wgpu::BindGroup; 2],
@@ -108,6 +137,9 @@ pub struct Renderer {
     size: (u32, u32),
     generator_pipeline: wgpu::RenderPipeline,
     generator_layout: wgpu::BindGroupLayout,
+    media_pipeline: wgpu::RenderPipeline,
+    media_layout: wgpu::BindGroupLayout,
+    media_sampler: wgpu::Sampler,
     blend_pipeline: wgpu::RenderPipeline,
     blend_layout: wgpu::BindGroupLayout,
     output_pipeline: wgpu::RenderPipeline,
@@ -231,6 +263,28 @@ impl Renderer {
             label: Some("blend"),
             entries: &[uniform_entry(0), texture_entry(1), texture_entry(2)],
         });
+        let media_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("media"),
+            entries: &[
+                uniform_entry(0),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let output_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("output"),
             entries: &[uniform_entry(0), texture_entry(1)],
@@ -243,6 +297,19 @@ impl Renderer {
             &generator_layout,
             WORK_FORMAT,
         );
+        let media_pipeline = fullscreen_pipeline(
+            device,
+            "media",
+            include_str!("shaders/media.wgsl"),
+            &media_layout,
+            WORK_FORMAT,
+        );
+        let media_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("media"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let blend_pipeline = fullscreen_pipeline(
             device,
             "blend",
@@ -271,6 +338,9 @@ impl Renderer {
             size,
             generator_pipeline,
             generator_layout,
+            media_pipeline,
+            media_layout,
+            media_sampler,
             blend_pipeline,
             blend_layout,
             output_pipeline,
@@ -333,6 +403,7 @@ impl Renderer {
                 resource: generator_params.as_entire_binding(),
             }],
         });
+        let media_params = uniform_buffer(device, "media params", size_of::<MediaParams>());
         let blend_params = uniform_buffer(device, "blend params", size_of::<BlendParams>());
         let blend_groups = self.accumulators.each_ref().map(|base| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -358,6 +429,7 @@ impl Renderer {
             target,
             generator_params,
             generator_group,
+            media_params,
             blend_params,
             blend_groups,
         }
@@ -386,12 +458,16 @@ impl Renderer {
     }
 
     /// Renders `comp` at `time` seconds into the output texture.
+    ///
+    /// `media[i]` is the decoded frame of layer `i` when its playing clip is an
+    /// image or video. Layers whose media is not ready yet are skipped.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         comp: &Composition,
+        media: &[Option<MediaView<'_>>],
         time: f32,
     ) {
         self.resize(device, (comp.width, comp.height));
@@ -410,11 +486,37 @@ impl Renderer {
             let Some(clip) = layer.active_clip().filter(|_| gain > 0.0) else {
                 continue;
             };
-            queue.write_buffer(
-                &slot.generator_params,
-                0,
-                bytemuck::bytes_of(&GeneratorParams::new(&clip.source, time, aspect)),
-            );
+            let media_group = match GeneratorParams::new(&clip.source, time, aspect) {
+                Some(params) => {
+                    queue.write_buffer(&slot.generator_params, 0, bytemuck::bytes_of(&params));
+                    None
+                }
+                None => {
+                    let Some(frame) = media.get(index).copied().flatten() else {
+                        continue;
+                    };
+                    let params = MediaParams::fit(frame.size, self.size);
+                    queue.write_buffer(&slot.media_params, 0, bytemuck::bytes_of(&params));
+                    Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("media"),
+                        layout: &self.media_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: slot.media_params.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(frame.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&self.media_sampler),
+                            },
+                        ],
+                    }))
+                }
+            };
             queue.write_buffer(
                 &slot.blend_params,
                 0,
@@ -427,8 +529,16 @@ impl Renderer {
 
             {
                 let mut rp = pass(encoder, &slot.target.view, true);
-                rp.set_pipeline(&self.generator_pipeline);
-                rp.set_bind_group(0, &slot.generator_group, &[]);
+                match &media_group {
+                    Some(group) => {
+                        rp.set_pipeline(&self.media_pipeline);
+                        rp.set_bind_group(0, group, &[]);
+                    }
+                    None => {
+                        rp.set_pipeline(&self.generator_pipeline);
+                        rp.set_bind_group(0, &slot.generator_group, &[]);
+                    }
+                }
                 rp.draw(0..3, 0..1);
             }
 
@@ -459,7 +569,7 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlendParams, GeneratorParams, OutputParams};
+    use super::{BlendParams, GeneratorParams, MediaParams, OutputParams};
 
     /// Validates `source` and checks that its `params` uniform has the size of `T`.
     fn check<T>(source: &str) {
@@ -482,9 +592,22 @@ mod tests {
     }
 
     #[test]
+    fn media_fit_letterboxes_and_pillarboxes() {
+        assert_eq!(
+            MediaParams::fit((1920, 1080), (1920, 1080)).scale,
+            [1.0, 1.0]
+        );
+        // Wider image: full width, reduced height.
+        assert_eq!(MediaParams::fit((200, 50), (100, 50)).scale, [1.0, 0.5]);
+        // Taller image: full height, reduced width.
+        assert_eq!(MediaParams::fit((50, 50), (100, 50)).scale, [0.5, 1.0]);
+    }
+
+    #[test]
     fn shaders_are_valid_and_match_uniform_structs() {
         check::<GeneratorParams>(include_str!("shaders/generator.wgsl"));
         check::<BlendParams>(include_str!("shaders/blend.wgsl"));
         check::<OutputParams>(include_str!("shaders/output.wgsl"));
+        check::<MediaParams>(include_str!("shaders/media.wgsl"));
     }
 }

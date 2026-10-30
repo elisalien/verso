@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// Built-in generative sources rendered by a WGSL shader.
@@ -48,4 +50,27 @@ pub enum Source {
         color: [f32; 4],
         speed: f32,
     },
+    /// Still image file.
+    Image { path: PathBuf },
+    /// Video file, played at `speed` (1 is normal speed).
+    Video {
+        path: PathBuf,
+        speed: f32,
+        looping: bool,
+    },
+}
+
+impl Source {
+    /// File the source reads, if any.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Source::Image { path } | Source::Video { path, .. } => Some(path),
+            Source::Solid { .. } | Source::Generator { .. } => None,
+        }
+    }
+
+    /// Whether the GPU renders this source without any decoded media.
+    pub fn is_procedural(&self) -> bool {
+        self.path().is_none()
+    }
 }

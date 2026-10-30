@@ -47,6 +47,7 @@ impl<K: Hash + Eq> Thumbnails<K> {
 
     /// Renders `source` into the preview for `key`, creating it if needed.
     /// Returns `true` when the preview was just created, so its view is new.
+    /// File-based sources are not rendered here and return `false`.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -56,6 +57,10 @@ impl<K: Hash + Eq> Thumbnails<K> {
         source: &Source,
         time: f32,
     ) -> bool {
+        let aspect = self.size.0 as f32 / self.size.1 as f32;
+        let Some(params) = GeneratorParams::new(source, time, aspect) else {
+            return false;
+        };
         let mut created = false;
         let thumb = self.thumbs.entry(key).or_insert_with(|| {
             created = true;
@@ -74,12 +79,7 @@ impl<K: Hash + Eq> Thumbnails<K> {
                 group,
             }
         });
-        let aspect = self.size.0 as f32 / self.size.1 as f32;
-        queue.write_buffer(
-            &thumb.params,
-            0,
-            bytemuck::bytes_of(&GeneratorParams::new(source, time, aspect)),
-        );
+        queue.write_buffer(&thumb.params, 0, bytemuck::bytes_of(&params));
         let mut rp = pass(encoder, &thumb.target.view, true);
         rp.set_pipeline(&self.pipeline);
         rp.set_bind_group(0, &thumb.group, &[]);

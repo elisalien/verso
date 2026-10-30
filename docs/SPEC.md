@@ -93,10 +93,22 @@ Composition
 
 | Format | Chemin de décodage | Phase |
 |---|---|---|
-| HAP / HAP Alpha / HAP Q | Démuxage MOV, Snappy, upload direct BC1/BC3/BC7 | v0.2 |
-| H.264 / H.265 / ProRes | FFmpeg (`ffmpeg-next`), décodage hardware si dispo | v0.2 |
-| Images, séquences, GIF | crate `image` | v0.1 |
+| Images (PNG, JPEG, BMP, WebP, TGA, TIFF) | crate `image`, thread de chargement | v0.2 ✅ |
+| Vidéo : HAP, H.264, H.265, ProRes, GIF… | processus `ffmpeg` → pipe RGBA, `-hwaccel auto` | v0.2 ✅ |
+| HAP natif (upload BC1/BC3/BC7 sans conversion) | démuxage MOV + Snappy | plus tard |
 | Shaders génératifs | WGSL natif, ISF transpilé | v0.1 / v0.2 |
+
+**Décision : FFmpeg en processus, pas libav lié.** Chaque clip vidéo actif lance
+un `ffmpeg` qui écrit des frames RGBA brutes sur stdout (crate `verso-media`).
+Avantages : aucun header ni `.lib` à installer, tous les codecs de FFmpeg
+disponibles, crash d'un décodeur isolé du rendu. Coûts : copie CPU des frames
+(≈ 250 Mo/s en 1080p30), seek = relance du processus. Le passage à libav
+(`ffmpeg-next`) ou au HAP natif se fera si ces coûts limitent un set réel.
+Les binaires sont cherchés dans `PATH`, ou via `VERSO_FFMPEG` / `VERSO_FFPROBE`.
+
+Ouverture vidéo (ffprobe + lancement), chargement d'image et poster tournent
+sur des threads ; la boucle de rendu n'attend jamais le disque. Pendant
+l'ouverture, la couche affiche le poster du clip.
 
 Le HAP est le format recommandé en live : décodage CPU minimal, scrubbing et
 lecture inversée sans coût. Les codecs inter-frames (H.264/H.265) ont un scrubbing
@@ -165,7 +177,8 @@ Verso/
 ├── Cargo.toml              workspace
 ├── crates/
 │   ├── verso-core/         modèle, commandes, horloge (sans GPU)
-│   ├── verso-render/       moteur wgpu : sources, blend, composition
+│   ├── verso-media/        décodage images et vidéo FFmpeg (sans GPU)
+│   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel
 │   └── verso-app/          application eframe/egui (binaire `verso`)

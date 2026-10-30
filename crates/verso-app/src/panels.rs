@@ -242,6 +242,28 @@ impl VersoApp {
                     ui.add(egui::Slider::new(speed, 0.0..=4.0));
                     ui.end_row();
                 }
+                Source::Image { path } => {
+                    ui.label("Source");
+                    ui.label("Image");
+                    ui.end_row();
+                    file_row(ui, path);
+                }
+                Source::Video {
+                    path,
+                    speed,
+                    looping,
+                } => {
+                    ui.label("Source");
+                    ui.label("Video");
+                    ui.end_row();
+                    file_row(ui, path);
+                    ui.label("Speed");
+                    ui.add(egui::Slider::new(speed, 0.0..=4.0).suffix("×"));
+                    ui.end_row();
+                    ui.label("Loop");
+                    ui.checkbox(looping, "");
+                    ui.end_row();
+                }
             }
         });
         if clip != before {
@@ -254,69 +276,255 @@ impl VersoApp {
     }
 
     pub(crate) fn monitors(&mut self, ui: &mut egui::Ui) {
-        let aspect = self.comp.width as f32 / self.comp.height.max(1) as f32;
+        let comp_aspect = self.comp.width as f32 / self.comp.height.max(1) as f32;
         let spacing = ui.spacing().item_spacing.x;
         let width = ((ui.available_width() - spacing) / 2.0).max(40.0);
         let height = (ui.available_height() - 22.0).max(40.0);
-        let clip_texture = self.selected_clip.and(self.monitor_texture);
+
+        // Media clips show their own frame at its own aspect.
+        let (clip_texture, clip_aspect) = match self.selected_clip {
+            Some((layer, column)) => {
+                let procedural = self.comp.layers[layer].clips[column]
+                    .as_ref()
+                    .is_none_or(|clip| clip.source.is_procedural());
+                if procedural {
+                    (self.monitor_texture, comp_aspect)
+                } else {
+                    match self.media.clip_texture(&self.comp, layer, column) {
+                        Some((id, (w, h))) => (Some(id), w as f32 / h.max(1) as f32),
+                        None => (None, comp_aspect),
+                    }
+                }
+            }
+            None => (None, comp_aspect),
+        };
         let output_texture = self.output_texture;
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(width);
                 widgets::header(ui, "Preview");
-                monitor_image(ui, clip_texture, Vec2::new(width, height), aspect);
+                monitor_image(ui, clip_texture, Vec2::new(width, height), clip_aspect);
             });
             ui.vertical(|ui| {
                 ui.set_width(width);
                 widgets::header(ui, "Output");
-                monitor_image(ui, Some(output_texture), Vec2::new(width, height), aspect);
+                monitor_image(
+                    ui,
+                    Some(output_texture),
+                    Vec2::new(width, height),
+                    comp_aspect,
+                );
             });
         });
     }
 
     pub(crate) fn browser(&mut self, ui: &mut egui::Ui) {
-        widgets::header(ui, "Sources");
-        ui.label(
-            egui::RichText::new(
-                "Drag onto a clip slot, or double-click to load into the selected slot.",
-            )
-            .small()
-            .color(theme::TEXT_DIM),
+        widgets::header(ui, "Browser");
+        widgets::tabs(
+            ui,
+            &mut self.files.tab,
+            &[
+                (BrowserTab::Sources, "Sources"),
+                (BrowserTab::Files, "Files"),
+            ],
         );
-        ui.add_space(4.0);
-        for template in SourceTemplate::all() {
-            let id = egui::Id::unique(("verso-source", &template.name));
-            let name = template.name.clone();
-            let response = ui
-                .dnd_drag_source(id, template.clone(), |ui| {
-                    let (rect, response) = ui
-                        .allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
-                    let fill = if response.hovered() {
-                        theme::BG_RAISED
-                    } else {
-                        theme::BG_PANEL
-                    };
-                    ui.painter().rect_filled(rect, 2.0, fill);
-                    ui.painter().text(
-                        rect.left_center() + Vec2::new(8.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        &name,
-                        egui::FontId::proportional(12.0),
-                        theme::TEXT,
-                    );
-                    response
-                })
-                .inner;
-            if response.double_clicked()
-                && let Some((layer, column)) = self.selected_clip
-            {
-                self.send(Command::SetClip {
-                    layer,
-                    column,
-                    clip: Some(template.clip()),
-                });
-                self.props_tab = PropsTab::Clip;
+        ui.separator();
+        match self.files.tab {
+            BrowserTab::Sources => {
+                hint(
+                    ui,
+                    "Drag onto a clip slot, or double-click to load into the selected slot.",
+                );
+                for template in SourceTemplate::all() {
+                    self.browser_item(ui, template);
+                }
             }
+            BrowserTab::Files => self.file_list(ui),
         }
+    }
+
+    fn file_list(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("Open Folder…").clicked()
+                && let Some(folder) = rfd::FileDialog::new().pick_folder()
+            {
+                self.files.open(folder);
+            }
+            if self.files.folder.is_some() && ui.button("⟳").on_hover_text("Refresh").clicked() {
+                self.files.refresh();
+            }
+        });
+        let Some(folder) = &self.files.folder else {
+            hint(
+                ui,
+                "Pick a folder of images and videos, or drop files from your file manager onto a clip slot.",
+            );
+            return;
+        };
+        hint(ui, &folder.display().to_string());
+        let entries = self.files.entries.clone();
+        if entries.is_empty() {
+            hint(ui, "No images or videos in this folder.");
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for template in entries {
+                self.browser_item(ui, template);
+            }
+        });
+    }
+
+    /// One draggable row of the browser.
+    fn browser_item(&mut self, ui: &mut egui::Ui, template: SourceTemplate) {
+        let key = template
+            .source
+            .path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| template.name.clone());
+        let id = egui::Id::unique(("verso-browser", key));
+        let (name, kind) = (template.name.clone(), source_kind(&template.source));
+        let response = ui
+            .dnd_drag_source(id, template.clone(), |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
+                let fill = if response.hovered() {
+                    theme::BG_RAISED
+                } else {
+                    theme::BG_PANEL
+                };
+                ui.painter().rect_filled(rect, 2.0, fill);
+                ui.painter().text(
+                    rect.left_center() + Vec2::new(8.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    &name,
+                    egui::FontId::proportional(12.0),
+                    theme::TEXT,
+                );
+                ui.painter().text(
+                    rect.right_center() - Vec2::new(8.0, 0.0),
+                    egui::Align2::RIGHT_CENTER,
+                    kind,
+                    egui::FontId::proportional(10.0),
+                    theme::TEXT_DIM,
+                );
+                response
+            })
+            .inner;
+        if response.double_clicked()
+            && let Some((layer, column)) = self.selected_clip
+        {
+            self.send(Command::SetClip {
+                layer,
+                column,
+                clip: Some(template.clip()),
+            });
+            self.props_tab = PropsTab::Clip;
+        }
+    }
+
+    /// Loads files dropped from the OS file manager into the slot under the
+    /// pointer (else the selected slot), filling the following columns.
+    pub(crate) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let (files, pointer) = ctx.input(|i| (i.raw.dropped_files.clone(), i.pointer.latest_pos()));
+        if files.is_empty() {
+            return;
+        }
+        let under_pointer = pointer.and_then(|pos| {
+            self.cell_rects
+                .iter()
+                .find(|(rect, _)| rect.contains(pos))
+                .map(|&(_, cell)| cell)
+        });
+        let Some((layer, first)) = under_pointer
+            .or(self.selected_clip)
+            .or(Some((self.selected_layer, 0)))
+        else {
+            return;
+        };
+        let templates: Vec<_> = files
+            .iter()
+            .filter_map(|f| SourceTemplate::from_path(f.path()))
+            .collect();
+        if templates.is_empty() {
+            self.status = "No supported image or video in the dropped files.".to_owned();
+            return;
+        }
+        let columns = self.comp.columns.len();
+        for (offset, template) in templates.into_iter().enumerate() {
+            let column = first + offset;
+            if column >= columns {
+                self.status = "Some files did not fit: add columns.".to_owned();
+                break;
+            }
+            self.send(Command::SetClip {
+                layer,
+                column,
+                clip: Some(template.clip()),
+            });
+        }
+        self.selected_clip = Some((layer, first));
+        self.props_tab = PropsTab::Clip;
+    }
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM));
+}
+
+fn source_kind(source: &Source) -> &'static str {
+    match source {
+        Source::Solid { .. } => "color",
+        Source::Generator { .. } => "generator",
+        Source::Image { .. } => "image",
+        Source::Video { .. } => "video",
+    }
+}
+
+/// Grid row showing a file name, with the full path on hover.
+fn file_row(ui: &mut egui::Ui, path: &std::path::Path) {
+    ui.label("File");
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    ui.label(name).on_hover_text(path.display().to_string());
+    ui.end_row();
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BrowserTab {
+    #[default]
+    Sources,
+    Files,
+}
+
+/// State of the browser's Files tab.
+#[derive(Default)]
+pub struct FileBrowser {
+    pub tab: BrowserTab,
+    pub folder: Option<std::path::PathBuf>,
+    pub entries: Vec<SourceTemplate>,
+}
+
+impl FileBrowser {
+    pub fn open(&mut self, folder: std::path::PathBuf) {
+        self.folder = Some(folder);
+        self.refresh();
+    }
+
+    /// Lists the supported media files of the folder, sorted by name.
+    pub fn refresh(&mut self) {
+        let Some(folder) = &self.folder else { return };
+        let mut paths: Vec<_> = std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        paths.sort_by_key(|p| p.file_name().map(|n| n.to_ascii_lowercase()));
+        self.entries = paths
+            .iter()
+            .filter_map(|p| SourceTemplate::from_path(p))
+            .collect();
     }
 }

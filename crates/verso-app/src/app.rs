@@ -7,6 +7,7 @@ use eframe::{egui_wgpu, wgpu};
 use verso_core::{Command, Composition};
 use verso_render::{Renderer, Thumbnails};
 
+use crate::media::Media;
 use crate::theme;
 
 /// Size of the live preview rendered for each clip cell.
@@ -31,8 +32,15 @@ pub struct VersoApp {
     /// Output size the egui texture was registered with.
     output_texture_size: (u32, u32),
     pub(crate) cell_textures: HashMap<(usize, usize), TextureId>,
+    /// Screen rectangle of every clip cell drawn this frame, for file drops.
+    pub(crate) cell_rects: Vec<(egui::Rect, (usize, usize))>,
     pub(crate) monitor_texture: Option<TextureId>,
+    pub(crate) media: Media,
+    /// Layers whose clip was launched again since the last media update.
+    restarted: Vec<usize>,
+    pub(crate) files: crate::panels::FileBrowser,
     start: Instant,
+    last_frame: Instant,
     path: Option<PathBuf>,
     pub(crate) selected_clip: Option<(usize, usize)>,
     pub(crate) selected_layer: usize,
@@ -69,8 +77,13 @@ impl VersoApp {
             render_state,
             output_texture,
             cell_textures: HashMap::new(),
+            cell_rects: Vec::new(),
             monitor_texture: None,
+            media: Media::new(),
+            restarted: Vec::new(),
+            files: Default::default(),
             start: Instant::now(),
+            last_frame: Instant::now(),
             path: None,
             selected_clip: None,
             selected_layer: 0,
@@ -88,6 +101,22 @@ impl VersoApp {
 
     fn apply_pending(&mut self) {
         for command in std::mem::take(&mut self.pending) {
+            // Launching a clip again restarts it from the beginning.
+            match &command {
+                Command::TriggerClip { layer, column } => {
+                    if self.comp.layers.get(*layer).and_then(|l| l.active) == Some(*column) {
+                        self.restarted.push(*layer);
+                    }
+                }
+                Command::TriggerColumn(column) => {
+                    for (index, layer) in self.comp.layers.iter().enumerate() {
+                        if layer.active == Some(*column) {
+                            self.restarted.push(index);
+                        }
+                    }
+                }
+                _ => {}
+            }
             if let Err(e) = self.comp.apply(command) {
                 self.status = e.to_string();
             }
@@ -113,8 +142,25 @@ impl VersoApp {
         let queue = &self.render_state.queue;
         let mut encoder = device.create_command_encoder(&Default::default());
         let time = self.start.elapsed().as_secs_f32();
+        let now = Instant::now();
+        let dt = (now - self.last_frame).as_secs_f64();
+        self.last_frame = now;
+
+        let errors = self.media.update(
+            device,
+            queue,
+            &mut self.render_state.renderer.write(),
+            &self.comp,
+            &std::mem::take(&mut self.restarted),
+            dt,
+        );
+        if let Some(error) = errors.last() {
+            self.status = error.clone();
+        }
+        let views = self.media.layer_views(&self.comp);
         self.renderer
-            .render(device, queue, &mut encoder, &self.comp, time);
+            .render(device, queue, &mut encoder, &self.comp, &views, time);
+        drop(views);
 
         let mut new_cells = Vec::new();
         for (l, layer) in self.comp.layers.iter().enumerate() {
@@ -400,6 +446,7 @@ impl eframe::App for VersoApp {
             .show(ui, |ui| self.grid(ui));
 
         let ctx = ui.ctx().clone();
+        self.handle_dropped_files(&ctx);
         self.output_window(&ctx);
     }
 }

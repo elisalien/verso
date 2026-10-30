@@ -2,7 +2,7 @@
 //! Tests pass without running when no adapter is available (e.g. headless CI).
 
 use verso_core::{BlendMode, Clip, Command, Composition, Source};
-use verso_render::Renderer;
+use verso_render::{MediaTexture, MediaView, Renderer};
 
 struct Gpu {
     device: wgpu::Device,
@@ -19,9 +19,18 @@ fn gpu() -> Option<Gpu> {
 
 /// Renders `comp` and returns its RGBA8 sRGB pixels.
 fn render(gpu: &Gpu, comp: &Composition, time: f32) -> Vec<u8> {
+    render_with_media(gpu, comp, &[], time)
+}
+
+fn render_with_media(
+    gpu: &Gpu,
+    comp: &Composition,
+    media: &[Option<MediaView<'_>>],
+    time: f32,
+) -> Vec<u8> {
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    renderer.render(&gpu.device, &gpu.queue, &mut encoder, comp, time);
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, comp, media, time);
 
     let (w, h) = renderer.size();
     let row = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -200,4 +209,63 @@ fn demo_renders_non_black_image() {
         image::ColorType::Rgba8,
     )
     .unwrap();
+}
+
+#[test]
+fn image_source_is_fitted_and_drawn() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = Composition::new("t", 1, 1);
+    // 4:1 target with a 2:1 image: pillarboxed, image in the middle half.
+    comp.width = 32;
+    comp.height = 8;
+    let clip = Clip {
+        name: "Image".into(),
+        source: Source::Image {
+            path: "unused.png".into(),
+        },
+    };
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: Some(clip),
+    })
+    .unwrap();
+    comp.apply(Command::SetLayerBlend {
+        layer: 0,
+        blend: BlendMode::Alpha,
+    })
+    .unwrap();
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+
+    // Without a decoded frame the layer is skipped.
+    assert_eq!(first_pixel(&render(&gpu, &comp, 0.0)), [0, 0, 0]);
+
+    let mut texture = MediaTexture::new(&gpu.device, (1, 1));
+    // Left pixel red, right pixel green.
+    texture.upload(
+        &gpu.device,
+        &gpu.queue,
+        (2, 1),
+        &[255, 0, 0, 255, 0, 255, 0, 255],
+    );
+    let pixels = render_with_media(&gpu, &comp, &[Some(texture.media_view())], 0.0);
+    let at = |x: usize, y: usize| {
+        let i = (y * 32 + x) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    assert_eq!(at(2, 4), [0, 0, 0], "left bar is empty");
+    assert_eq!(at(29, 4), [0, 0, 0], "right bar is empty");
+    assert!(
+        at(9, 4)[0] > 200 && at(9, 4)[1] < 60,
+        "left of image is red: {:?}",
+        at(9, 4)
+    );
+    assert!(
+        at(22, 4)[1] > 200 && at(22, 4)[0] < 60,
+        "right of image is green: {:?}",
+        at(22, 4)
+    );
 }

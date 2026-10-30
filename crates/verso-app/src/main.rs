@@ -2,6 +2,7 @@
 
 mod app;
 mod grid;
+mod media;
 mod panels;
 mod theme;
 mod widgets;

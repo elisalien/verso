@@ -4,8 +4,15 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: early v0.1. Generative sources only; video playback arrives in v0.2.
+> Status: v0.2 in progress. Generative sources, images and video (any codec
+> FFmpeg reads, including HAP and ProRes). Effects arrive next.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
+
+## Requirements
+
+- Rust (stable)
+- FFmpeg (`ffmpeg` and `ffprobe`) on `PATH` for video, or set `VERSO_FFMPEG` and
+  `VERSO_FFPROBE` to their paths
 
 ## Run
 
@@ -20,6 +27,9 @@ cargo run --release -p verso-app
 | Click a cell | Trigger that clip on its layer (empty cell ejects the layer) |
 | Click a column header, or keys `1`–`9` | Trigger the whole column |
 | Drag a source from the Sources browser onto a cell | Load it into that slot |
+| Drop image or video files from your file manager onto a cell | Load them into that slot and the next ones |
+| Browser › Files › Open Folder… | List a folder's media to drag onto cells |
+| Click the playing clip again | Restart it |
 | Right-click a cell | Change its source or clear it |
 | `X` / `B` / `S` on a layer | Eject / bypass / solo |
 | `A` / `B` on a layer | Assign it to a crossfader side |
@@ -32,7 +42,8 @@ cargo run --release -p verso-app
 | Crate | Role |
 |---|---|
 | `verso-core` | Composition model and commands, no GPU dependency |
-| `verso-render` | wgpu engine: sources, blend modes, master |
+| `verso-media` | Image decoding and FFmpeg video playback, no GPU dependency |
+| `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
 ## Test

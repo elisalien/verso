@@ -14,3 +14,7 @@ verso-core.workspace = true
 verso-render.workspace = true
 eframe.workspace = true
 rfd = "0.17.2"
+verso-media.workspace = true
+
+[dev-dependencies]
+pollster = "1.0.1"

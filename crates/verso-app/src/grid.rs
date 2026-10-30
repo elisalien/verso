@@ -1,9 +1,10 @@
 //! Clip grid: composition row, column headers, one row per layer.
 
 use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind, Vec2};
-use verso_core::{Clip, Command, FaderSide, Generator, Source};
+use verso_core::{Clip, Command, EffectTarget, FaderSide, Generator, Source};
 
 use crate::app::{PropsTab, VersoApp};
+use crate::effects_ui::{EffectTemplate, group_color};
 use crate::{theme, widgets};
 
 pub const CELL: Vec2 = Vec2::new(112.0, 63.0);
@@ -56,10 +57,7 @@ impl SourceTemplate {
     }
 
     pub fn clip(&self) -> Clip {
-        Clip {
-            name: self.name.clone(),
-            source: self.source.clone(),
-        }
+        Clip::new(self.name.clone(), self.source.clone())
     }
 }
 
@@ -100,6 +98,18 @@ impl VersoApp {
                 Stroke::new(1.0, theme::SELECT),
                 StrokeKind::Inside,
             );
+        }
+        if response.dnd_hover_payload::<EffectTemplate>().is_some() {
+            ui.painter().rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(2.0, theme::ACCENT),
+                StrokeKind::Inside,
+            );
+        }
+        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+            self.add_effect(EffectTarget::Composition, &template);
+            self.props_tab = PropsTab::Composition;
         }
         let mut child =
             ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(3.0, 2.0))));
@@ -183,10 +193,25 @@ impl VersoApp {
                 StrokeKind::Inside,
             );
         }
-        // Playing indicator on the left edge.
+        // Playing indicator on the left edge, group tag next to it.
         if self.comp.layer_gain(index) > 0.0 {
             let strip = Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
             painter.rect_filled(strip, 0.0, theme::ACCENT);
+        }
+        if let Some(g) = layer.group {
+            let tag = Rect::from_min_size(
+                rect.min + Vec2::new(3.0, 0.0),
+                Vec2::new(3.0, rect.height()),
+            );
+            painter.rect_filled(tag, 0.0, group_color(g));
+        }
+        if response.dnd_hover_payload::<EffectTemplate>().is_some() {
+            painter.rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(2.0, theme::ACCENT),
+                StrokeKind::Inside,
+            );
         }
 
         let (mut bypass, mut solo, mut opacity, fader_side) =
@@ -258,7 +283,11 @@ impl VersoApp {
                 });
             });
         });
-        if response.clicked() {
+        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+            self.add_effect(EffectTarget::Layer(index), &template);
+            self.selected_layer = index;
+            self.props_tab = PropsTab::Layer;
+        } else if response.clicked() {
             self.selected_layer = index;
             self.props_tab = PropsTab::Layer;
         }
@@ -269,7 +298,8 @@ impl VersoApp {
         let clip = self.comp.layers[layer].clips[column].as_ref();
         let active = self.comp.layers[layer].active == Some(column);
         let selected = self.selected_clip == Some((layer, column));
-        let drop_hover = response.dnd_hover_payload::<SourceTemplate>().is_some();
+        let drop_hover = response.dnd_hover_payload::<SourceTemplate>().is_some()
+            || (response.dnd_hover_payload::<EffectTemplate>().is_some() && clip.is_some());
         let painter = ui.painter_at(rect);
         self.cell_rects.push((rect, (layer, column)));
 
@@ -351,7 +381,13 @@ impl VersoApp {
             ));
         }
 
-        if let Some(template) = response.dnd_release_payload::<SourceTemplate>() {
+        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+            if self.comp.layers[layer].clips[column].is_some() {
+                self.add_effect(EffectTarget::Clip { layer, column }, &template);
+                self.selected_clip = Some((layer, column));
+                self.props_tab = PropsTab::Clip;
+            }
+        } else if let Some(template) = response.dnd_release_payload::<SourceTemplate>() {
             self.send(Command::SetClip {
                 layer,
                 column,

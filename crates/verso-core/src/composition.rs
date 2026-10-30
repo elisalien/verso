@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Generator, Result, Source};
+use crate::{Effect, EffectTarget, Error, Generator, Result, Source};
 
 /// How a layer is mixed onto the layers below it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +56,41 @@ impl BlendMode {
 pub struct Clip {
     pub name: String,
     pub source: Source,
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+}
+
+impl Clip {
+    pub fn new(name: impl Into<String>, source: Source) -> Self {
+        Self {
+            name: name.into(),
+            source,
+            effects: Vec::new(),
+        }
+    }
+}
+
+/// Layers mixed together first, then onto the composition as one image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Group {
+    pub name: String,
+    pub blend: BlendMode,
+    pub opacity: f32,
+    pub bypass: bool,
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+}
+
+impl Group {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            blend: BlendMode::Alpha,
+            opacity: 1.0,
+            bypass: false,
+            effects: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +123,14 @@ pub struct Layer {
     pub clips: Vec<Option<Clip>>,
     /// Column of the playing clip.
     pub active: Option<usize>,
+    #[serde(default)]
+    pub effects: Vec<Effect>,
+    /// Crossfade time in seconds when the playing clip changes; 0 cuts.
+    #[serde(default)]
+    pub transition: f32,
+    /// Index into [`Composition::groups`].
+    #[serde(default)]
+    pub group: Option<usize>,
 }
 
 impl Layer {
@@ -101,6 +144,9 @@ impl Layer {
             fader: FaderSide::None,
             clips: vec![None; columns],
             active: None,
+            effects: Vec::new(),
+            transition: 0.0,
+            group: None,
         }
     }
 
@@ -151,7 +197,11 @@ pub struct Composition {
     pub columns: Vec<Column>,
     /// Bottom layer first.
     pub layers: Vec<Layer>,
+    #[serde(default)]
+    pub groups: Vec<Group>,
     pub master: Master,
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 impl Composition {
@@ -169,7 +219,9 @@ impl Composition {
             layers: (1..=layers)
                 .map(|i| Layer::new(format!("Layer {i}"), columns))
                 .collect(),
+            groups: Vec::new(),
             master: Master::default(),
+            effects: Vec::new(),
         }
     }
 
@@ -187,14 +239,14 @@ impl Composition {
         for (l, layer) in comp.layers.iter_mut().enumerate() {
             for (c, cell) in layer.clips.iter_mut().enumerate() {
                 let kind = Generator::ALL[(l + c) % Generator::ALL.len()];
-                *cell = Some(Clip {
-                    name: kind.name().to_owned(),
-                    source: Source::Generator {
+                *cell = Some(Clip::new(
+                    kind.name(),
+                    Source::Generator {
                         kind,
                         color: palette[(c + l * 2) % palette.len()],
                         speed: 0.5 + 0.25 * l as f32,
                     },
-                });
+                ));
             }
         }
         comp.layers[0].blend = BlendMode::Alpha;
@@ -206,14 +258,104 @@ impl Composition {
     /// Final opacity of a layer in the output: its opacity, crossfader, bypass and
     /// solo combined. Zero when the layer is not playing.
     pub fn layer_gain(&self, index: usize) -> f32 {
+        match self.layers.get(index) {
+            Some(layer) if layer.active_clip().is_some() => self.layer_level(index),
+            _ => 0.0,
+        }
+    }
+
+    /// Like [`Self::layer_gain`], but whether a clip plays is ignored. Used to
+    /// fade out a clip that was just ejected.
+    pub fn layer_level(&self, index: usize) -> f32 {
         let Some(layer) = self.layers.get(index) else {
             return 0.0;
         };
         let any_solo = self.layers.iter().any(|l| l.solo);
-        if layer.bypass || (any_solo && !layer.solo) || layer.active_clip().is_none() {
+        if layer.bypass || (any_solo && !layer.solo) {
             return 0.0;
         }
         layer.opacity * self.master.fader_level(layer.fader)
+    }
+
+    /// Opacity of a group onto the composition.
+    pub fn group_gain(&self, index: usize) -> f32 {
+        match self.groups.get(index) {
+            Some(group) if !group.bypass => group.opacity,
+            _ => 0.0,
+        }
+    }
+
+    /// Layers of a group, bottom first.
+    pub fn group_layers(&self, group: usize) -> impl Iterator<Item = usize> + '_ {
+        self.layers
+            .iter()
+            .enumerate()
+            .filter(move |(_, l)| l.group == Some(group))
+            .map(|(i, _)| i)
+    }
+
+    pub fn effects(&self, target: EffectTarget) -> Option<&Vec<Effect>> {
+        match target {
+            EffectTarget::Composition => Some(&self.effects),
+            EffectTarget::Group(g) => self.groups.get(g).map(|g| &g.effects),
+            EffectTarget::Layer(l) => self.layers.get(l).map(|l| &l.effects),
+            EffectTarget::Clip { layer, column } => self
+                .layers
+                .get(layer)?
+                .clips
+                .get(column)?
+                .as_ref()
+                .map(|c| &c.effects),
+        }
+    }
+
+    pub(crate) fn effects_mut(&mut self, target: EffectTarget) -> Result<&mut Vec<Effect>> {
+        Ok(match target {
+            EffectTarget::Composition => &mut self.effects,
+            EffectTarget::Group(g) => &mut self.groups.get_mut(g).ok_or(Error::NoGroup(g))?.effects,
+            EffectTarget::Layer(l) => &mut self.layer_mut(l)?.effects,
+            EffectTarget::Clip { layer, column } => {
+                &mut self
+                    .layer_mut(layer)?
+                    .clips
+                    .get_mut(column)
+                    .ok_or(Error::NoColumn(column))?
+                    .as_mut()
+                    .ok_or(Error::NoClip)?
+                    .effects
+            }
+        })
+    }
+
+    pub fn group_mut(&mut self, group: usize) -> Result<&mut Group> {
+        self.groups.get_mut(group).ok_or(Error::NoGroup(group))
+    }
+
+    pub(crate) fn add_group(&mut self, layers: &[usize]) -> Result<()> {
+        if let Some(&bad) = layers.iter().find(|&&l| l >= self.layers.len()) {
+            return Err(Error::NoLayer(bad));
+        }
+        let index = self.groups.len();
+        self.groups.push(Group::new(format!("Group {}", index + 1)));
+        for &l in layers {
+            self.layers[l].group = Some(index);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_group(&mut self, group: usize) -> Result<()> {
+        if group >= self.groups.len() {
+            return Err(Error::NoGroup(group));
+        }
+        self.groups.remove(group);
+        for layer in &mut self.layers {
+            layer.group = match layer.group {
+                Some(g) if g == group => None,
+                Some(g) if g > group => Some(g - 1),
+                other => other,
+            };
+        }
+        Ok(())
     }
 
     pub fn layer_mut(&mut self, layer: usize) -> Result<&mut Layer> {

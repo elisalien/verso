@@ -1,7 +1,9 @@
 //! Renders compositions on the GPU and checks output pixels.
 //! Tests pass without running when no adapter is available (e.g. headless CI).
 
-use verso_core::{BlendMode, Clip, Command, Composition, Source};
+use verso_core::{
+    BlendMode, Clip, Command, Composition, Effect, EffectEdit, EffectTarget, ParamValue, Source,
+};
 use verso_render::{MediaTexture, MediaView, Renderer};
 
 struct Gpu {
@@ -29,6 +31,17 @@ fn render_with_media(
     time: f32,
 ) -> Vec<u8> {
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    render_frame(gpu, &mut renderer, comp, media, time)
+}
+
+/// Renders one frame with a long-lived renderer and reads its pixels back.
+fn render_frame(
+    gpu: &Gpu,
+    renderer: &mut Renderer,
+    comp: &Composition,
+    media: &[Option<MediaView<'_>>],
+    time: f32,
+) -> Vec<u8> {
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, comp, media, time);
 
@@ -70,10 +83,7 @@ fn render_with_media(
 }
 
 fn solid(color: [f32; 4]) -> Option<Clip> {
-    Some(Clip {
-        name: "Solid".into(),
-        source: Source::Solid { color },
-    })
+    Some(Clip::new("Solid", Source::Solid { color }))
 }
 
 /// A tiny composition with one solid clip per layer, all playing.
@@ -221,12 +231,12 @@ fn image_source_is_fitted_and_drawn() {
     // 4:1 target with a 2:1 image: pillarboxed, image in the middle half.
     comp.width = 32;
     comp.height = 8;
-    let clip = Clip {
-        name: "Image".into(),
-        source: Source::Image {
+    let clip = Clip::new(
+        "Image",
+        Source::Image {
             path: "unused.png".into(),
         },
-    };
+    );
     comp.apply(Command::SetClip {
         layer: 0,
         column: 0,
@@ -268,4 +278,218 @@ fn image_source_is_fitted_and_drawn() {
         "right of image is green: {:?}",
         at(22, 4)
     );
+}
+
+fn add_effect(comp: &mut Composition, target: EffectTarget, id: &str) {
+    comp.apply(Command::EditEffects {
+        target,
+        edit: EffectEdit::Add(Effect::new(id, id)),
+    })
+    .unwrap();
+}
+
+fn close(got: [u8; 3], expected: [u8; 3]) -> bool {
+    (0..3).all(|c| got[c].abs_diff(expected[c]) <= 3)
+}
+
+#[test]
+fn effects_apply_at_every_level() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    for target in [
+        EffectTarget::Clip {
+            layer: 0,
+            column: 0,
+        },
+        EffectTarget::Layer(0),
+        EffectTarget::Composition,
+    ] {
+        let mut comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+        add_effect(&mut comp, target, "builtin:invert");
+        let got = first_pixel(&render(&gpu, &comp, 0.0));
+        assert!(close(got, [0, 255, 255]), "{target:?}: {got:?}");
+    }
+}
+
+#[test]
+fn bypassed_and_unknown_effects_pass_through() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    add_effect(&mut comp, EffectTarget::Layer(0), "builtin:invert");
+    add_effect(&mut comp, EffectTarget::Layer(0), "missing:effect");
+    comp.apply(Command::EditEffects {
+        target: EffectTarget::Layer(0),
+        edit: EffectEdit::SetBypass {
+            index: 0,
+            bypass: true,
+        },
+    })
+    .unwrap();
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [255, 0, 0]));
+}
+
+#[test]
+fn effect_parameters_reach_the_shader() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = solids(&[(WHITE, BlendMode::Alpha, 1.0)]);
+    add_effect(&mut comp, EffectTarget::Layer(0), "builtin:invert");
+    comp.apply(Command::EditEffects {
+        target: EffectTarget::Layer(0),
+        edit: EffectEdit::SetParam {
+            index: 0,
+            name: "amount".into(),
+            value: ParamValue::Float(0.5),
+        },
+    })
+    .unwrap();
+    // Half inverted white: linear 0.5, sRGB 188.
+    assert!(close(
+        first_pixel(&render(&gpu, &comp, 0.0)),
+        [188, 188, 188]
+    ));
+}
+
+#[test]
+fn isf_effect_runs_on_gpu() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("swap.fs");
+    std::fs::write(
+        &path,
+        r#"/*{
+    "INPUTS": [
+        {"NAME": "inputImage", "TYPE": "image"},
+        {"NAME": "mixAmount", "TYPE": "float", "DEFAULT": 1.0}
+    ]
+}*/
+void main() {
+    vec4 c = IMG_THIS_PIXEL(inputImage);
+    gl_FragColor = mix(c, vec4(c.b, c.g, c.r, c.a), mixAmount);
+}
+"#,
+    )
+    .unwrap();
+
+    let mut comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let id = path.display().to_string();
+    add_effect(&mut comp, EffectTarget::Layer(0), &id);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.library_mut().load_file(&path).unwrap();
+    let got = first_pixel(&render_frame(&gpu, &mut renderer, &comp, &[], 0.0));
+    assert!(close(got, [0, 0, 255]), "{got:?}");
+}
+
+#[test]
+fn groups_mix_their_layers_then_blend() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    // Red base, then a group of green (Add) at half group opacity.
+    let mut comp = solids(&[(RED, BlendMode::Alpha, 1.0), (GREEN, BlendMode::Alpha, 1.0)]);
+    comp.apply(Command::AddGroup { layers: vec![1] }).unwrap();
+    comp.apply(Command::SetGroupBlend {
+        group: 0,
+        blend: BlendMode::Add,
+    })
+    .unwrap();
+    comp.apply(Command::SetGroupOpacity {
+        group: 0,
+        opacity: 0.5,
+    })
+    .unwrap();
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [255, 188, 0]));
+
+    // Group effects process the group's image only.
+    add_effect(&mut comp, EffectTarget::Group(0), "builtin:invert");
+    comp.apply(Command::SetGroupOpacity {
+        group: 0,
+        opacity: 1.0,
+    })
+    .unwrap();
+    // Inverted green (magenta) added onto red.
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [255, 0, 255]));
+
+    comp.apply(Command::SetGroupBypass {
+        group: 0,
+        bypass: true,
+    })
+    .unwrap();
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [255, 0, 0]));
+}
+
+#[test]
+fn transition_crossfades_between_clips() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = Composition::new("t", 1, 2);
+    comp.width = 16;
+    comp.height = 8;
+    for (column, color) in [(0, RED), (1, GREEN)] {
+        comp.apply(Command::SetClip {
+            layer: 0,
+            column,
+            clip: solid(color),
+        })
+        .unwrap();
+    }
+    comp.apply(Command::SetLayerBlend {
+        layer: 0,
+        blend: BlendMode::Alpha,
+    })
+    .unwrap();
+    comp.apply(Command::SetLayerTransition {
+        layer: 0,
+        seconds: 2.0,
+    })
+    .unwrap();
+    comp.apply(Command::TriggerClip {
+        layer: 0,
+        column: 0,
+    })
+    .unwrap();
+
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut frame =
+        |comp: &Composition, time| first_pixel(&render_frame(&gpu, &mut renderer, comp, &[], time));
+    // The first clip of an idle layer appears without a fade.
+    assert!(close(frame(&comp, 0.0), [255, 0, 0]));
+
+    comp.apply(Command::TriggerClip {
+        layer: 0,
+        column: 1,
+    })
+    .unwrap();
+    assert!(
+        close(frame(&comp, 10.0), [255, 0, 0]),
+        "transition starts at the old clip"
+    );
+    assert!(
+        close(frame(&comp, 11.0), [188, 188, 0]),
+        "halfway is an even mix"
+    );
+    assert!(
+        close(frame(&comp, 12.5), [0, 255, 0]),
+        "ends on the new clip"
+    );
+
+    // Ejecting fades out.
+    comp.apply(Command::EjectLayer(0)).unwrap();
+    frame(&comp, 20.0);
+    assert!(close(frame(&comp, 21.0), [0, 188, 0]));
+    assert!(close(frame(&comp, 23.0), [0, 0, 0]));
 }

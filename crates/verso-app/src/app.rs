@@ -18,13 +18,27 @@ const MONITOR: (u32, u32) = (640, 360);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropsTab {
     Composition,
+    Group,
     Layer,
     Clip,
 }
 
+/// Folders scanned for effects at startup: `effects` next to the executable
+/// and in the working directory.
+fn effect_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("effects")];
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("effects")))
+    {
+        dirs.push(exe_dir);
+    }
+    dirs
+}
+
 pub struct VersoApp {
     pub(crate) comp: Composition,
-    renderer: Renderer,
+    pub(crate) renderer: Renderer,
     cell_thumbs: Thumbnails<(usize, usize)>,
     clip_monitor: Thumbnails<()>,
     render_state: egui_wgpu::RenderState,
@@ -61,7 +75,11 @@ impl VersoApp {
             .ok_or("Verso needs the wgpu renderer")?;
         let device = &render_state.device;
         let comp = Composition::demo();
-        let renderer = Renderer::new(device, (comp.width, comp.height));
+        let mut renderer = Renderer::new(device, (comp.width, comp.height));
+        let effect_errors: Vec<String> = effect_dirs()
+            .iter()
+            .flat_map(|dir| renderer.library_mut().load_dir(dir))
+            .collect();
         let output_texture = render_state.renderer.write().register_native_texture(
             device,
             renderer.output_view(),
@@ -89,7 +107,7 @@ impl VersoApp {
             selected_layer: 0,
             props_tab: PropsTab::Composition,
             output_open: false,
-            status: String::new(),
+            status: effect_errors.first().cloned().unwrap_or_default(),
             pending: Vec::new(),
         })
     }
@@ -318,6 +336,28 @@ impl VersoApp {
             ui.menu_button("Layer", |ui| {
                 if ui.button("New Layer").clicked() {
                     self.send(Command::AddLayer);
+                }
+                ui.separator();
+                let layer = self.selected_layer;
+                if ui.button("Group Selected Layer").clicked() {
+                    self.send(Command::AddGroup {
+                        layers: vec![layer],
+                    });
+                    self.props_tab = PropsTab::Group;
+                }
+                let grouped = self
+                    .comp
+                    .layers
+                    .get(layer)
+                    .is_some_and(|l| l.group.is_some());
+                if ui
+                    .add_enabled(
+                        grouped,
+                        egui::Button::new("Remove Selected Layer from Group"),
+                    )
+                    .clicked()
+                {
+                    self.send(Command::SetLayerGroup { layer, group: None });
                 }
             });
             ui.menu_button("Column", |ui| {

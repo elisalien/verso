@@ -349,10 +349,7 @@ mod tests {
         comp.apply(Command::SetClip {
             layer: 0,
             column: 1,
-            clip: Some(Clip {
-                name: "clip".into(),
-                source: video,
-            }),
+            clip: Some(Clip::new("clip", video)),
         })
         .unwrap();
         comp.apply(Command::TriggerClip {
@@ -412,10 +409,7 @@ mod tests {
         comp.apply(Command::SetClip {
             layer: 0,
             column: 0,
-            clip: Some(Clip {
-                name: "missing".into(),
-                source: source.clone(),
-            }),
+            clip: Some(Clip::new("missing", source.clone())),
         })
         .unwrap();
         let mut media = Media::new();

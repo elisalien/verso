@@ -114,17 +114,47 @@ Le HAP est le format recommandé en live : décodage CPU minimal, scrubbing et
 lecture inversée sans coût. Les codecs inter-frames (H.264/H.265) ont un scrubbing
 lent ; l'UI le signalera et proposera une conversion HAP via FFmpeg.
 
-## 7. Plugins
+## 7. Effets
 
-1. **WGSL natif** : un fichier `.wgsl` avec un en-tête de métadonnées
-   (nom, catégorie, paramètres). Format de référence.
-2. **ISF** : fichiers `.fs` + JSON. Transpilation GLSL → WGSL via `naga`.
-   Une liste de compatibilité suit les shaders non supportés.
+Chaînes d'effets sur quatre niveaux : clip, couche, groupe, composition.
+Ordre par couche : source → effets clip → transition → effets couche → blend.
+Un effet manquant (fichier absent) est sauté, pas bloquant.
+
+1. **WGSL natif** (`.wgsl`) : en-tête de commentaires (`name`, `category`,
+   `param`) et une fonction `effect(uv)`. Verso fournit `sample(uv)`,
+   `resolution()`, `premultiply`/`unpremultiply`, `verso.time`, `verso.aspect` et
+   un `param_<nom>()` par paramètre. Types : `float`, `color`, `bool`, `point`.
+   Format de référence, documenté dans `crates/verso-render/src/effects.rs`.
+2. **ISF** (`.fs`) : filtres à une passe et une image d'entrée, traduits en
+   GLSL 4.50 puis en WGSL par `naga`. Non supportés pour l'instant : multi-passe,
+   buffers persistants, entrées audio, plusieurs images.
 3. **Scripts** (v0.3) : Lua (`mlua`) pour automations et contrôle ;
    WASM (`wasmtime`) pour la logique sandboxée.
 
+Tout shader est validé par `naga` avant d'être envoyé au GPU : un effet cassé
+affiche une erreur au chargement au lieu de faire planter le rendu.
+Paramètres : 32 valeurs scalaires par effet (8 `vec4`).
+
+11 effets intégrés : Invert, Hue Saturation, Brightness Contrast, Tint, Posterize,
+Blur, Pixelate, Mirror, Kaleidoscope, RGB Split, Transform. Le dossier `effects/`
+(répertoire courant ou à côté de l'exécutable) est chargé au démarrage ; le
+Browser › Effects permet d'en charger d'autres.
+
 FFGL n'est pas visé : il impose OpenGL, incompatible avec un rendu wgpu sans
 interop coûteuse.
+
+### Transitions
+
+Durée par couche (0 = coupe). Au changement de clip, la dernière image affichée
+est figée puis fondue vers le nouveau clip ; l'éjection fond vers le vide.
+Limite actuelle : une vidéo sortante est figée sur sa dernière image pendant le
+fondu au lieu de continuer à jouer. Seul le fondu enchaîné existe.
+
+### Groupes
+
+Les couches d'un groupe se mélangent entre elles, puis le groupe reçoit ses
+effets et se mélange à la composition avec son propre blend, opacité et bypass.
+Un groupe est rendu à la position de sa couche la plus basse.
 
 ## 8. Contrôle et I/O
 
@@ -155,7 +185,7 @@ le même espace d'adresses.
 | Version | Contenu | Critère de sortie |
 |---|---|---|
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
-| v0.2 Médias | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps |
+| v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
 | v0.3 Contrôle | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur |
 | v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |

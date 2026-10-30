@@ -5,10 +5,12 @@
 
 mod command;
 mod composition;
+mod effect;
 mod source;
 
 pub use command::Command;
-pub use composition::{BlendMode, Clip, Column, Composition, FaderSide, Layer, Master};
+pub use composition::{BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master};
+pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
 pub use source::{Generator, Source};
 
 #[derive(Debug, thiserror::Error)]
@@ -17,6 +19,12 @@ pub enum Error {
     NoLayer(usize),
     #[error("column {0} does not exist")]
     NoColumn(usize),
+    #[error("group {0} does not exist")]
+    NoGroup(usize),
+    #[error("clip slot is empty")]
+    NoClip,
+    #[error("effect {0} does not exist")]
+    NoEffect(usize),
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

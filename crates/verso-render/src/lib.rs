@@ -1,16 +1,22 @@
 //! wgpu compositing engine for Verso.
 //!
-//! Each visible layer renders its source into its own texture, then blends onto
-//! an accumulator. Two accumulators alternate (ping-pong) so a blend pass can
-//! read the result of the previous one. A final pass applies the master and
-//! writes the output texture.
+//! Per layer: the clip's source renders into the layer's textures, clip effects
+//! run, a transition pass crossfades with the previous clip, layer effects run,
+//! and the result blends onto its destination. Destinations are ping-pong
+//! texture pairs, so each blend can read what lies below. Grouped layers blend
+//! into a group pair first; the group then gets its effects and blends onto the
+//! composition. Composition effects run last, then the master writes the output.
 
+mod effects;
 mod media;
 mod thumbnails;
 
-use bytemuck::{Pod, Zeroable};
-use verso_core::{Composition, Source};
+use std::collections::HashMap;
 
+use bytemuck::{Pod, Zeroable};
+use verso_core::{BlendMode, Composition, Effect, Source};
+
+pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind};
 pub use media::{MediaTexture, MediaView};
 pub use thumbnails::Thumbnails;
 
@@ -21,6 +27,8 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSr
 
 /// Shader index of a solid color in `generator.wgsl`.
 const SOLID_KIND: u32 = 255;
+/// Size of each pooled uniform buffer; fits every uniform struct.
+const UNIFORM_SIZE: u64 = 256;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -52,6 +60,23 @@ struct OutputParams {
 struct MediaParams {
     scale: [f32; 2],
     _pad: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct TransitionParams {
+    progress: f32,
+    _pad: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct EffectParams {
+    time: f32,
+    aspect: f32,
+    width: f32,
+    height: f32,
+    values: [f32; effects::PARAM_SLOTS],
 }
 
 impl MediaParams {
@@ -114,7 +139,8 @@ impl Target {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
@@ -122,34 +148,98 @@ impl Target {
     }
 }
 
-/// GPU resources owned by one layer of the composition.
-struct LayerSlot {
-    target: Target,
-    generator_params: wgpu::Buffer,
-    generator_group: wgpu::BindGroup,
-    media_params: wgpu::Buffer,
-    blend_params: wgpu::Buffer,
-    /// Blend bind group reading accumulator 0 or 1 as base.
-    blend_groups: [wgpu::BindGroup; 2],
+/// Two same-size textures used alternately: one is read while the other is
+/// written. `current` holds the latest result.
+struct Pair {
+    targets: [Target; 2],
+    current: usize,
 }
 
-pub struct Renderer {
-    size: (u32, u32),
-    generator_pipeline: wgpu::RenderPipeline,
-    generator_layout: wgpu::BindGroupLayout,
-    media_pipeline: wgpu::RenderPipeline,
-    media_layout: wgpu::BindGroupLayout,
-    media_sampler: wgpu::Sampler,
-    blend_pipeline: wgpu::RenderPipeline,
-    blend_layout: wgpu::BindGroupLayout,
-    output_pipeline: wgpu::RenderPipeline,
-    output_layout: wgpu::BindGroupLayout,
-    accumulators: [Target; 2],
-    output: Target,
-    output_params: wgpu::Buffer,
-    /// Output bind group reading accumulator 0 or 1.
-    output_groups: [wgpu::BindGroup; 2],
-    slots: Vec<LayerSlot>,
+impl Pair {
+    fn new(device: &wgpu::Device, label: &str, size: (u32, u32)) -> Self {
+        Self {
+            targets: [
+                Target::new(device, label, size, WORK_FORMAT),
+                Target::new(device, label, size, WORK_FORMAT),
+            ],
+            current: 0,
+        }
+    }
+
+    fn current(&self) -> &Target {
+        &self.targets[self.current]
+    }
+
+    /// (latest result, free texture to write the next one).
+    fn split(&self) -> (&Target, &Target) {
+        (&self.targets[self.current], &self.targets[1 - self.current])
+    }
+
+    fn flip(&mut self) {
+        self.current = 1 - self.current;
+    }
+
+    fn clear(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        drop(pass(encoder, &self.current().view, true));
+    }
+}
+
+/// Uniform buffers handed out during a frame and reused on the next one.
+/// Each draw gets its own buffer because `write_buffer` calls all land before
+/// the frame's commands run.
+#[derive(Default)]
+struct UniformPool {
+    buffers: Vec<wgpu::Buffer>,
+    next: usize,
+}
+
+impl UniformPool {
+    fn push(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8]) -> usize {
+        if self.next == self.buffers.len() {
+            self.buffers
+                .push(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("uniforms"),
+                    size: UNIFORM_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+        }
+        queue.write_buffer(&self.buffers[self.next], 0, data);
+        self.next += 1;
+        self.next - 1
+    }
+}
+
+/// A clip change being crossfaded.
+#[derive(Clone, Copy)]
+struct Transition {
+    start: f32,
+    duration: f32,
+}
+
+/// GPU resources and playback state of one layer.
+struct LayerState {
+    /// Source render and effect passes.
+    work: Pair,
+    /// Result after the transition pass, before layer effects. Kept between
+    /// frames so a clip change can freeze it as the outgoing image.
+    mixed: Target,
+    outgoing: Target,
+    transition: Option<Transition>,
+    /// Column shown last frame.
+    shown: Option<usize>,
+}
+
+impl LayerState {
+    fn new(device: &wgpu::Device, size: (u32, u32)) -> Self {
+        Self {
+            work: Pair::new(device, "layer", size),
+            mixed: Target::new(device, "layer mixed", size, WORK_FORMAT),
+            outgoing: Target::new(device, "layer outgoing", size, WORK_FORMAT),
+            transition: None,
+            shown: None,
+        }
+    }
 }
 
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -165,15 +255,24 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+fn texture_entry(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            sample_type: wgpu::TextureSampleType::Float { filterable },
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         },
+        count: None,
+    }
+}
+
+fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
 }
@@ -187,17 +286,14 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: usize) -> wgpu::Buff
     })
 }
 
-fn fullscreen_pipeline(
+fn pipeline(
     device: &wgpu::Device,
     label: &str,
-    source: &str,
+    vertex: (&wgpu::ShaderModule, &str),
+    fragment: (&wgpu::ShaderModule, &str),
     layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(layout)],
@@ -207,8 +303,8 @@ fn fullscreen_pipeline(
         label: Some(label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
+            module: vertex.0,
+            entry_point: Some(vertex.1),
             compilation_options: Default::default(),
             buffers: &[],
         },
@@ -216,14 +312,40 @@ fn fullscreen_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
+            module: fragment.0,
+            entry_point: Some(fragment.1),
             compilation_options: Default::default(),
             targets: &[Some(format.into())],
         }),
         multiview_mask: None,
         cache: None,
     })
+}
+
+fn shader(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
+/// Pipeline for a shader holding both `vs_main` and `fs_main`.
+fn fullscreen_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+    layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let module = shader(device, label, source);
+    pipeline(
+        device,
+        label,
+        (&module, "vs_main"),
+        (&module, "fs_main"),
+        layout,
+        format,
+    )
 }
 
 fn pass<'a>(
@@ -253,103 +375,248 @@ fn pass<'a>(
     })
 }
 
+/// Pipelines and layouts; immutable while a frame records.
+struct Pipelines {
+    generator: wgpu::RenderPipeline,
+    generator_layout: wgpu::BindGroupLayout,
+    media: wgpu::RenderPipeline,
+    media_layout: wgpu::BindGroupLayout,
+    blend: wgpu::RenderPipeline,
+    /// Uniform + two unfilterable textures: blend and transition passes.
+    two_textures_layout: wgpu::BindGroupLayout,
+    transition: wgpu::RenderPipeline,
+    output: wgpu::RenderPipeline,
+    output_layout: wgpu::BindGroupLayout,
+    /// Uniform + filterable texture + sampler: media and effect passes.
+    effect_layout: wgpu::BindGroupLayout,
+    effect_vs: wgpu::ShaderModule,
+    sampler: wgpu::Sampler,
+}
+
+/// Per-frame values shared by every pass.
+struct Frame<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    pipelines: &'a Pipelines,
+    effects: &'a HashMap<String, wgpu::RenderPipeline>,
+    library: &'a EffectLibrary,
+    size: (u32, u32),
+    time: f32,
+}
+
+impl Frame<'_> {
+    fn bind(
+        &self,
+        layout: &wgpu::BindGroupLayout,
+        uniforms: &UniformPool,
+        uniform: usize,
+        resources: &[wgpu::BindingResource<'_>],
+    ) -> wgpu::BindGroup {
+        let mut entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniforms.buffers[uniform].as_entire_binding(),
+        }];
+        entries.extend(
+            resources
+                .iter()
+                .enumerate()
+                .map(|(i, resource)| wgpu::BindGroupEntry {
+                    binding: i as u32 + 1,
+                    resource: resource.clone(),
+                }),
+        );
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &entries,
+        })
+    }
+
+    /// Mixes `layer` onto `dest` with `mode` at `opacity`.
+    fn blend(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: &mut UniformPool,
+        dest: &mut Pair,
+        layer: &wgpu::TextureView,
+        mode: BlendMode,
+        opacity: f32,
+    ) {
+        let params = BlendParams {
+            mode: mode.shader_index(),
+            opacity,
+            _pad: [0.0; 2],
+        };
+        let u = uniforms.push(self.device, self.queue, bytemuck::bytes_of(&params));
+        let (base, out) = dest.split();
+        let group = self.bind(
+            &self.pipelines.two_textures_layout,
+            uniforms,
+            u,
+            &[
+                wgpu::BindingResource::TextureView(&base.view),
+                wgpu::BindingResource::TextureView(layer),
+            ],
+        );
+        let mut rp = pass(encoder, &out.view, true);
+        rp.set_pipeline(&self.pipelines.blend);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(0..3, 0..1);
+        drop(rp);
+        dest.flip();
+    }
+
+    /// Runs the active effects of `chain`. The first reads `input`, or the
+    /// pair's current texture when `None`; the result ends in `pair.current()`.
+    /// Returns `false` when no effect ran, leaving the pair untouched.
+    fn run_chain(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: &mut UniformPool,
+        chain: &[Effect],
+        input: Option<&wgpu::TextureView>,
+        pair: &mut Pair,
+    ) -> bool {
+        let mut ran = false;
+        for effect in chain.iter().filter(|e| !e.bypass) {
+            let (Some(def), Some(pipeline)) =
+                (self.library.get(&effect.id), self.effects.get(&effect.id))
+            else {
+                continue;
+            };
+            let params = EffectParams {
+                time: self.time,
+                aspect: self.size.0 as f32 / self.size.1 as f32,
+                width: self.size.0 as f32,
+                height: self.size.1 as f32,
+                values: def.pack(effect),
+            };
+            let u = uniforms.push(self.device, self.queue, bytemuck::bytes_of(&params));
+            let (current, out) = pair.split();
+            let source = match (ran, input) {
+                (false, Some(view)) => view,
+                _ => &current.view,
+            };
+            let group = self.bind(
+                &self.pipelines.effect_layout,
+                uniforms,
+                u,
+                &[
+                    wgpu::BindingResource::TextureView(source),
+                    wgpu::BindingResource::Sampler(&self.pipelines.sampler),
+                ],
+            );
+            let mut rp = pass(encoder, &out.view, true);
+            rp.set_pipeline(pipeline);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+            drop(rp);
+            pair.flip();
+            ran = true;
+        }
+        ran
+    }
+}
+
+pub struct Renderer {
+    size: (u32, u32),
+    pipelines: Pipelines,
+    library: EffectLibrary,
+    /// Compiled effect pipelines by effect id.
+    effects: HashMap<String, wgpu::RenderPipeline>,
+    composition: Pair,
+    group: Pair,
+    output: Target,
+    layers: Vec<LayerState>,
+    uniforms: UniformPool,
+}
+
 impl Renderer {
     pub fn new(device: &wgpu::Device, size: (u32, u32)) -> Self {
         let generator_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("generator"),
             entries: &[uniform_entry(0)],
         });
-        let blend_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("blend"),
-            entries: &[uniform_entry(0), texture_entry(1), texture_entry(2)],
-        });
-        let media_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("media"),
-            entries: &[
-                uniform_entry(0),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+        let two_textures_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("two textures"),
+                entries: &[
+                    uniform_entry(0),
+                    texture_entry(1, false),
+                    texture_entry(2, false),
+                ],
+            });
+        let effect_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("effect"),
+            entries: &[uniform_entry(0), texture_entry(1, true), sampler_entry(2)],
         });
         let output_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("output"),
-            entries: &[uniform_entry(0), texture_entry(1)],
+            entries: &[uniform_entry(0), texture_entry(1, false)],
         });
-
-        let generator_pipeline = fullscreen_pipeline(
-            device,
-            "generator",
-            include_str!("shaders/generator.wgsl"),
-            &generator_layout,
-            WORK_FORMAT,
-        );
-        let media_pipeline = fullscreen_pipeline(
-            device,
-            "media",
-            include_str!("shaders/media.wgsl"),
-            &media_layout,
-            WORK_FORMAT,
-        );
-        let media_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("media"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let blend_pipeline = fullscreen_pipeline(
-            device,
-            "blend",
-            include_str!("shaders/blend.wgsl"),
-            &blend_layout,
-            WORK_FORMAT,
-        );
-        let output_pipeline = fullscreen_pipeline(
-            device,
-            "output",
-            include_str!("shaders/output.wgsl"),
-            &output_layout,
-            OUTPUT_FORMAT,
-        );
-
-        let accumulators = [
-            Target::new(device, "accumulator 0", size, WORK_FORMAT),
-            Target::new(device, "accumulator 1", size, WORK_FORMAT),
-        ];
-        let output = Target::new(device, "output", size, OUTPUT_FORMAT);
-        let output_params = uniform_buffer(device, "output params", size_of::<OutputParams>());
-        let output_groups =
-            Self::output_groups(device, &output_layout, &output_params, &accumulators);
-
+        let pipelines = Pipelines {
+            generator: fullscreen_pipeline(
+                device,
+                "generator",
+                include_str!("shaders/generator.wgsl"),
+                &generator_layout,
+                WORK_FORMAT,
+            ),
+            media: fullscreen_pipeline(
+                device,
+                "media",
+                include_str!("shaders/media.wgsl"),
+                &effect_layout,
+                WORK_FORMAT,
+            ),
+            blend: fullscreen_pipeline(
+                device,
+                "blend",
+                include_str!("shaders/blend.wgsl"),
+                &two_textures_layout,
+                WORK_FORMAT,
+            ),
+            transition: fullscreen_pipeline(
+                device,
+                "transition",
+                include_str!("shaders/transition.wgsl"),
+                &two_textures_layout,
+                WORK_FORMAT,
+            ),
+            output: fullscreen_pipeline(
+                device,
+                "output",
+                include_str!("shaders/output.wgsl"),
+                &output_layout,
+                OUTPUT_FORMAT,
+            ),
+            effect_vs: shader(
+                device,
+                "effect vertex",
+                include_str!("shaders/effect_vs.wgsl"),
+            ),
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("linear"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
+            generator_layout,
+            media_layout: effect_layout.clone(),
+            two_textures_layout,
+            output_layout,
+            effect_layout,
+        };
         Self {
             size,
-            generator_pipeline,
-            generator_layout,
-            media_pipeline,
-            media_layout,
-            media_sampler,
-            blend_pipeline,
-            blend_layout,
-            output_pipeline,
-            output_layout,
-            accumulators,
-            output,
-            output_params,
-            output_groups,
-            slots: Vec::new(),
+            pipelines,
+            library: EffectLibrary::builtin(),
+            effects: HashMap::new(),
+            composition: Pair::new(device, "composition", size),
+            group: Pair::new(device, "group", size),
+            output: Target::new(device, "output", size, OUTPUT_FORMAT),
+            layers: Vec::new(),
+            uniforms: UniformPool::default(),
         }
     }
 
@@ -367,72 +634,14 @@ impl Renderer {
         &self.output.texture
     }
 
-    fn output_groups(
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        params: &wgpu::Buffer,
-        accumulators: &[Target; 2],
-    ) -> [wgpu::BindGroup; 2] {
-        accumulators.each_ref().map(|acc| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("output"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&acc.view),
-                    },
-                ],
-            })
-        })
+    pub fn library(&self) -> &EffectLibrary {
+        &self.library
     }
 
-    fn new_slot(&self, device: &wgpu::Device) -> LayerSlot {
-        let target = Target::new(device, "layer", self.size, WORK_FORMAT);
-        let generator_params =
-            uniform_buffer(device, "generator params", size_of::<GeneratorParams>());
-        let generator_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("generator"),
-            layout: &self.generator_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: generator_params.as_entire_binding(),
-            }],
-        });
-        let media_params = uniform_buffer(device, "media params", size_of::<MediaParams>());
-        let blend_params = uniform_buffer(device, "blend params", size_of::<BlendParams>());
-        let blend_groups = self.accumulators.each_ref().map(|base| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("blend"),
-                layout: &self.blend_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: blend_params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&base.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&target.view),
-                    },
-                ],
-            })
-        });
-        LayerSlot {
-            target,
-            generator_params,
-            generator_group,
-            media_params,
-            blend_params,
-            blend_groups,
-        }
+    /// Changing the library drops compiled pipelines; they rebuild on demand.
+    pub fn library_mut(&mut self) -> &mut EffectLibrary {
+        self.effects.clear();
+        &mut self.library
     }
 
     /// Recreates every size-dependent resource.
@@ -442,25 +651,48 @@ impl Renderer {
             return;
         }
         self.size = size;
-        self.accumulators = [
-            Target::new(device, "accumulator 0", size, WORK_FORMAT),
-            Target::new(device, "accumulator 1", size, WORK_FORMAT),
-        ];
+        self.composition = Pair::new(device, "composition", size);
+        self.group = Pair::new(device, "group", size);
         self.output = Target::new(device, "output", size, OUTPUT_FORMAT);
-        self.output_groups = Self::output_groups(
-            device,
-            &self.output_layout,
-            &self.output_params,
-            &self.accumulators,
-        );
-        // Slots hold views of the old accumulators; rebuild lazily.
-        self.slots.clear();
+        self.layers.clear();
+    }
+
+    /// Compiles the pipelines of every effect `comp` uses.
+    fn prepare_effects(&mut self, device: &wgpu::Device, comp: &Composition) {
+        let layers = comp.layers.iter().flat_map(|l| {
+            l.effects
+                .iter()
+                .chain(l.clips.iter().flatten().flat_map(|c| &c.effects))
+        });
+        let used = comp
+            .effects
+            .iter()
+            .chain(comp.groups.iter().flat_map(|g| &g.effects))
+            .chain(layers);
+        for effect in used {
+            if self.effects.contains_key(&effect.id) {
+                continue;
+            }
+            let Some(def) = self.library.get(&effect.id) else {
+                continue;
+            };
+            let fragment = shader(device, &def.name, &def.fragment);
+            let pipeline = pipeline(
+                device,
+                &def.name,
+                (&self.pipelines.effect_vs, "vs_main"),
+                (&fragment, def.entry),
+                &self.pipelines.effect_layout,
+                WORK_FORMAT,
+            );
+            self.effects.insert(effect.id.clone(), pipeline);
+        }
     }
 
     /// Renders `comp` at `time` seconds into the output texture.
     ///
     /// `media[i]` is the decoded frame of layer `i` when its playing clip is an
-    /// image or video. Layers whose media is not ready yet are skipped.
+    /// image or video. A layer whose media is not ready yet shows nothing.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -471,108 +703,218 @@ impl Renderer {
         time: f32,
     ) {
         self.resize(device, (comp.width, comp.height));
-        while self.slots.len() < comp.layers.len() {
-            let slot = self.new_slot(device);
-            self.slots.push(slot);
+        self.prepare_effects(device, comp);
+        while self.layers.len() < comp.layers.len() {
+            self.layers.push(LayerState::new(device, self.size));
         }
+        self.layers.truncate(comp.layers.len());
+        self.uniforms.next = 0;
 
-        let aspect = self.size.0 as f32 / self.size.1 as f32;
-        // Accumulator holding the result so far.
-        let mut current = 0;
-        drop(pass(encoder, &self.accumulators[current].view, true));
+        let frame = Frame {
+            device,
+            queue,
+            pipelines: &self.pipelines,
+            effects: &self.effects,
+            library: &self.library,
+            size: self.size,
+            time,
+        };
+        let uniforms = &mut self.uniforms;
+        let composition = &mut self.composition;
+        let group_pair = &mut self.group;
+        composition.clear(encoder);
 
-        for (index, (layer, slot)) in comp.layers.iter().zip(&self.slots).enumerate() {
-            let gain = comp.layer_gain(index);
-            let Some(clip) = layer.active_clip().filter(|_| gain > 0.0) else {
-                continue;
-            };
-            let media_group = match GeneratorParams::new(&clip.source, time, aspect) {
-                Some(params) => {
-                    queue.write_buffer(&slot.generator_params, 0, bytemuck::bytes_of(&params));
-                    None
-                }
-                None => {
-                    let Some(frame) = media.get(index).copied().flatten() else {
-                        continue;
-                    };
-                    let params = MediaParams::fit(frame.size, self.size);
-                    queue.write_buffer(&slot.media_params, 0, bytemuck::bytes_of(&params));
-                    Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("media"),
-                        layout: &self.media_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: slot.media_params.as_entire_binding(),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(frame.view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::Sampler(&self.media_sampler),
-                            },
-                        ],
-                    }))
-                }
-            };
-            queue.write_buffer(
-                &slot.blend_params,
-                0,
-                bytemuck::bytes_of(&BlendParams {
-                    mode: layer.blend.shader_index(),
-                    opacity: gain,
-                    _pad: [0.0; 2],
-                }),
-            );
-
-            {
-                let mut rp = pass(encoder, &slot.target.view, true);
-                match &media_group {
-                    Some(group) => {
-                        rp.set_pipeline(&self.media_pipeline);
-                        rp.set_bind_group(0, group, &[]);
+        let mut groups_done = vec![false; comp.groups.len()];
+        for index in 0..comp.layers.len() {
+            match comp.layers[index].group.filter(|&g| g < comp.groups.len()) {
+                None => render_layer(
+                    &frame,
+                    encoder,
+                    uniforms,
+                    comp,
+                    media,
+                    index,
+                    &mut self.layers[index],
+                    composition,
+                ),
+                Some(g) if !groups_done[g] => {
+                    groups_done[g] = true;
+                    group_pair.clear(encoder);
+                    for member in comp.group_layers(g) {
+                        render_layer(
+                            &frame,
+                            encoder,
+                            uniforms,
+                            comp,
+                            media,
+                            member,
+                            &mut self.layers[member],
+                            group_pair,
+                        );
                     }
-                    None => {
-                        rp.set_pipeline(&self.generator_pipeline);
-                        rp.set_bind_group(0, &slot.generator_group, &[]);
+                    let group = &comp.groups[g];
+                    frame.run_chain(encoder, uniforms, &group.effects, None, group_pair);
+                    let gain = comp.group_gain(g);
+                    if gain > 0.0 {
+                        frame.blend(
+                            encoder,
+                            uniforms,
+                            composition,
+                            &group_pair.current().view,
+                            group.blend,
+                            gain,
+                        );
                     }
                 }
-                rp.draw(0..3, 0..1);
+                Some(_) => {}
             }
-
-            let next = 1 - current;
-            {
-                let mut rp = pass(encoder, &self.accumulators[next].view, true);
-                rp.set_pipeline(&self.blend_pipeline);
-                rp.set_bind_group(0, &slot.blend_groups[current], &[]);
-                rp.draw(0..3, 0..1);
-            }
-            current = next;
         }
+        frame.run_chain(encoder, uniforms, &comp.effects, None, composition);
 
-        queue.write_buffer(
-            &self.output_params,
-            0,
-            bytemuck::bytes_of(&OutputParams {
-                opacity: comp.master.opacity,
-                _pad: [0.0; 3],
-            }),
+        let params = OutputParams {
+            opacity: comp.master.opacity,
+            _pad: [0.0; 3],
+        };
+        let u = uniforms.push(device, queue, bytemuck::bytes_of(&params));
+        let group = frame.bind(
+            &self.pipelines.output_layout,
+            uniforms,
+            u,
+            &[wgpu::BindingResource::TextureView(
+                &composition.current().view,
+            )],
         );
         let mut rp = pass(encoder, &self.output.view, true);
-        rp.set_pipeline(&self.output_pipeline);
-        rp.set_bind_group(0, &self.output_groups[current], &[]);
+        rp.set_pipeline(&self.pipelines.output);
+        rp.set_bind_group(0, &group, &[]);
         rp.draw(0..3, 0..1);
+    }
+}
+
+/// Renders layer `index` and blends it onto `dest`.
+#[allow(clippy::too_many_arguments)]
+fn render_layer(
+    frame: &Frame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    uniforms: &mut UniformPool,
+    comp: &Composition,
+    media: &[Option<MediaView<'_>>],
+    index: usize,
+    state: &mut LayerState,
+    dest: &mut Pair,
+) {
+    let layer = &comp.layers[index];
+    let active = layer.active.filter(|_| layer.active_clip().is_some());
+
+    // A clip change starts a transition from the last shown image.
+    if active != state.shown {
+        let had_content = state.shown.is_some() || state.transition.is_some();
+        state.transition = (layer.transition > 0.0 && had_content).then(|| {
+            encoder.copy_texture_to_texture(
+                state.mixed.texture.as_image_copy(),
+                state.outgoing.texture.as_image_copy(),
+                state.mixed.texture.size(),
+            );
+            Transition {
+                start: frame.time,
+                duration: layer.transition,
+            }
+        });
+        state.shown = active;
+    }
+    let progress = state
+        .transition
+        .map(|t| (frame.time - t.start) / t.duration);
+    if progress.is_some_and(|p| p >= 1.0) {
+        state.transition = None;
+    }
+    let transitioning = state.transition.is_some();
+    if active.is_none() && !transitioning {
+        return;
+    }
+    let level = comp.layer_level(index);
+
+    // Incoming clip: source, then clip effects, in `state.work`.
+    state.work.clear(encoder);
+    if let Some(clip) = layer.active_clip() {
+        let aspect = frame.size.0 as f32 / frame.size.1 as f32;
+        let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
+            Some(params) => {
+                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+                Some(frame.bind(&frame.pipelines.generator_layout, uniforms, u, &[]))
+                    .map(|g| (g, &frame.pipelines.generator))
+            }
+            None => media.get(index).copied().flatten().map(|view| {
+                let params = MediaParams::fit(view.size, frame.size);
+                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+                let group = frame.bind(
+                    &frame.pipelines.media_layout,
+                    uniforms,
+                    u,
+                    &[
+                        wgpu::BindingResource::TextureView(view.view),
+                        wgpu::BindingResource::Sampler(&frame.pipelines.sampler),
+                    ],
+                );
+                (group, &frame.pipelines.media)
+            }),
+        };
+        if let Some((group, pipeline)) = drawn {
+            let mut rp = pass(encoder, &state.work.current().view, true);
+            rp.set_pipeline(pipeline);
+            rp.set_bind_group(0, &group, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        frame.run_chain(encoder, uniforms, &clip.effects, None, &mut state.work);
+    }
+
+    // Transition into `state.mixed`.
+    let params = TransitionParams {
+        progress: progress.filter(|_| transitioning).unwrap_or(1.0),
+        _pad: [0.0; 3],
+    };
+    let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+    let group = frame.bind(
+        &frame.pipelines.two_textures_layout,
+        uniforms,
+        u,
+        &[
+            wgpu::BindingResource::TextureView(&state.outgoing.view),
+            wgpu::BindingResource::TextureView(&state.work.current().view),
+        ],
+    );
+    let mut rp = pass(encoder, &state.mixed.view, true);
+    rp.set_pipeline(&frame.pipelines.transition);
+    rp.set_bind_group(0, &group, &[]);
+    rp.draw(0..3, 0..1);
+    drop(rp);
+
+    // Layer effects read `mixed` and write into `work`.
+    let ran = frame.run_chain(
+        encoder,
+        uniforms,
+        &layer.effects,
+        Some(&state.mixed.view),
+        &mut state.work,
+    );
+    if level > 0.0 {
+        let result = if ran {
+            &state.work.current().view
+        } else {
+            &state.mixed.view
+        };
+        frame.blend(encoder, uniforms, dest, result, layer.blend, level);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BlendParams, GeneratorParams, MediaParams, OutputParams};
+    use super::{
+        BlendParams, EffectParams, GeneratorParams, MediaParams, OutputParams, TransitionParams,
+    };
 
     /// Validates `source` and checks that its `params` uniform has the size of `T`.
-    fn check<T>(source: &str) {
+    fn check<T>(source: &str, uniform: &str) {
         let module = naga::front::wgsl::parse_str(source)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
         naga::valid::Validator::new(
@@ -584,11 +926,12 @@ mod tests {
         let params = module
             .global_variables
             .iter()
-            .find(|(_, var)| var.name.as_deref() == Some("params"))
-            .expect("shader has a `params` uniform")
+            .find(|(_, var)| var.name.as_deref() == Some(uniform))
+            .expect("shader has the uniform")
             .1;
         let wgsl_size = module.types[params.ty].inner.size(module.to_ctx()) as usize;
         assert_eq!(wgsl_size, size_of::<T>(), "uniform size mismatch");
+        assert!(size_of::<T>() as u64 <= super::UNIFORM_SIZE);
     }
 
     #[test]
@@ -605,9 +948,13 @@ mod tests {
 
     #[test]
     fn shaders_are_valid_and_match_uniform_structs() {
-        check::<GeneratorParams>(include_str!("shaders/generator.wgsl"));
-        check::<BlendParams>(include_str!("shaders/blend.wgsl"));
-        check::<OutputParams>(include_str!("shaders/output.wgsl"));
-        check::<MediaParams>(include_str!("shaders/media.wgsl"));
+        check::<GeneratorParams>(include_str!("shaders/generator.wgsl"), "params");
+        check::<BlendParams>(include_str!("shaders/blend.wgsl"), "params");
+        check::<OutputParams>(include_str!("shaders/output.wgsl"), "params");
+        check::<MediaParams>(include_str!("shaders/media.wgsl"), "params");
+        check::<TransitionParams>(include_str!("shaders/transition.wgsl"), "params");
+        let effect = super::EffectLibrary::builtin();
+        let blur = effect.get("builtin:blur").unwrap();
+        check::<EffectParams>(&blur.fragment, "verso");
     }
 }

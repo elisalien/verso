@@ -39,20 +39,31 @@ fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
 impl VersoApp {
     pub(crate) fn properties(&mut self, ui: &mut egui::Ui) {
         widgets::header(ui, "Properties");
-        widgets::tabs(
-            ui,
-            &mut self.props_tab,
-            &[
-                (PropsTab::Composition, "Composition"),
-                (PropsTab::Layer, "Layer"),
-                (PropsTab::Clip, "Clip"),
-            ],
-        );
+        let grouped = self
+            .comp
+            .layers
+            .get(self.selected_layer)
+            .is_some_and(|l| l.group.is_some());
+        if self.props_tab == PropsTab::Group && !grouped {
+            self.props_tab = PropsTab::Layer;
+        }
+        let mut tabs = vec![(PropsTab::Composition, "Composition")];
+        if grouped {
+            tabs.push((PropsTab::Group, "Group"));
+        }
+        tabs.extend([(PropsTab::Layer, "Layer"), (PropsTab::Clip, "Clip")]);
+        widgets::tabs(ui, &mut self.props_tab, &tabs);
         ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| match self.props_tab {
-            PropsTab::Composition => self.composition_properties(ui),
-            PropsTab::Layer => self.layer_properties(ui),
-            PropsTab::Clip => self.clip_properties(ui),
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            match self.props_tab {
+                PropsTab::Composition => self.composition_properties(ui),
+                PropsTab::Group => self.group_properties(ui),
+                PropsTab::Layer => self.layer_properties(ui),
+                PropsTab::Clip => self.clip_properties(ui),
+            }
+            if let Some(target) = self.props_target() {
+                self.effect_chain(ui, target);
+            }
         });
     }
 
@@ -104,6 +115,71 @@ impl VersoApp {
             }
             ui.end_row();
         });
+    }
+
+    fn group_properties(&mut self, ui: &mut egui::Ui) {
+        let Some(g) = self
+            .comp
+            .layers
+            .get(self.selected_layer)
+            .and_then(|l| l.group)
+        else {
+            return;
+        };
+        let group = &self.comp.groups[g];
+        let (mut name, mut blend, mut opacity, mut bypass) =
+            (group.name.clone(), group.blend, group.opacity, group.bypass);
+        property_grid(ui, "group", |ui| {
+            ui.label("Name");
+            if ui.text_edit_singleline(&mut name).changed() {
+                self.send(Command::RenameGroup { group: g, name });
+            }
+            ui.end_row();
+
+            ui.label("Blend Mode");
+            egui::ComboBox::from_id_salt("group blend")
+                .selected_text(blend.name())
+                .show_ui(ui, |ui| {
+                    for b in BlendMode::ALL {
+                        ui.selectable_value(&mut blend, b, b.name());
+                    }
+                });
+            if blend != self.comp.groups[g].blend {
+                self.send(Command::SetGroupBlend { group: g, blend });
+            }
+            ui.end_row();
+
+            ui.label("Opacity");
+            if widgets::fader(ui, &mut opacity, Vec2::new(200.0, 18.0), theme::ACCENT, 1.0)
+                .changed()
+            {
+                self.send(Command::SetGroupOpacity { group: g, opacity });
+            }
+            ui.end_row();
+
+            ui.label("Bypass");
+            if widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass").changed() {
+                self.send(Command::SetGroupBypass { group: g, bypass });
+            }
+            ui.end_row();
+
+            ui.label("Layers");
+            let members: Vec<_> = self
+                .comp
+                .group_layers(g)
+                .map(|l| self.comp.layers[l].name.clone())
+                .collect();
+            ui.label(members.join(", "));
+            ui.end_row();
+        });
+        if ui
+            .button("Delete Group")
+            .on_hover_text("Its layers stay, ungrouped")
+            .clicked()
+        {
+            self.send(Command::RemoveGroup(g));
+            self.props_tab = PropsTab::Layer;
+        }
     }
 
     fn layer_properties(&mut self, ui: &mut egui::Ui) {
@@ -180,6 +256,54 @@ impl VersoApp {
             });
             if side != self.comp.layers[index].fader {
                 self.send(Command::SetLayerFader { layer: index, side });
+            }
+            ui.end_row();
+
+            ui.label("Transition");
+            let mut seconds = self.comp.layers[index].transition;
+            if ui
+                .add(
+                    egui::Slider::new(&mut seconds, 0.0..=10.0)
+                        .suffix(" s")
+                        .logarithmic(true)
+                        .smallest_positive(0.05),
+                )
+                .on_hover_text("Crossfade time when the playing clip changes. 0 cuts.")
+                .changed()
+            {
+                self.send(Command::SetLayerTransition {
+                    layer: index,
+                    seconds,
+                });
+            }
+            ui.end_row();
+
+            ui.label("Group");
+            let current = self.comp.layers[index].group;
+            let group_name = |g: Option<usize>| match g {
+                Some(g) => self.comp.groups[g].name.clone(),
+                None => "None".to_owned(),
+            };
+            let mut chosen = current;
+            let mut new_group = false;
+            egui::ComboBox::from_id_salt("layer group")
+                .selected_text(group_name(current))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, None, "None");
+                    for g in 0..self.comp.groups.len() {
+                        ui.selectable_value(&mut chosen, Some(g), group_name(Some(g)));
+                    }
+                    new_group = ui.selectable_label(false, "+ New Group").clicked();
+                });
+            if new_group {
+                self.send(Command::AddGroup {
+                    layers: vec![index],
+                });
+            } else if chosen != current {
+                self.send(Command::SetLayerGroup {
+                    layer: index,
+                    group: chosen,
+                });
             }
             ui.end_row();
         });
@@ -325,6 +449,7 @@ impl VersoApp {
             &mut self.files.tab,
             &[
                 (BrowserTab::Sources, "Sources"),
+                (BrowserTab::Effects, "Effects"),
                 (BrowserTab::Files, "Files"),
             ],
         );
@@ -339,6 +464,7 @@ impl VersoApp {
                     self.browser_item(ui, template);
                 }
             }
+            BrowserTab::Effects => self.effect_browser(ui),
             BrowserTab::Files => self.file_list(ui),
         }
     }
@@ -494,6 +620,7 @@ fn file_row(ui: &mut egui::Ui, path: &std::path::Path) {
 pub enum BrowserTab {
     #[default]
     Sources,
+    Effects,
     Files,
 }
 

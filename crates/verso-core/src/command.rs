@@ -1,4 +1,5 @@
-use crate::{BlendMode, Clip, Composition, FaderSide, Result};
+use crate::effect::edit_chain;
+use crate::{BlendMode, Clip, Composition, EffectEdit, EffectTarget, Error, FaderSide, Result};
 
 /// A single change to a composition.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +44,41 @@ pub enum Command {
         column: usize,
         name: String,
     },
+    SetLayerTransition {
+        layer: usize,
+        seconds: f32,
+    },
+    /// Puts a layer in a group, or takes it out with `None`.
+    SetLayerGroup {
+        layer: usize,
+        group: Option<usize>,
+    },
+    /// New group holding `layers`.
+    AddGroup {
+        layers: Vec<usize>,
+    },
+    /// Deletes a group; its layers stay, ungrouped.
+    RemoveGroup(usize),
+    RenameGroup {
+        group: usize,
+        name: String,
+    },
+    SetGroupOpacity {
+        group: usize,
+        opacity: f32,
+    },
+    SetGroupBlend {
+        group: usize,
+        blend: BlendMode,
+    },
+    SetGroupBypass {
+        group: usize,
+        bypass: bool,
+    },
+    EditEffects {
+        target: EffectTarget,
+        edit: EffectEdit,
+    },
     SetMasterOpacity(f32),
     SetCrossfader(f32),
     SetBpm(f32),
@@ -86,6 +122,26 @@ impl Composition {
                     .ok_or(crate::Error::NoColumn(column))?
                     .name = name
             }
+            Command::SetLayerTransition { layer, seconds } => {
+                self.layer_mut(layer)?.transition = seconds.clamp(0.0, 30.0)
+            }
+            Command::SetLayerGroup { layer, group } => {
+                if let Some(g) = group
+                    && g >= self.groups.len()
+                {
+                    return Err(Error::NoGroup(g));
+                }
+                self.layer_mut(layer)?.group = group
+            }
+            Command::AddGroup { layers } => self.add_group(&layers)?,
+            Command::RemoveGroup(group) => self.remove_group(group)?,
+            Command::RenameGroup { group, name } => self.group_mut(group)?.name = name,
+            Command::SetGroupOpacity { group, opacity } => {
+                self.group_mut(group)?.opacity = opacity.clamp(0.0, 1.0)
+            }
+            Command::SetGroupBlend { group, blend } => self.group_mut(group)?.blend = blend,
+            Command::SetGroupBypass { group, bypass } => self.group_mut(group)?.bypass = bypass,
+            Command::EditEffects { target, edit } => edit_chain(self.effects_mut(target)?, edit)?,
             Command::SetCrossfader(value) => self.master.crossfader = value.clamp(0.0, 1.0),
             Command::SetBpm(bpm) => self.bpm = bpm.clamp(20.0, 500.0),
             Command::SetMasterOpacity(opacity) => self.master.opacity = opacity.clamp(0.0, 1.0),
@@ -248,6 +304,92 @@ mod tests {
             .replace("crossfader: 0.5,", "");
         comp.master.crossfader = 0.5;
         assert_eq!(Composition::from_ron(&text).unwrap(), comp);
+    }
+
+    #[test]
+    fn effect_chain_edits() {
+        use crate::{Effect, ParamValue};
+        let mut comp = Composition::demo();
+        let target = EffectTarget::Layer(1);
+        let edit = |edit| Command::EditEffects { target, edit };
+        comp.apply(edit(EffectEdit::Add(Effect::new(
+            "builtin:invert",
+            "Invert",
+        ))))
+        .unwrap();
+        comp.apply(edit(EffectEdit::Add(Effect::new("builtin:blur", "Blur"))))
+            .unwrap();
+        comp.apply(edit(EffectEdit::Move { from: 1, to: 0 }))
+            .unwrap();
+        comp.apply(edit(EffectEdit::SetParam {
+            index: 0,
+            name: "radius".into(),
+            value: ParamValue::Float(0.5),
+        }))
+        .unwrap();
+        comp.apply(edit(EffectEdit::SetBypass {
+            index: 1,
+            bypass: true,
+        }))
+        .unwrap();
+        let chain = comp.effects(target).unwrap();
+        assert_eq!(chain[0].id, "builtin:blur");
+        assert_eq!(chain[0].params["radius"], ParamValue::Float(0.5));
+        assert!(chain[1].bypass);
+        comp.apply(edit(EffectEdit::Remove(0))).unwrap();
+        assert_eq!(comp.effects(target).unwrap().len(), 1);
+        assert!(matches!(
+            comp.apply(edit(EffectEdit::Remove(7))),
+            Err(Error::NoEffect(7))
+        ));
+    }
+
+    #[test]
+    fn clip_effects_need_a_clip() {
+        let mut comp = Composition::new("t", 1, 1);
+        let result = comp.apply(Command::EditEffects {
+            target: EffectTarget::Clip {
+                layer: 0,
+                column: 0,
+            },
+            edit: EffectEdit::Add(crate::Effect::new("builtin:invert", "Invert")),
+        });
+        assert!(matches!(result, Err(Error::NoClip)));
+    }
+
+    #[test]
+    fn groups_add_and_remove_reindex_layers() {
+        let mut comp = Composition::new("t", 4, 1);
+        comp.apply(Command::AddGroup { layers: vec![0, 1] })
+            .unwrap();
+        comp.apply(Command::AddGroup { layers: vec![3] }).unwrap();
+        assert_eq!(comp.group_layers(0).collect::<Vec<_>>(), [0, 1]);
+        comp.apply(Command::RemoveGroup(0)).unwrap();
+        assert_eq!(comp.groups.len(), 1);
+        assert_eq!(comp.layers[0].group, None);
+        assert_eq!(comp.layers[3].group, Some(0));
+        assert!(matches!(
+            comp.apply(Command::SetLayerGroup {
+                layer: 0,
+                group: Some(4)
+            }),
+            Err(Error::NoGroup(4))
+        ));
+        comp.apply(Command::SetGroupBypass {
+            group: 0,
+            bypass: true,
+        })
+        .unwrap();
+        assert_eq!(comp.group_gain(0), 0.0);
+    }
+
+    #[test]
+    fn ejected_layer_keeps_level_for_fade_out() {
+        let mut comp = Composition::demo();
+        comp.apply(Command::TriggerColumn(0)).unwrap();
+        comp.apply(Command::EjectLayer(0)).unwrap();
+        assert_eq!(comp.layer_gain(0), 0.0);
+        assert_eq!(comp.layer_level(0), comp.layers[0].opacity);
     }
 
     #[test]

@@ -5,8 +5,12 @@
 //! read the result of the previous one. A final pass applies the master and
 //! writes the output texture.
 
+mod thumbnails;
+
 use bytemuck::{Pod, Zeroable};
 use verso_core::{Composition, Source};
+
+pub use thumbnails::Thumbnails;
 
 /// Internal format: HDR so successive blends do not band.
 const WORK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -39,6 +43,22 @@ struct BlendParams {
 struct OutputParams {
     opacity: f32,
     _pad: [f32; 3],
+}
+
+impl GeneratorParams {
+    fn new(source: &Source, time: f32, aspect: f32) -> Self {
+        let (kind, color, speed) = match *source {
+            Source::Solid { color } => (SOLID_KIND, color, 0.0),
+            Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
+        };
+        Self {
+            time,
+            speed,
+            kind,
+            aspect,
+            color,
+        }
+    }
 }
 
 struct Target {
@@ -385,34 +405,22 @@ impl Renderer {
         let mut current = 0;
         drop(pass(encoder, &self.accumulators[current].view, true));
 
-        for (layer, slot) in comp.layers.iter().zip(&self.slots) {
-            if !layer.is_visible() {
+        for (index, (layer, slot)) in comp.layers.iter().zip(&self.slots).enumerate() {
+            let gain = comp.layer_gain(index);
+            let Some(clip) = layer.active_clip().filter(|_| gain > 0.0) else {
                 continue;
-            }
-            let Some(clip) = layer.active_clip() else {
-                continue;
-            };
-            let (kind, color, speed) = match clip.source {
-                Source::Solid { color } => (SOLID_KIND, color, 0.0),
-                Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
             };
             queue.write_buffer(
                 &slot.generator_params,
                 0,
-                bytemuck::bytes_of(&GeneratorParams {
-                    time,
-                    speed,
-                    kind,
-                    aspect,
-                    color,
-                }),
+                bytemuck::bytes_of(&GeneratorParams::new(&clip.source, time, aspect)),
             );
             queue.write_buffer(
                 &slot.blend_params,
                 0,
                 bytemuck::bytes_of(&BlendParams {
                     mode: layer.blend.shader_index(),
-                    opacity: layer.opacity,
+                    opacity: gain,
                     _pad: [0.0; 2],
                 }),
             );

@@ -8,7 +8,7 @@ mod composition;
 mod source;
 
 pub use command::Command;
-pub use composition::{BlendMode, Clip, Column, Composition, Layer, Master};
+pub use composition::{BlendMode, Clip, Column, Composition, FaderSide, Layer, Master};
 pub use source::{Generator, Source};
 
 #[derive(Debug, thiserror::Error)]

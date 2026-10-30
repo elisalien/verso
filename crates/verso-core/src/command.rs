@@ -1,4 +1,4 @@
-use crate::{BlendMode, Clip, Composition, Result};
+use crate::{BlendMode, Clip, Composition, FaderSide, Result};
 
 /// A single change to a composition.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +27,25 @@ pub enum Command {
         layer: usize,
         bypass: bool,
     },
+    SetLayerSolo {
+        layer: usize,
+        solo: bool,
+    },
+    SetLayerFader {
+        layer: usize,
+        side: FaderSide,
+    },
+    RenameLayer {
+        layer: usize,
+        name: String,
+    },
+    RenameColumn {
+        column: usize,
+        name: String,
+    },
     SetMasterOpacity(f32),
+    SetCrossfader(f32),
+    SetBpm(f32),
     AddLayer,
     AddColumn,
 }
@@ -59,6 +77,17 @@ impl Composition {
             }
             Command::SetLayerBlend { layer, blend } => self.layer_mut(layer)?.blend = blend,
             Command::SetLayerBypass { layer, bypass } => self.layer_mut(layer)?.bypass = bypass,
+            Command::SetLayerSolo { layer, solo } => self.layer_mut(layer)?.solo = solo,
+            Command::SetLayerFader { layer, side } => self.layer_mut(layer)?.fader = side,
+            Command::RenameLayer { layer, name } => self.layer_mut(layer)?.name = name,
+            Command::RenameColumn { column, name } => {
+                self.columns
+                    .get_mut(column)
+                    .ok_or(crate::Error::NoColumn(column))?
+                    .name = name
+            }
+            Command::SetCrossfader(value) => self.master.crossfader = value.clamp(0.0, 1.0),
+            Command::SetBpm(bpm) => self.bpm = bpm.clamp(20.0, 500.0),
             Command::SetMasterOpacity(opacity) => self.master.opacity = opacity.clamp(0.0, 1.0),
             Command::AddLayer => self.add_layer(),
             Command::AddColumn => self.add_column(),
@@ -150,6 +179,75 @@ mod tests {
         })
         .unwrap();
         assert_eq!(comp.layers[0].opacity, 1.0);
+    }
+
+    #[test]
+    fn solo_mutes_other_layers() {
+        let mut comp = Composition::demo();
+        comp.apply(Command::TriggerColumn(0)).unwrap();
+        comp.apply(Command::SetLayerSolo {
+            layer: 1,
+            solo: true,
+        })
+        .unwrap();
+        assert_eq!(comp.layer_gain(0), 0.0);
+        assert_eq!(comp.layer_gain(1), comp.layers[1].opacity);
+        assert_eq!(comp.layer_gain(2), 0.0);
+    }
+
+    #[test]
+    fn crossfader_levels() {
+        let mut comp = Composition::demo();
+        comp.apply(Command::TriggerColumn(0)).unwrap();
+        comp.apply(Command::SetLayerOpacity {
+            layer: 0,
+            opacity: 1.0,
+        })
+        .unwrap();
+        comp.apply(Command::SetLayerOpacity {
+            layer: 1,
+            opacity: 1.0,
+        })
+        .unwrap();
+        comp.apply(Command::SetLayerFader {
+            layer: 0,
+            side: FaderSide::A,
+        })
+        .unwrap();
+        comp.apply(Command::SetLayerFader {
+            layer: 1,
+            side: FaderSide::B,
+        })
+        .unwrap();
+
+        // Center: both sides at full level.
+        assert_eq!((comp.layer_gain(0), comp.layer_gain(1)), (1.0, 1.0));
+        comp.apply(Command::SetCrossfader(0.0)).unwrap();
+        assert_eq!((comp.layer_gain(0), comp.layer_gain(1)), (1.0, 0.0));
+        comp.apply(Command::SetCrossfader(0.75)).unwrap();
+        assert_eq!((comp.layer_gain(0), comp.layer_gain(1)), (0.5, 1.0));
+        // Unassigned layers ignore the crossfader.
+        assert_eq!(comp.layer_gain(2), comp.layers[2].opacity);
+    }
+
+    #[test]
+    fn idle_layer_has_no_gain() {
+        let comp = Composition::demo();
+        assert_eq!(comp.layer_gain(0), 0.0);
+        assert_eq!(comp.layer_gain(99), 0.0);
+    }
+
+    #[test]
+    fn files_without_new_fields_still_load() {
+        let mut comp = Composition::new("t", 1, 1);
+        let text = comp
+            .to_ron()
+            .unwrap()
+            .replace("solo: false,", "")
+            .replace("fader: None,", "")
+            .replace("crossfader: 0.5,", "");
+        comp.master.crossfader = 0.5;
+        assert_eq!(Composition::from_ron(&text).unwrap(), comp);
     }
 
     #[test]

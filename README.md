@@ -19,7 +19,11 @@ cargo run --release -p verso-app
 |---|---|
 | Click a cell | Trigger that clip on its layer (empty cell ejects the layer) |
 | Click a column header, or keys `1`–`9` | Trigger the whole column |
+| Drag a source from the Sources browser onto a cell | Load it into that slot |
 | Right-click a cell | Change its source or clear it |
+| `X` / `B` / `S` on a layer | Eject / bypass / solo |
+| `A` / `B` on a layer | Assign it to a crossfader side |
+| Double-click a fader | Reset it |
 | `Esc` | Clear all layers |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 

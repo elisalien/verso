@@ -63,12 +63,27 @@ pub struct Column {
     pub name: String,
 }
 
+/// Which side of the master crossfader a layer follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FaderSide {
+    /// Ignores the crossfader.
+    #[default]
+    None,
+    A,
+    B,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub name: String,
     pub blend: BlendMode,
     pub opacity: f32,
     pub bypass: bool,
+    /// When any layer is soloed, only soloed layers are output.
+    #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
+    pub fader: FaderSide,
     /// One cell per column; `None` is an empty cell.
     pub clips: Vec<Option<Clip>>,
     /// Column of the playing clip.
@@ -82,6 +97,8 @@ impl Layer {
             blend: BlendMode::default(),
             opacity: 1.0,
             bypass: false,
+            solo: false,
+            fader: FaderSide::None,
             clips: vec![None; columns],
             active: None,
         }
@@ -91,21 +108,37 @@ impl Layer {
     pub fn active_clip(&self) -> Option<&Clip> {
         self.active.and_then(|c| self.clips.get(c)?.as_ref())
     }
-
-    /// Whether this layer contributes to the output.
-    pub fn is_visible(&self) -> bool {
-        !self.bypass && self.opacity > 0.0 && self.active_clip().is_some()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Master {
     pub opacity: f32,
+    /// 0 is full A, 1 is full B. Both sides are at full level at 0.5.
+    #[serde(default = "Master::default_crossfader")]
+    pub crossfader: f32,
+}
+
+impl Master {
+    fn default_crossfader() -> f32 {
+        0.5
+    }
+
+    /// Level applied to layers on `side`.
+    pub fn fader_level(&self, side: FaderSide) -> f32 {
+        match side {
+            FaderSide::None => 1.0,
+            FaderSide::A => (2.0 * (1.0 - self.crossfader)).clamp(0.0, 1.0),
+            FaderSide::B => (2.0 * self.crossfader).clamp(0.0, 1.0),
+        }
+    }
 }
 
 impl Default for Master {
     fn default() -> Self {
-        Self { opacity: 1.0 }
+        Self {
+            opacity: 1.0,
+            crossfader: Self::default_crossfader(),
+        }
     }
 }
 
@@ -168,6 +201,19 @@ impl Composition {
         comp.layers[1].blend = BlendMode::Screen;
         comp.layers[2].opacity = 0.5;
         comp
+    }
+
+    /// Final opacity of a layer in the output: its opacity, crossfader, bypass and
+    /// solo combined. Zero when the layer is not playing.
+    pub fn layer_gain(&self, index: usize) -> f32 {
+        let Some(layer) = self.layers.get(index) else {
+            return 0.0;
+        };
+        let any_solo = self.layers.iter().any(|l| l.solo);
+        if layer.bypass || (any_solo && !layer.solo) || layer.active_clip().is_none() {
+            return 0.0;
+        }
+        layer.opacity * self.master.fader_level(layer.fader)
     }
 
     pub fn layer_mut(&mut self, layer: usize) -> Result<&mut Layer> {

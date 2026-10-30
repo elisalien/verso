@@ -65,6 +65,7 @@ pub struct VersoApp {
     pub(crate) status: String,
     pub(crate) controls: crate::control_ui::Controls,
     pub(crate) scripts: crate::scripts_ui::ScriptsState,
+    pub(crate) outputs: crate::outputs::Outputs,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
 }
@@ -116,6 +117,7 @@ impl VersoApp {
             pending: Vec::new(),
             controls: Default::default(),
             scripts: Default::default(),
+            outputs: Default::default(),
         })
     }
 
@@ -211,7 +213,9 @@ impl VersoApp {
             self.clip_monitor
                 .render(device, queue, &mut encoder, (), &source, time)
         });
+        self.outputs.capture(device, &mut encoder, &self.renderer);
         queue.submit([encoder.finish()]);
+        self.outputs.deliver(device);
 
         let mut egui_renderer = self.render_state.renderer.write();
         for key in new_cells {
@@ -382,6 +386,7 @@ impl VersoApp {
             });
             ui.menu_button("Output", |ui| {
                 ui.checkbox(&mut self.output_open, "Output Window (F2)");
+                self.outputs_menu(ui);
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

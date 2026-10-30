@@ -7,8 +7,9 @@ use crate::app::{PropsTab, VersoApp};
 use crate::grid::SourceTemplate;
 use crate::{theme, widgets};
 
-/// Draws `texture` as large as fits in `size`, letterboxed on black.
-fn monitor_image(ui: &mut egui::Ui, texture: Option<TextureId>, size: Vec2, aspect: f32) {
+/// Draws `texture` as large as fits in `size`, letterboxed on black. Returns
+/// the monitor rectangle.
+fn monitor_image(ui: &mut egui::Ui, texture: Option<TextureId>, size: Vec2, aspect: f32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
@@ -26,6 +27,7 @@ fn monitor_image(ui: &mut egui::Ui, texture: Option<TextureId>, size: Vec2, aspe
         );
     }
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    rect
 }
 
 fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
@@ -427,7 +429,24 @@ impl VersoApp {
             ui.vertical(|ui| {
                 ui.set_width(width);
                 widgets::header(ui, "Preview");
-                monitor_image(ui, clip_texture, Vec2::new(width, height), clip_aspect);
+                let monitor =
+                    monitor_image(ui, clip_texture, Vec2::new(width, height), clip_aspect);
+                // Launch counter of the selected slot.
+                if let Some((layer, column)) = self.selected_clip {
+                    let launches = self.comp.layers[layer].launch_count(column);
+                    let painter = ui.painter_at(monitor);
+                    let galley = painter.layout_no_wrap(
+                        format!("× {launches}"),
+                        egui::FontId::monospace(12.0),
+                        theme::BG_DEEP,
+                    );
+                    let badge = Rect::from_min_size(
+                        monitor.right_bottom() - galley.size() - Vec2::new(14.0, 10.0),
+                        galley.size() + Vec2::new(8.0, 4.0),
+                    );
+                    painter.rect_filled(badge, 3.0, theme::ACCENT);
+                    painter.galley(badge.min + Vec2::new(4.0, 2.0), galley, theme::BG_DEEP);
+                }
             });
             ui.vertical(|ui| {
                 ui.set_width(width);

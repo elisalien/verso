@@ -17,6 +17,7 @@ rfd = "0.17.2"
 verso-media.workspace = true
 verso-control.workspace = true
 verso-script.workspace = true
+verso-io.workspace = true
 
 [dev-dependencies]
 pollster = "1.0.1"

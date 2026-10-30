@@ -8,6 +8,7 @@
 //! composition. Composition effects run last, then the master writes the output.
 
 mod effects;
+mod grab;
 mod media;
 mod thumbnails;
 
@@ -17,6 +18,7 @@ use bytemuck::{Pod, Zeroable};
 use verso_core::{BlendMode, Composition, Effect, Source};
 
 pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind};
+pub use grab::{FrameGrabber, GrabbedFrame};
 pub use media::{MediaTexture, MediaView};
 pub use thumbnails::Thumbnails;
 

@@ -346,6 +346,21 @@ impl VersoApp {
                     FontId::proportional(10.5),
                     theme::TEXT,
                 );
+                // Launch counter of this slot, bottom right over the name strip.
+                let launches = self.comp.layers[layer].launch_count(column);
+                if launches > 0 {
+                    let galley = painter.layout_no_wrap(
+                        launches.to_string(),
+                        FontId::monospace(10.0),
+                        theme::BG_DEEP,
+                    );
+                    let badge = Rect::from_min_size(
+                        label.right_center() - Vec2::new(galley.size().x + 8.0, 6.5),
+                        Vec2::new(galley.size().x + 6.0, 13.0),
+                    );
+                    painter.rect_filled(badge, 3.0, theme::ACCENT);
+                    painter.galley(badge.center() - galley.size() / 2.0, galley, theme::BG_DEEP);
+                }
             }
             (Some(clip), None) => {
                 painter.rect_filled(rect, 2.0, theme::BG_RAISED);
@@ -432,6 +447,16 @@ impl VersoApp {
             }
         }
         ui.separator();
+        let launches = self.comp.layers[layer].launch_count(column);
+        if ui
+            .add_enabled(
+                launches > 0,
+                egui::Button::new(format!("Reset Counter ({launches})")),
+            )
+            .clicked()
+        {
+            self.send(Command::ResetLaunchCount { layer, column });
+        }
         if ui.button("Clear").clicked() {
             self.send(Command::SetClip {
                 layer,

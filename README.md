@@ -47,6 +47,8 @@ cargo run --release -p verso-app
 | **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
 | `Esc` | Clear all layers |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
+| Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
+| Cell badge | Times that slot was launched; right-click › Reset Counter |
 
 ## Workspace
 
@@ -56,6 +58,7 @@ cargo run --release -p verso-app
 | `verso-media` | Image decoding and FFmpeg video playback, no GPU dependency |
 | `verso-control` | OSC, MIDI, audio analysis and tap tempo |
 | `verso-script` | Sandboxed Lua 5.4 scripts |
+| `verso-io` | NDI output, runtime loaded at run time |
 | `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
@@ -79,6 +82,8 @@ Lua scripts define `frame(t)` and/or `beat(n)` and drive the composition with
 using the OSC addresses. See [scripts/beat-chase.lua](scripts/beat-chase.lua).
 Scripts are saved in the composition and run sandboxed (no file or OS access,
 endless loops are stopped).
+
+NDI® is a registered trademark of Vizrt NDI AB.
 
 ## Test
 

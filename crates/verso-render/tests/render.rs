@@ -4,7 +4,7 @@
 use verso_core::{
     BlendMode, Clip, Command, Composition, Effect, EffectEdit, EffectTarget, ParamValue, Source,
 };
-use verso_render::{MediaTexture, MediaView, Renderer};
+use verso_render::{FrameGrabber, MediaTexture, MediaView, Renderer};
 
 struct Gpu {
     device: wgpu::Device,
@@ -492,4 +492,32 @@ fn transition_crossfades_between_clips() {
     frame(&comp, 20.0);
     assert!(close(frame(&comp, 21.0), [0, 188, 0]));
     assert!(close(frame(&comp, 23.0), [0, 0, 0]));
+}
+
+#[test]
+fn grabber_reads_frames_back_without_blocking() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut grabber = FrameGrabber::new(&gpu.device, renderer.size());
+    let mut frame = None;
+    for _ in 0..50 {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+        grabber.capture(&mut encoder, renderer.output_texture());
+        gpu.queue.submit([encoder.finish()]);
+        grabber.after_submit();
+        if let Some(f) = grabber.poll(&gpu.device) {
+            frame = Some(f);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let frame = frame.expect("a frame within 50 renders");
+    assert_eq!((frame.width, frame.height), (comp.width, comp.height));
+    assert_eq!(frame.data.len(), (comp.width * comp.height * 4) as usize);
+    assert!(frame.data.chunks(4).all(|p| p == [255, 0, 0, 255]));
 }

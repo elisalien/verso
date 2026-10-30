@@ -141,6 +141,10 @@ pub struct Layer {
     /// Index into [`Composition::groups`].
     #[serde(default)]
     pub group: Option<usize>,
+    /// Times the clip of each column was launched. Belongs to the slot, not
+    /// to the media: replacing the clip keeps the count.
+    #[serde(default)]
+    pub launches: Vec<u32>,
 }
 
 impl Layer {
@@ -157,6 +161,23 @@ impl Layer {
             effects: Vec::new(),
             transition: 0.0,
             group: None,
+            launches: vec![0; columns],
+        }
+    }
+
+    /// Times the slot in `column` was launched.
+    pub fn launch_count(&self, column: usize) -> u32 {
+        self.launches.get(column).copied().unwrap_or(0)
+    }
+
+    /// Plays the clip in `column`, counting the launch; an empty slot ejects.
+    fn launch(&mut self, column: usize) {
+        self.active = self.clips[column].as_ref().map(|_| column);
+        if self.active.is_some() {
+            if self.launches.len() <= column {
+                self.launches.resize(column + 1, 0);
+            }
+            self.launches[column] += 1;
         }
     }
 
@@ -402,16 +423,14 @@ impl Composition {
 
     pub(crate) fn trigger_clip(&mut self, layer: usize, column: usize) -> Result<()> {
         self.check_column(column)?;
-        let layer = self.layer_mut(layer)?;
-        // Triggering an empty cell ejects the layer.
-        layer.active = layer.clips[column].as_ref().map(|_| column);
+        self.layer_mut(layer)?.launch(column);
         Ok(())
     }
 
     pub(crate) fn trigger_column(&mut self, column: usize) -> Result<()> {
         self.check_column(column)?;
         for layer in &mut self.layers {
-            layer.active = layer.clips[column].as_ref().map(|_| column);
+            layer.launch(column);
         }
         Ok(())
     }
@@ -427,6 +446,7 @@ impl Composition {
         });
         for layer in &mut self.layers {
             layer.clips.push(None);
+            layer.launches.resize(layer.clips.len(), 0);
         }
     }
 }

@@ -166,7 +166,7 @@ Un groupe est rendu à la position de sa couche la plus basse.
 | Tap tempo, horloge en beats | Synchro des LFO | v0.3 ✅ |
 | Scripts Lua (`mlua`, Lua 5.4) | Automations | v0.3 ✅ |
 | Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
-| NDI | Vidéo réseau entrée/sortie | v0.4 |
+| NDI® | Sortie vidéo réseau ✅ ; entrée à faire | v0.4 |
 | Ableton Link | Synchro tempo | v0.4 |
 | SMPTE / LTC | Timecode | v0.4 |
 | DMX / Art-Net / sACN | Lumières, pixel mapping | plus tard |
@@ -228,6 +228,25 @@ d'adresses que l'OSC. Bac à sable : bibliothèques `math`, `string`, `table`,
 d'instructions par appel : une boucle infinie arrête le script, pas le rendu.
 Un script en erreur s'arrête jusqu'à sa prochaine modification.
 
+### Sorties vers d'autres applications
+
+Capture asynchrone de l'image de sortie (`FrameGrabber`, 3 buffers mappables) :
+le rendu ne bloque jamais sur la relecture, l'image arrive avec 1 à 2 frames de
+latence. Une sortie active seulement déclenche la capture.
+
+NDI® : runtime chargé à l'exécution (`NDI_RUNTIME_DIR_V6`/`V5`), aucun SDK requis
+pour compiler. Envoi RGBA sur un thread dédié, images sautées si l'envoi est en
+retard. Vérifié par un aller-retour émetteur → récepteur NDI local en test.
+Spout (Windows) et Syphon (macOS) restent à faire.
+
+### Compteur de lancements
+
+Chaque case (couche × colonne) compte ses lancements, quelle que soit la
+source (clic, colonne, MIDI, OSC, script). Le compteur appartient à la case,
+pas au média : remplacer le clip le conserve. Affiché sur la vignette et sur
+le moniteur Preview, remis à zéro par clic droit. Enregistré avec la
+composition.
+
 ## 9. Sorties et mapping (v0.5)
 
 - Sortie plein écran par moniteur, fenêtre flottante.
@@ -265,6 +284,7 @@ Verso/
 │   ├── verso-media/        décodage images et vidéo FFmpeg (sans GPU)
 │   ├── verso-control/      OSC, MIDI, analyse audio, tap tempo
 │   ├── verso-script/       scripts Lua en bac à sable
+│   ├── verso-io/           sorties vers d'autres applications (NDI)
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel

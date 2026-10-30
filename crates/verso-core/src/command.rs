@@ -102,6 +102,10 @@ pub enum Command {
     SetMasterOpacity(f32),
     SetCrossfader(f32),
     SetBpm(f32),
+    ResetLaunchCount {
+        layer: usize,
+        column: usize,
+    },
     AddLayer,
     AddColumn,
 }
@@ -201,6 +205,11 @@ impl Composition {
             Command::SetCrossfader(value) => self.master.crossfader = value.clamp(0.0, 1.0),
             Command::SetBpm(bpm) => self.bpm = bpm.clamp(20.0, 500.0),
             Command::SetMasterOpacity(opacity) => self.master.opacity = opacity.clamp(0.0, 1.0),
+            Command::ResetLaunchCount { layer, column } => {
+                if let Some(count) = self.layer_mut(layer)?.launches.get_mut(column) {
+                    *count = 0;
+                }
+            }
             Command::AddLayer => self.add_layer(),
             Command::AddColumn => self.add_column(),
         }
@@ -488,6 +497,56 @@ mod tests {
             comp.apply(Command::RemoveScript(4)),
             Err(Error::NoScript(4))
         ));
+    }
+
+    #[test]
+    fn launches_are_counted_per_slot() {
+        let mut comp = Composition::demo();
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 2,
+        })
+        .unwrap();
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 2,
+        })
+        .unwrap();
+        comp.apply(Command::TriggerColumn(2)).unwrap();
+        assert_eq!(comp.layers[0].launch_count(2), 3);
+        // Same column, other layer: its own count.
+        assert_eq!(comp.layers[1].launch_count(2), 1);
+        assert_eq!(comp.layers[0].launch_count(1), 0);
+
+        // Empty slots eject without counting.
+        comp.apply(Command::SetClip {
+            layer: 0,
+            column: 4,
+            clip: None,
+        })
+        .unwrap();
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 4,
+        })
+        .unwrap();
+        assert_eq!(comp.layers[0].launch_count(4), 0);
+
+        // Replacing the clip keeps the slot's count; reset clears it.
+        let clip = comp.layers[1].clips[0].clone();
+        comp.apply(Command::SetClip {
+            layer: 0,
+            column: 2,
+            clip,
+        })
+        .unwrap();
+        assert_eq!(comp.layers[0].launch_count(2), 3);
+        comp.apply(Command::ResetLaunchCount {
+            layer: 0,
+            column: 2,
+        })
+        .unwrap();
+        assert_eq!(comp.layers[0].launch_count(2), 0);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use verso_core::{BlendMode, Composition, Effect, Source};
 
-pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind};
+pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind, ShaderKind};
 pub use grab::{FrameGrabber, GrabbedFrame};
 pub use media::{MediaTexture, MediaView};
 pub use thumbnails::Thumbnails;
@@ -104,7 +104,7 @@ impl GeneratorParams {
         let (kind, color, speed) = match *source {
             Source::Solid { color } => (SOLID_KIND, color, 0.0),
             Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
-            Source::Image { .. } | Source::Video { .. } => return None,
+            Source::Image { .. } | Source::Video { .. } | Source::Shader(_) => return None,
         };
         Some(Self {
             time,
@@ -400,8 +400,10 @@ struct Frame<'a> {
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     pipelines: &'a Pipelines,
-    effects: &'a HashMap<String, wgpu::RenderPipeline>,
+    effects: &'a HashMap<(String, wgpu::TextureFormat), wgpu::RenderPipeline>,
     library: &'a EffectLibrary,
+    /// Input of generator shaders.
+    blank: &'a wgpu::TextureView,
     size: (u32, u32),
     time: f32,
 }
@@ -481,42 +483,58 @@ impl Frame<'_> {
     ) -> bool {
         let mut ran = false;
         for effect in chain.iter().filter(|e| !e.bypass) {
-            let (Some(def), Some(pipeline)) =
-                (self.library.get(&effect.id), self.effects.get(&effect.id))
-            else {
-                continue;
-            };
-            let params = EffectParams {
-                time: self.time,
-                aspect: self.size.0 as f32 / self.size.1 as f32,
-                width: self.size.0 as f32,
-                height: self.size.1 as f32,
-                values: def.pack(effect),
-            };
-            let u = uniforms.push(self.device, self.queue, bytemuck::bytes_of(&params));
             let (current, out) = pair.split();
             let source = match (ran, input) {
                 (false, Some(view)) => view,
                 _ => &current.view,
             };
-            let group = self.bind(
-                &self.pipelines.effect_layout,
-                uniforms,
-                u,
-                &[
-                    wgpu::BindingResource::TextureView(source),
-                    wgpu::BindingResource::Sampler(&self.pipelines.sampler),
-                ],
-            );
-            let mut rp = pass(encoder, &out.view, true);
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
-            drop(rp);
-            pair.flip();
-            ran = true;
+            if self.draw_effect(encoder, uniforms, effect, source, &out.view, WORK_FORMAT) {
+                pair.flip();
+                ran = true;
+            }
         }
         ran
+    }
+
+    /// Draws one effect from `input` into `output`. Returns `false` when the
+    /// effect is unknown or not compiled for `format`.
+    fn draw_effect(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        uniforms: &mut UniformPool,
+        effect: &Effect,
+        input: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+    ) -> bool {
+        let (Some(def), Some(pipeline)) = (
+            self.library.get(&effect.id),
+            self.effects.get(&(effect.id.clone(), format)),
+        ) else {
+            return false;
+        };
+        let params = EffectParams {
+            time: self.time,
+            aspect: self.size.0 as f32 / self.size.1 as f32,
+            width: self.size.0 as f32,
+            height: self.size.1 as f32,
+            values: def.pack(effect),
+        };
+        let u = uniforms.push(self.device, self.queue, bytemuck::bytes_of(&params));
+        let group = self.bind(
+            &self.pipelines.effect_layout,
+            uniforms,
+            u,
+            &[
+                wgpu::BindingResource::TextureView(input),
+                wgpu::BindingResource::Sampler(&self.pipelines.sampler),
+            ],
+        );
+        let mut rp = pass(encoder, output, true);
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, &group, &[]);
+        rp.draw(0..3, 0..1);
+        true
     }
 }
 
@@ -524,8 +542,10 @@ pub struct Renderer {
     size: (u32, u32),
     pipelines: Pipelines,
     library: EffectLibrary,
-    /// Compiled effect pipelines by effect id.
-    effects: HashMap<String, wgpu::RenderPipeline>,
+    /// Compiled effect pipelines by effect id and target format.
+    effects: HashMap<(String, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// 1×1 transparent texture: the input of generator shaders.
+    blank: Target,
     composition: Pair,
     group: Pair,
     output: Target,
@@ -614,6 +634,7 @@ impl Renderer {
             pipelines,
             library: EffectLibrary::builtin(),
             effects: HashMap::new(),
+            blank: Target::new(device, "blank", (1, 1), WORK_FORMAT),
             composition: Pair::new(device, "composition", size),
             group: Pair::new(device, "group", size),
             output: Target::new(device, "output", size, OUTPUT_FORMAT),
@@ -664,31 +685,79 @@ impl Renderer {
         let layers = comp.layers.iter().flat_map(|l| {
             l.effects
                 .iter()
-                .chain(l.clips.iter().flatten().flat_map(|c| &c.effects))
+                .chain(l.clips.iter().flatten().flat_map(|c| {
+                    let source = match &c.source {
+                        Source::Shader(effect) => Some(effect),
+                        _ => None,
+                    };
+                    c.effects.iter().chain(source)
+                }))
         });
         let used = comp
             .effects
             .iter()
             .chain(comp.groups.iter().flat_map(|g| &g.effects))
             .chain(layers);
-        for effect in used {
-            if self.effects.contains_key(&effect.id) {
-                continue;
-            }
-            let Some(def) = self.library.get(&effect.id) else {
-                continue;
-            };
-            let fragment = shader(device, &def.name, &def.fragment);
-            let pipeline = pipeline(
-                device,
-                &def.name,
-                (&self.pipelines.effect_vs, "vs_main"),
-                (&fragment, def.entry),
-                &self.pipelines.effect_layout,
-                WORK_FORMAT,
-            );
-            self.effects.insert(effect.id.clone(), pipeline);
+        let ids: Vec<String> = used.map(|e| e.id.clone()).collect();
+        for id in ids {
+            self.compile_effect(device, &id, WORK_FORMAT);
         }
+    }
+
+    /// Compiles the pipeline of effect `id` for `format` if needed.
+    fn compile_effect(&mut self, device: &wgpu::Device, id: &str, format: wgpu::TextureFormat) {
+        let key = (id.to_owned(), format);
+        if self.effects.contains_key(&key) {
+            return;
+        }
+        let Some(def) = self.library.get(id) else {
+            return;
+        };
+        let fragment = shader(device, &def.name, &def.fragment);
+        let pipeline = pipeline(
+            device,
+            &def.name,
+            (&self.pipelines.effect_vs, "vs_main"),
+            (&fragment, def.entry),
+            &self.pipelines.effect_layout,
+            format,
+        );
+        self.effects.insert(key, pipeline);
+    }
+
+    /// Renders a generator shader into `output`, a [`OUTPUT_FORMAT`] texture of
+    /// `size`, for clip previews. Call after [`Self::render`] in the same frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_shader_preview(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        effect: &Effect,
+        output: &wgpu::TextureView,
+        size: (u32, u32),
+        time: f32,
+    ) -> bool {
+        self.compile_effect(device, &effect.id, OUTPUT_FORMAT);
+        let frame = Frame {
+            device,
+            queue,
+            pipelines: &self.pipelines,
+            effects: &self.effects,
+            library: &self.library,
+            blank: &self.blank.view,
+            size,
+            time,
+        };
+        drop(pass(encoder, &self.blank.view, true));
+        frame.draw_effect(
+            encoder,
+            &mut self.uniforms,
+            effect,
+            &self.blank.view,
+            output,
+            OUTPUT_FORMAT,
+        )
     }
 
     /// Renders `comp` at `time` seconds into the output texture.
@@ -718,9 +787,11 @@ impl Renderer {
             pipelines: &self.pipelines,
             effects: &self.effects,
             library: &self.library,
+            blank: &self.blank.view,
             size: self.size,
             time,
         };
+        drop(pass(encoder, &self.blank.view, true));
         let uniforms = &mut self.uniforms;
         let composition = &mut self.composition;
         let group_pair = &mut self.group;
@@ -840,6 +911,16 @@ fn render_layer(
     state.work.clear(encoder);
     if let Some(clip) = layer.active_clip() {
         let aspect = frame.size.0 as f32 / frame.size.1 as f32;
+        if let Source::Shader(effect) = &clip.source {
+            frame.draw_effect(
+                encoder,
+                uniforms,
+                effect,
+                frame.blank,
+                &state.work.current().view,
+                WORK_FORMAT,
+            );
+        }
         let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
             Some(params) => {
                 let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));

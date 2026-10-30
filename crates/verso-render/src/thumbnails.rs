@@ -24,7 +24,7 @@ pub struct Thumbnails<K> {
     thumbs: HashMap<K, Thumb>,
 }
 
-impl<K: Hash + Eq> Thumbnails<K> {
+impl<K: Hash + Eq + Clone> Thumbnails<K> {
     pub fn new(device: &wgpu::Device, size: (u32, u32)) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("thumbnail"),
@@ -61,6 +61,24 @@ impl<K: Hash + Eq> Thumbnails<K> {
         let Some(params) = GeneratorParams::new(source, time, aspect) else {
             return false;
         };
+        let created = self.thumb(device, key.clone()).1;
+        let thumb = &self.thumbs[&key];
+        queue.write_buffer(&thumb.params, 0, bytemuck::bytes_of(&params));
+        let mut rp = pass(encoder, &thumb.target.view, true);
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &thumb.group, &[]);
+        rp.draw(0..3, 0..1);
+        created
+    }
+
+    /// The preview texture for `key`, for drawing into it with another
+    /// renderer (generator shaders). Returns the view and whether it is new.
+    pub fn target(&mut self, device: &wgpu::Device, key: K) -> (&wgpu::TextureView, bool) {
+        let (thumb, created) = self.thumb(device, key);
+        (&thumb.target.view, created)
+    }
+
+    fn thumb(&mut self, device: &wgpu::Device, key: K) -> (&Thumb, bool) {
         let mut created = false;
         let thumb = self.thumbs.entry(key).or_insert_with(|| {
             created = true;
@@ -79,12 +97,7 @@ impl<K: Hash + Eq> Thumbnails<K> {
                 group,
             }
         });
-        queue.write_buffer(&thumb.params, 0, bytemuck::bytes_of(&params));
-        let mut rp = pass(encoder, &thumb.target.view, true);
-        rp.set_pipeline(&self.pipeline);
-        rp.set_bind_group(0, &thumb.group, &[]);
-        rp.draw(0..3, 0..1);
-        created
+        (thumb, created)
     }
 
     pub fn view(&self, key: &K) -> Option<&wgpu::TextureView> {

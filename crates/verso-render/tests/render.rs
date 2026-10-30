@@ -521,3 +521,42 @@ fn grabber_reads_frames_back_without_blocking() {
     assert_eq!(frame.data.len(), (comp.width * comp.height * 4) as usize);
     assert!(frame.data.chunks(4).all(|p| p == [255, 0, 0, 255]));
 }
+
+#[test]
+fn generator_shader_is_a_clip_source() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("solid.glsl");
+    std::fs::write(
+        &path,
+        "// name: Solid Green\nvoid mainImage(out vec4 c, in vec2 p) { c = vec4(0.0, 1.0, 0.0, 1.0); }\n",
+    )
+    .unwrap();
+    let id = path.display().to_string();
+    let mut comp = Composition::new("t", 1, 1);
+    comp.width = 16;
+    comp.height = 8;
+    let clip = Clip::new("Shader", Source::Shader(Effect::new(&id, "Solid Green")));
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: Some(clip),
+    })
+    .unwrap();
+    comp.apply(Command::SetLayerBlend {
+        layer: 0,
+        blend: BlendMode::Alpha,
+    })
+    .unwrap();
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let def = renderer.library_mut().load_file(&path).unwrap();
+    assert_eq!(def.kind, verso_render::ShaderKind::Generator);
+    let got = first_pixel(&render_frame(&gpu, &mut renderer, &comp, &[], 0.0));
+    assert!(close(got, [0, 255, 0]), "{got:?}");
+}

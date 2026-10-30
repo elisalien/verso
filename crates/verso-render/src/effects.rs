@@ -94,6 +94,17 @@ impl ParamDef {
         }
     }
 
+    /// GLSL type of the variable holding this parameter in an ISF shader.
+    fn glsl_type(&self, kind: &str) -> &'static str {
+        match (&self.kind, kind) {
+            (ParamKind::Float { .. }, "long") => "int",
+            (ParamKind::Float { .. }, _) => "float",
+            (ParamKind::Bool { .. }, _) => "bool",
+            (ParamKind::Color { .. }, _) => "vec4",
+            (ParamKind::Point { .. }, _) => "vec2",
+        }
+    }
+
     fn glsl_access(&self, kind: &str) -> String {
         let (v, c) = (self.slot / 4, ["x", "y", "z", "w"][self.slot % 4]);
         match (&self.kind, kind) {
@@ -106,12 +117,24 @@ impl ParamDef {
     }
 }
 
+/// What a shader does with its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderKind {
+    /// Processes an image: used as an effect.
+    Filter,
+    /// Ignores its input and makes an image: used as a clip source.
+    Generator,
+}
+
 /// A compiled-to-WGSL effect, ready for the renderer.
 #[derive(Debug, Clone)]
 pub struct EffectDef {
     pub id: String,
     pub name: String,
     pub category: String,
+    pub kind: ShaderKind,
+    /// Author and origin, kept for attribution.
+    pub credit: Option<String>,
     pub params: Vec<ParamDef>,
     /// Fragment module: bindings `0` uniform, `1` input texture, `2` sampler,
     /// input `@location(0)` UV (top-left origin).
@@ -218,6 +241,8 @@ fn premultiply(c: vec4<f32>) -> vec4<f32> {
 pub fn parse_wgsl(id: &str, source: &str) -> Result<EffectDef, String> {
     let mut name = None;
     let mut category = "Other".to_owned();
+    let mut kind = ShaderKind::Filter;
+    let mut credit = None;
     let mut params = Vec::new();
     for line in source.lines() {
         let Some(comment) = line.trim().strip_prefix("//") else {
@@ -230,6 +255,8 @@ pub fn parse_wgsl(id: &str, source: &str) -> Result<EffectDef, String> {
         match key.trim() {
             "name" => name = Some(value.to_owned()),
             "category" => category = value.to_owned(),
+            "kind" if value == "generator" => kind = ShaderKind::Generator,
+            "author" => credit = Some(value.to_owned()),
             "param" => params.push(parse_param(value)?),
             _ => {}
         }
@@ -255,6 +282,8 @@ pub fn parse_wgsl(id: &str, source: &str) -> Result<EffectDef, String> {
         id: id.to_owned(),
         name,
         category,
+        kind,
+        credit,
         params,
         fragment,
         entry: "fs_main",
@@ -328,6 +357,21 @@ vec4 verso_sample(vec2 c) {
 #define IMG_SIZE(image) RENDERSIZE
 ";
 
+const RESERVED_IN_GLSL_450: [&str; 12] = [
+    "smooth",
+    "flat",
+    "noperspective",
+    "centroid",
+    "sample",
+    "patch",
+    "subroutine",
+    "precise",
+    "buffer",
+    "shared",
+    "coherent",
+    "restrict",
+];
+
 fn json_num(value: Option<&serde_json::Value>, fallback: f32) -> f32 {
     value
         .and_then(|v| v.as_f64())
@@ -400,49 +444,174 @@ pub fn parse_isf(id: &str, fallback_name: &str, source: &str) -> Result<EffectDe
     assign_slots(&mut params)?;
 
     let mut glsl = String::from(ISF_PRELUDE);
+    // Parameters are globals set at the start of `main`, so a shader may reuse
+    // their names locally, which macros would break.
+    // Identifiers valid in the GLSL 1.x of most ISF shaders but reserved in 4.50.
+    for word in RESERVED_IN_GLSL_450 {
+        if body.contains(word) {
+            glsl.push_str(&format!("#define {word} verso_kw_{word}\n"));
+        }
+    }
+    let mut assignments = String::new();
     for (param, ty) in params.iter().zip(&isf_types) {
-        glsl.push_str(&format!(
-            "#define {} {}\n",
+        glsl.push_str(&format!("{} {};\n", param.glsl_type(ty), param.name));
+        assignments.push_str(&format!(
+            "    {} = {};\n",
             param.name,
             param.glsl_access(ty)
         ));
     }
     glsl.push_str("#define main verso_isf_main\n");
     for line in body.lines() {
+        let trimmed = line.trim_start();
         // The prelude sets the version; ISF bodies often declare an older one.
-        if !line.trim_start().starts_with("#version") {
+        // Some shaders also declare their inputs as uniforms themselves.
+        let declares_input = trimmed.starts_with("uniform ")
+            && trimmed
+                .trim_end()
+                .trim_end_matches(';')
+                .split_whitespace()
+                .last()
+                .is_some_and(|word| params.iter().any(|p| p.name == word));
+        if !trimmed.starts_with("#version") && !declares_input {
             glsl.push_str(line);
             glsl.push('\n');
         }
     }
-    glsl.push_str(
-        "#undef main\nvoid main() {\n    verso_isf_main();\n    verso_frag_color = vec4(verso_frag_color.rgb * verso_frag_color.a, verso_frag_color.a);\n}\n",
-    );
+    glsl.push_str(&format!(
+        "#undef main\nvoid main() {{\n{assignments}    verso_isf_main();\n    verso_frag_color = vec4(verso_frag_color.rgb * verso_frag_color.a, verso_frag_color.a);\n}}\n"
+    ));
 
-    let module = naga::front::glsl::Frontend::default()
-        .parse(&naga::ShaderStage::Fragment.into(), &glsl)
-        .map_err(|e| e.emit_to_string(&glsl))?;
-    let info = naga::valid::Validator::new(
-        naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::empty(),
-    )
-    .validate(&module)
-    .map_err(|e| e.emit_to_string(&glsl))?;
-    let fragment =
-        naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
-            .map_err(|e| e.to_string())?;
-    validate_wgsl(&fragment)?;
+    let fragment = glsl_to_wgsl(&glsl)?;
 
     let name = header["NAME"]
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| fallback_name.to_owned());
     let category = header["CATEGORIES"][0].as_str().unwrap_or("ISF").to_owned();
+    let credit = header["CREDIT"].as_str().map(str::to_owned);
     Ok(EffectDef {
         id: id.to_owned(),
         name,
         category,
+        kind: if images == 0 {
+            ShaderKind::Generator
+        } else {
+            ShaderKind::Filter
+        },
+        credit,
         params,
+        fragment,
+        entry: "main",
+    })
+}
+
+/// Compiles a GLSL 4.50 fragment shader to validated WGSL.
+fn glsl_to_wgsl(glsl: &str) -> Result<String, String> {
+    let module = naga::front::glsl::Frontend::default()
+        .parse(&naga::ShaderStage::Fragment.into(), glsl)
+        .map_err(|e| e.emit_to_string(glsl))?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .map_err(|e| e.emit_to_string(glsl))?;
+    let fragment =
+        naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+            .map_err(|e| e.to_string())?;
+    validate_wgsl(&fragment)?;
+    Ok(fragment)
+}
+
+const SHADERTOY_PRELUDE: &str = "#version 450
+layout(set = 0, binding = 0, std140) uniform VersoEffect {
+    float verso_time;
+    float verso_aspect;
+    vec2 RENDERSIZE;
+    vec4 verso_values[8];
+};
+layout(set = 0, binding = 1) uniform texture2D verso_input;
+layout(set = 0, binding = 2) uniform sampler verso_sampler;
+layout(location = 0) in vec2 verso_uv;
+layout(location = 0) out vec4 verso_frag_color;
+
+// ShaderToy uses a bottom-left origin.
+vec4 verso_channel(vec2 c) {
+    return textureLod(sampler2D(verso_input, verso_sampler), vec2(c.x, 1.0 - c.y), 0.0);
+}
+
+#define iTime verso_time
+#define iTimeDelta (1.0 / 60.0)
+#define iFrame int(verso_time * 60.0)
+#define iFrameRate 60.0
+#define iResolution vec3(RENDERSIZE, 1.0)
+#define iMouse vec4(0.0)
+#define iDate vec4(2026.0, 1.0, 1.0, verso_time)
+#define iSampleRate 44100.0
+#define iChannelTime float[4](verso_time, verso_time, verso_time, verso_time)
+#define iChannelResolution vec3[4](vec3(RENDERSIZE, 1.0), vec3(RENDERSIZE, 1.0), vec3(RENDERSIZE, 1.0), vec3(RENDERSIZE, 1.0))
+#define iChannel0 0
+#define texture(channel, coord) verso_channel(coord)
+#define textureLod(channel, coord, lod) verso_channel(coord)
+#define texelFetch(channel, coord, lod) verso_channel((vec2(coord) + 0.5) / RENDERSIZE)
+#define textureSize(channel, lod) ivec2(RENDERSIZE)
+";
+
+/// Translates single-pass ShaderToy code (a `mainImage` function, with any
+/// Common tab code before it). `iChannel0` becomes the effect input, which
+/// makes the shader a filter; without it the shader is a generator.
+///
+/// Metadata comes from `// name:`, `// author:` and `// url:` header lines.
+pub fn parse_shadertoy(id: &str, fallback_name: &str, source: &str) -> Result<EffectDef, String> {
+    let mut name = None;
+    let mut credit = Vec::new();
+    for line in source
+        .lines()
+        .take_while(|l| l.trim_start().starts_with("//"))
+    {
+        let comment = line.trim_start().trim_start_matches('/').trim();
+        match comment.split_once(':') {
+            Some(("name", value)) => name = Some(value.trim().to_owned()),
+            Some(("author", value)) => credit.insert(0, value.trim().to_owned()),
+            Some(("url", value)) => credit.push(value.trim().to_owned()),
+            _ => {}
+        }
+    }
+    if !source.contains("mainImage") {
+        return Err("no mainImage function: not ShaderToy code".into());
+    }
+    if let Some(channel) = ["iChannel1", "iChannel2", "iChannel3"]
+        .iter()
+        .find(|c| source.contains(*c))
+    {
+        return Err(format!(
+            "{channel} is not supported; only iChannel0 (the input image) is"
+        ));
+    }
+    let kind = if source.contains("iChannel0") {
+        ShaderKind::Filter
+    } else {
+        ShaderKind::Generator
+    };
+    let mut glsl = String::from(SHADERTOY_PRELUDE);
+    for line in source.lines() {
+        if !line.trim_start().starts_with("#version") {
+            glsl.push_str(line);
+            glsl.push('\n');
+        }
+    }
+    glsl.push_str(
+        "void main() {\n    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);\n    mainImage(color, vec2(verso_uv.x, 1.0 - verso_uv.y) * RENDERSIZE);\n    verso_frag_color = vec4(max(color.rgb, vec3(0.0)), 1.0);\n}\n",
+    );
+    let fragment = glsl_to_wgsl(&glsl)?;
+    Ok(EffectDef {
+        id: id.to_owned(),
+        name: name.unwrap_or_else(|| fallback_name.to_owned()),
+        category: "ShaderToy".into(),
+        kind,
+        credit: (!credit.is_empty()).then(|| credit.join(" · ")),
+        params: Vec::new(),
         fragment,
         entry: "main",
     })
@@ -508,7 +677,8 @@ impl EffectLibrary {
         let def = match path.extension().and_then(|e| e.to_str()) {
             Some("wgsl") => parse_wgsl(&id, &source),
             Some("fs") => parse_isf(&id, &stem, &source),
-            _ => Err("not an effect file (.wgsl or .fs)".into()),
+            Some("glsl") => parse_shadertoy(&id, &stem, &source),
+            _ => Err("not an effect file (.wgsl, .fs or .glsl)".into()),
         }
         .map_err(|e| format!("{}: {e}", path.display()))?;
         self.insert(def);
@@ -524,7 +694,12 @@ impl EffectLibrary {
         let mut paths: Vec<_> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("wgsl" | "fs")))
+            .filter(|p| {
+                matches!(
+                    p.extension().and_then(|e| e.to_str()),
+                    Some("wgsl" | "fs" | "glsl")
+                )
+            })
             .collect();
         paths.sort();
         paths
@@ -535,6 +710,14 @@ impl EffectLibrary {
 
     pub fn get(&self, id: &str) -> Option<&EffectDef> {
         self.index.get(id).map(|&i| &self.defs[i])
+    }
+
+    /// Definitions of one kind, sorted by category, then name.
+    pub fn sorted_kind(&self, kind: ShaderKind) -> Vec<&EffectDef> {
+        self.sorted()
+            .into_iter()
+            .filter(|d| d.kind == kind)
+            .collect()
     }
 
     /// Definitions sorted by category, then name.
@@ -644,6 +827,63 @@ void main() {
 "#;
 
     #[test]
+    fn shadertoy_generator_and_filter() {
+        let generator = parse_shadertoy(
+            "st",
+            "fallback",
+            "// name: Waves\n// author: someone\n// url: https://www.shadertoy.com/view/abc\n\
+             void mainImage(out vec4 fragColor, in vec2 fragCoord) {\n\
+                 vec2 uv = fragCoord / iResolution.xy;\n\
+                 fragColor = vec4(uv, 0.5 + 0.5 * sin(iTime), 1.0);\n\
+             }\n",
+        )
+        .unwrap();
+        assert_eq!(generator.kind, ShaderKind::Generator);
+        assert_eq!(generator.name, "Waves");
+        assert_eq!(
+            generator.credit.as_deref(),
+            Some("someone · https://www.shadertoy.com/view/abc")
+        );
+
+        let filter = parse_shadertoy(
+            "st2",
+            "Edge",
+            "void mainImage(out vec4 o, in vec2 p) { o = 1.0 - texture(iChannel0, p / iResolution.xy); }",
+        )
+        .unwrap();
+        assert_eq!(filter.kind, ShaderKind::Filter);
+        assert_eq!(filter.name, "Edge");
+
+        let multi = parse_shadertoy(
+            "st3",
+            "x",
+            "void mainImage(out vec4 o, in vec2 p) { o = texture(iChannel1, p); }",
+        );
+        assert!(multi.unwrap_err().contains("iChannel1"));
+        assert!(
+            parse_shadertoy("st4", "x", "void main() {}")
+                .unwrap_err()
+                .contains("mainImage")
+        );
+    }
+
+    #[test]
+    fn isf_without_image_is_a_generator() {
+        let source = ISF_SAMPLE
+            .replace(r#"{"NAME": "inputImage", "TYPE": "image"},"#, "")
+            .replace(
+                "IMG_NORM_PIXEL(inputImage, uv + (center - 0.5))",
+                "vec4(uv, 0.0, 1.0)",
+            );
+        let def = parse_isf("isf", "Gen", &source).unwrap();
+        assert_eq!(def.kind, ShaderKind::Generator);
+        assert_eq!(
+            parse_isf("isf", "x", ISF_SAMPLE).unwrap().kind,
+            ShaderKind::Filter
+        );
+    }
+
+    #[test]
     fn isf_filter_translates() {
         let def = parse_isf("isf", "Sample", ISF_SAMPLE).unwrap();
         assert_eq!(def.name, "Sample");
@@ -672,5 +912,56 @@ void main() {
                 .unwrap_err()
                 .contains("header")
         );
+    }
+}
+
+#[cfg(test)]
+mod corpus {
+    use super::*;
+
+    /// Compatibility report over a folder of shaders:
+    /// `VERSO_SHADER_CORPUS=<dir> cargo test -p verso-render corpus -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn corpus_report() {
+        let Ok(dir) = std::env::var("VERSO_SHADER_CORPUS") else {
+            return;
+        };
+        let mut library = EffectLibrary::default();
+        let errors = library.load_dir(Path::new(&dir));
+        let ok = library.sorted().len();
+        println!("{ok} compiled, {} failed", errors.len());
+        let mut reasons: HashMap<String, usize> = HashMap::new();
+        for e in &errors {
+            let line = e
+                .lines()
+                .find(|l| l.contains("error"))
+                .unwrap_or(e.lines().next().unwrap_or(""));
+            let key: String = line
+                .rsplit(".fs:")
+                .next()
+                .unwrap_or(line)
+                .chars()
+                .take(110)
+                .collect();
+            *reasons.entry(key).or_default() += 1;
+        }
+        let mut reasons: Vec<_> = reasons.into_iter().collect();
+        reasons.sort_by_key(|r| std::cmp::Reverse(r.1));
+        for (reason, count) in reasons.iter().take(15) {
+            println!("{count:3}  {reason}");
+        }
+        if std::env::var("VERSO_SHADER_CORPUS_VERBOSE").is_ok() {
+            for e in &errors {
+                println!(
+                    "----
+{}",
+                    e.lines().take(12).collect::<Vec<_>>().join(
+                        "
+"
+                    )
+                );
+            }
+        }
     }
 }

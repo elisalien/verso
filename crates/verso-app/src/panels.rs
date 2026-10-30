@@ -368,6 +368,37 @@ impl VersoApp {
                     ui.add(egui::Slider::new(speed, 0.0..=4.0));
                     ui.end_row();
                 }
+                Source::Shader(effect) => {
+                    ui.label("Source");
+                    ui.label(&effect.name).on_hover_text(&effect.id);
+                    ui.end_row();
+                    match self.renderer.library().get(&effect.id).cloned() {
+                        Some(def) => {
+                            if let Some(credit) = &def.credit {
+                                ui.label("Credit");
+                                ui.label(
+                                    egui::RichText::new(credit).small().color(theme::TEXT_DIM),
+                                );
+                                ui.end_row();
+                            }
+                            for param in &def.params {
+                                ui.label(&param.name);
+                                let value = def.value(effect, param);
+                                if let (_, Some(value)) =
+                                    crate::effects_ui::param_widget(ui, &param.kind, value)
+                                {
+                                    effect.params.insert(param.name.clone(), value);
+                                }
+                                ui.end_row();
+                            }
+                        }
+                        None => {
+                            ui.label("");
+                            ui.label(egui::RichText::new("Shader not found").color(theme::WARN));
+                            ui.end_row();
+                        }
+                    }
+                }
                 Source::Image { path } => {
                     ui.label("Source");
                     ui.label("Image");
@@ -470,6 +501,7 @@ impl VersoApp {
                 (BrowserTab::Sources, "Sources"),
                 (BrowserTab::Effects, "Effects"),
                 (BrowserTab::Files, "Files"),
+                (BrowserTab::Online, "Online"),
             ],
         );
         ui.separator();
@@ -482,9 +514,27 @@ impl VersoApp {
                 for template in SourceTemplate::all() {
                     self.browser_item(ui, template);
                 }
+                let shaders: Vec<SourceTemplate> = self
+                    .renderer
+                    .library()
+                    .sorted_kind(verso_render::ShaderKind::Generator)
+                    .into_iter()
+                    .map(|def| SourceTemplate {
+                        name: def.name.clone(),
+                        source: Source::Shader(verso_core::Effect::new(&def.id, &def.name)),
+                    })
+                    .collect();
+                if !shaders.is_empty() {
+                    ui.add_space(6.0);
+                    hint(ui, "Shaders");
+                    for template in shaders {
+                        self.browser_item(ui, template);
+                    }
+                }
             }
             BrowserTab::Effects => self.effect_browser(ui),
             BrowserTab::Files => self.file_list(ui),
+            BrowserTab::Online => self.online_browser(ui),
         }
     }
 
@@ -618,6 +668,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 fn source_kind(source: &Source) -> &'static str {
     match source {
         Source::Solid { .. } => "color",
+        Source::Shader(_) => "shader",
         Source::Generator { .. } => "generator",
         Source::Image { .. } => "image",
         Source::Video { .. } => "video",
@@ -641,6 +692,7 @@ pub enum BrowserTab {
     Sources,
     Effects,
     Files,
+    Online,
 }
 
 /// State of the browser's Files tab.

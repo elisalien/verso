@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Effect;
+
 /// Built-in generative sources rendered by a WGSL shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Generator {
@@ -52,6 +54,9 @@ pub enum Source {
     },
     /// Still image file.
     Image { path: PathBuf },
+    /// Generator shader from the effect library (ISF or ShaderToy without an
+    /// input image), with its parameters.
+    Shader(Effect),
     /// Video file, played at `speed` (1 is normal speed).
     Video {
         path: PathBuf,
@@ -65,7 +70,7 @@ impl Source {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             Source::Image { path } | Source::Video { path, .. } => Some(path),
-            Source::Solid { .. } | Source::Generator { .. } => None,
+            Source::Solid { .. } | Source::Generator { .. } | Source::Shader(_) => None,
         }
     }
 

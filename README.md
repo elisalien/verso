@@ -48,6 +48,7 @@ cargo run --release -p verso-app
 | `Esc` | Clear all layers |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 | Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
+| Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
 
 ## Workspace
@@ -59,6 +60,7 @@ cargo run --release -p verso-app
 | `verso-control` | OSC, MIDI, audio analysis and tap tempo |
 | `verso-script` | Sandboxed Lua 5.4 scripts |
 | `verso-io` | NDI output, runtime loaded at run time |
+| `verso-online` | ISF and ShaderToy search and import |
 | `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
@@ -74,6 +76,11 @@ and [effects/scanlines.fs](effects/scanlines.fs) for one example of each.
 Listen from the Control window (default port 7000). Values are 0–1; indices
 start at 1. Examples: `/layer/2/opacity 0.5`, `/column/3/launch`,
 `/layer/1/effect/1/radius 0.8`. The full list is in [docs/SPEC.md](docs/SPEC.md).
+
+Imported shaders are saved in Verso's user folder (`%APPDATA%\Verso\shaders` on
+Windows). Generators (no input image) appear under Sources; filters under
+Effects. ShaderToy shaders are CC BY-NC-SA 3.0 unless their code says
+otherwise: use the "Commercial use only" filter and check the shader page.
 
 ## Scripts
 

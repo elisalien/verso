@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, Sense, Vec2};
 use verso_core::control::{Action, Param};
 use verso_core::{Command, Effect, EffectEdit, EffectTarget, ParamValue};
-use verso_render::ParamKind;
+use verso_render::{ParamKind, ShaderKind};
 
 use crate::app::{PropsTab, VersoApp};
 use crate::{theme, widgets};
@@ -163,7 +163,7 @@ impl VersoApp {
             let defs: Vec<_> = self
                 .renderer
                 .library()
-                .sorted()
+                .sorted_kind(ShaderKind::Filter)
                 .into_iter()
                 .map(|d| {
                     (
@@ -214,7 +214,7 @@ impl VersoApp {
         let defs: Vec<_> = self
             .renderer
             .library()
-            .sorted()
+            .sorted_kind(ShaderKind::Filter)
             .into_iter()
             .map(|d| {
                 (
@@ -278,7 +278,7 @@ fn target_key(target: EffectTarget) -> (u8, usize, usize) {
 }
 
 /// Edits one parameter; returns its widget and the new value when it changed.
-fn param_widget(
+pub(crate) fn param_widget(
     ui: &mut egui::Ui,
     kind: &ParamKind,
     value: ParamValue,

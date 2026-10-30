@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, TextureId};
 use eframe::{egui_wgpu, wgpu};
-use verso_core::{Command, Composition};
+use verso_core::{Command, Composition, Source};
 use verso_render::{Renderer, Thumbnails};
 
 use crate::media::Media;
@@ -33,6 +33,7 @@ fn effect_dirs() -> Vec<PathBuf> {
     {
         dirs.push(exe_dir);
     }
+    dirs.extend(crate::online_ui::shaders_dir());
     dirs
 }
 
@@ -66,6 +67,7 @@ pub struct VersoApp {
     pub(crate) controls: crate::control_ui::Controls,
     pub(crate) scripts: crate::scripts_ui::ScriptsState,
     pub(crate) outputs: crate::outputs::Outputs,
+    pub(crate) online: crate::online_ui::OnlineState,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
 }
@@ -118,6 +120,7 @@ impl VersoApp {
             controls: Default::default(),
             scripts: Default::default(),
             outputs: Default::default(),
+            online: Default::default(),
         })
     }
 
@@ -191,16 +194,28 @@ impl VersoApp {
         let mut new_cells = Vec::new();
         for (l, layer) in self.comp.layers.iter().enumerate() {
             for (c, clip) in layer.clips.iter().enumerate() {
-                if let Some(clip) = clip
-                    && self.cell_thumbs.render(
-                        device,
-                        queue,
-                        &mut encoder,
-                        (l, c),
-                        &clip.source,
-                        time,
-                    )
-                {
+                let Some(clip) = clip else { continue };
+                let created = match &clip.source {
+                    // Generator shaders draw with the composition renderer.
+                    Source::Shader(effect) => {
+                        let (view, created) = self.cell_thumbs.target(device, (l, c));
+                        self.renderer.render_shader_preview(
+                            device,
+                            queue,
+                            &mut encoder,
+                            effect,
+                            view,
+                            CELL_THUMB,
+                            time,
+                        );
+                        created
+                    }
+                    source => {
+                        self.cell_thumbs
+                            .render(device, queue, &mut encoder, (l, c), source, time)
+                    }
+                };
+                if created {
                     new_cells.push((l, c));
                 }
             }
@@ -209,9 +224,23 @@ impl VersoApp {
             .selected_clip
             .and_then(|(l, c)| self.comp.layers.get(l)?.clips.get(c)?.as_ref())
             .map(|clip| clip.source.clone());
-        let new_monitor = selected_source.is_some_and(|source| {
-            self.clip_monitor
-                .render(device, queue, &mut encoder, (), &source, time)
+        let new_monitor = selected_source.is_some_and(|source| match &source {
+            Source::Shader(effect) => {
+                let (view, created) = self.clip_monitor.target(device, ());
+                self.renderer.render_shader_preview(
+                    device,
+                    queue,
+                    &mut encoder,
+                    effect,
+                    view,
+                    MONITOR,
+                    time,
+                );
+                created
+            }
+            source => self
+                .clip_monitor
+                .render(device, queue, &mut encoder, (), source, time),
         });
         self.outputs.capture(device, &mut encoder, &self.renderer);
         queue.submit([encoder.finish()]);

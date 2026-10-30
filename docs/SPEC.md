@@ -143,6 +143,33 @@ Browser › Effects permet d'en charger d'autres.
 FFGL n'est pas visé : il impose OpenGL, incompatible avec un rendu wgpu sans
 interop coûteuse.
 
+### Shaders en ligne et générateurs
+
+Browser › Online cherche et importe des shaders (`verso-online`) :
+
+- **ISF** (editor.isf.video, API publique sans compte) : `/api/search?q=&sort=&from=`,
+  source inclus dans les résultats.
+- **ShaderToy** : API officielle avec la clé gratuite de l'utilisateur
+  (shadertoy.com/myapps), seuls les shaders publiés « Public+API ». Passes Common
+  + Image ; `iChannel0` devient l'image d'entrée ; buffers, son, clavier et
+  autres canaux refusés avec un message clair.
+- **Coller du code ShaderToy** à la main, sans clé.
+
+Les imports vont dans `<dossier utilisateur Verso>/shaders` (`%APPDATA%\Verso`
+sous Windows), chargé au démarrage. Un shader sans image d'entrée devient une
+**source** de clip (`Source::Shader`, onglet Sources, vignette animée) ; un
+shader qui lit son entrée devient un **effet**. Crédit auteur et lien conservés
+dans l'en-tête du fichier `.glsl` et affichés dans Properties.
+
+Licences : l'API ShaderToy n'expose pas de licence ; par défaut CC BY-NC-SA 3.0
+(pas d'usage commercial). Verso lit les déclarations de licence dans les
+commentaires (MIT, CC0, domaine public, Apache, BSD, CC BY…, les mentions
+non commerciales l'emportent) pour afficher un badge et filtrer « Commercial
+use only ». Heuristique : la page du shader fait foi.
+
+Compatibilité mesurée sur 20 shaders ISF réels : 18 compilent ; échecs restants :
+multi-passe, vertex shader personnalisé (`varying`).
+
 ### Transitions
 
 Durée par couche (0 = coupe). Au changement de clip, la dernière image affichée
@@ -285,6 +312,7 @@ Verso/
 │   ├── verso-control/      OSC, MIDI, analyse audio, tap tempo
 │   ├── verso-script/       scripts Lua en bac à sable
 │   ├── verso-io/           sorties vers d'autres applications (NDI)
+│   ├── verso-online/       recherche et import ISF / ShaderToy
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel

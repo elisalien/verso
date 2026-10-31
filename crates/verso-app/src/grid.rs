@@ -376,6 +376,13 @@ impl VersoApp {
                     Color32::from_gray(150)
                 };
                 painter.image(texture, image, cover_uv(media_size, image.size()), tint);
+                if let Some(progress) = self
+                    .media
+                    .transport(layer, column)
+                    .and_then(|t| t.progress())
+                {
+                    crate::panels::progress_strip(&painter, image, progress);
+                }
                 let label = Rect::from_min_max(
                     image.left_bottom() - Vec2::new(0.0, 15.0),
                     image.right_bottom(),

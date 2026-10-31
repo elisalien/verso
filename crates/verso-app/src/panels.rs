@@ -35,6 +35,26 @@ fn monitor_image(ui: &mut egui::Ui, texture: Option<TextureId>, size: Vec2, aspe
     rect
 }
 
+/// `m:ss` for a duration in seconds.
+pub(crate) fn clock(seconds: f64) -> String {
+    let whole = seconds.max(0.0) as u64;
+    format!("{}:{:02}", whole / 60, whole % 60)
+}
+
+/// Thin playback progress line along the bottom edge of `rect`.
+pub(crate) fn progress_strip(painter: &egui::Painter, rect: Rect, progress: f32) {
+    let strip = Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - 3.0),
+        rect.right_bottom(),
+    );
+    painter.rect_filled(strip, 0.0, Color32::from_black_alpha(120));
+    let done = Rect::from_min_max(
+        strip.min,
+        egui::pos2(strip.left() + strip.width() * progress.clamp(0.0, 1.0), strip.bottom()),
+    );
+    painter.rect_filled(done, 0.0, theme::accent());
+}
+
 fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
@@ -351,6 +371,7 @@ impl VersoApp {
             return;
         };
         let before = clip.clone();
+        let transport = self.media.transport(layer, column);
         property_grid(ui, "clip", |ui| {
             ui.label("Name");
             ui.text_edit_singleline(&mut clip.name);
@@ -454,6 +475,27 @@ impl VersoApp {
                     ui.label("Loop");
                     ui.checkbox(looping, "");
                     ui.end_row();
+                    ui.label("Position");
+                    match transport {
+                        Some(t) => {
+                            let text = match t.duration {
+                                Some(d) => format!("{} / {}", clock(t.position), clock(d)),
+                                None => clock(t.position),
+                            };
+                            let bar = egui::ProgressBar::new(t.progress().unwrap_or(0.0))
+                                .desired_height(14.0)
+                                .text(egui::RichText::new(text).monospace().size(10.0));
+                            ui.add(bar).on_hover_text(format!(
+                                "Frame {}{}",
+                                t.frame,
+                                if t.ended { ", ended" } else { "" }
+                            ));
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("Not playing").color(theme::text_dim()));
+                        }
+                    }
+                    ui.end_row();
                 }
             }
         });
@@ -498,6 +540,13 @@ impl VersoApp {
         if let Some((layer, column)) = previewed {
             let launches = self.comp.layers[layer].launch_count(column);
             let painter = ui.painter_at(monitor);
+            if let Some(progress) = self
+                .media
+                .transport(layer, column)
+                .and_then(|t| t.progress())
+            {
+                progress_strip(&painter, monitor, progress);
+            }
             let galley = painter.layout_no_wrap(
                 format!("× {launches}"),
                 egui::FontId::monospace(12.0),

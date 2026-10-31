@@ -5,12 +5,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui::TextureId;
 use eframe::{egui_wgpu, wgpu};
 use verso_core::{Composition, Source};
-use verso_media::{Frame, VideoPlayer};
+use verso_media::{Frame, Transport, VideoPlayer};
 use verso_render::{MediaTexture, MediaView};
 
 /// Poster size for video clip cells.
@@ -74,9 +75,17 @@ enum Loaded {
         layer: usize,
         path: PathBuf,
         column: usize,
-        player: verso_media::Result<VideoPlayer>,
+        player: Box<verso_media::Result<VideoPlayer>>,
     },
 }
+
+/// Threads decoding stills and posters. Each poster runs `ffprobe` and
+/// `ffmpeg`, so a dropped folder of 300 clips must not start 600 processes
+/// at once: requests queue up and this many run at a time.
+const STILL_WORKERS: usize = 3;
+
+/// A still or poster to decode: (path, is a video).
+type StillJob = (PathBuf, bool);
 
 pub struct Media {
     stills: HashMap<PathBuf, Still>,
@@ -85,6 +94,8 @@ pub struct Media {
     opening: Vec<Option<(PathBuf, usize)>>,
     sender: Sender<Loaded>,
     receiver: Receiver<Loaded>,
+    /// Queue feeding the still workers.
+    still_jobs: Sender<StillJob>,
 }
 
 /// Still image used for a source: the image itself, or a video's poster.
@@ -92,15 +103,45 @@ fn still_key(source: &Source) -> Option<&Path> {
     source.path()
 }
 
+/// Decodes still jobs until the queue closes.
+fn still_worker(jobs: Arc<Mutex<Receiver<StillJob>>>, sender: Sender<Loaded>) {
+    loop {
+        let job = match jobs.lock() {
+            Ok(queue) => queue.recv(),
+            Err(_) => return,
+        };
+        let Ok((path, video)) = job else {
+            return;
+        };
+        let frame = if video {
+            verso_media::poster(&path, POSTER)
+        } else {
+            verso_media::load_image(&path)
+        };
+        if sender.send(Loaded::Still(path, frame)).is_err() {
+            return;
+        }
+    }
+}
+
 impl Media {
     pub fn new() -> Self {
         let (sender, receiver) = channel();
+        let (still_jobs, jobs) = channel();
+        let jobs = Arc::new(Mutex::new(jobs));
+        for index in 0..STILL_WORKERS {
+            let (jobs, sender) = (jobs.clone(), sender.clone());
+            let _ = thread::Builder::new()
+                .name(format!("verso-still-{index}"))
+                .spawn(move || still_worker(jobs, sender));
+        }
         Self {
             stills: HashMap::new(),
             players: Vec::new(),
             opening: Vec::new(),
             sender,
             receiver,
+            still_jobs,
         }
     }
 
@@ -112,16 +153,18 @@ impl Media {
             return;
         }
         self.stills.insert(path.to_owned(), Still::Loading);
-        let (path, video) = (path.to_owned(), matches!(source, Source::Video { .. }));
-        let sender = self.sender.clone();
-        thread::spawn(move || {
-            let frame = if video {
-                verso_media::poster(&path, POSTER)
-            } else {
-                verso_media::load_image(&path)
-            };
-            let _ = sender.send(Loaded::Still(path, frame));
-        });
+        let video = matches!(source, Source::Video { .. });
+        let _ = self.still_jobs.send((path.to_owned(), video));
+    }
+
+    /// Playback position of the clip at (`layer`, `column`), when it is the
+    /// one playing on that layer.
+    pub fn transport(&self, layer: usize, column: usize) -> Option<Transport> {
+        self.players
+            .get(layer)?
+            .as_ref()
+            .filter(|p| p.column == column)
+            .map(|p| p.player.transport())
     }
 
     fn request_player(&mut self, layer: usize, path: &Path, column: usize, max: (u32, u32)) {
@@ -132,7 +175,7 @@ impl Media {
         self.opening[layer] = wanted;
         let (path, sender) = (path.to_owned(), self.sender.clone());
         thread::spawn(move || {
-            let player = VideoPlayer::open(&path, max);
+            let player = Box::new(VideoPlayer::open(&path, max));
             let _ = sender.send(Loaded::Player {
                 layer,
                 path,
@@ -181,7 +224,7 @@ impl Media {
                         continue;
                     }
                     self.opening[layer] = None;
-                    match player {
+                    match *player {
                         Ok(player) => {
                             self.players[layer] = Some(LayerPlayer {
                                 path,

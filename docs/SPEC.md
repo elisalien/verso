@@ -150,6 +150,28 @@ Avantages : aucun header ni `.lib` à installer, tous les codecs de FFmpeg
 disponibles, crash d'un décodeur isolé du rendu. Coûts : copie CPU des frames
 (≈ 250 Mo/s en 1080p30), seek = relance du processus. Le passage à libav
 (`ffmpeg-next`) ou au HAP natif se fera si ces coûts limitent un set réel.
+
+**Relance sans image figée.** Relancer un clip (retrigger, ou fin de boucle)
+prenait le temps de démarrage d'un nouveau `ffmpeg` (100 à 300 ms de dernière
+image figée). Chaque lecteur garde désormais un décodeur *de secours* déjà
+lancé sur la première image ; la relance l'échange en place et en relance un
+autre sur un thread. Coût : un second processus `ffmpeg` par clip actif,
+bloqué sur un pipe plein.
+
+**Transport.** `VideoPlayer::transport()` donne position, durée, numéro de
+frame et fin de clip ; l'app l'affiche dans Properties (barre `m:ss / m:ss`),
+sous la vignette de la cellule et sous le moniteur de prévisualisation. Pas
+de seek, de vitesse négative ni de points d'entrée/sortie : le pipe ne
+le permet pas sans relance (`-ss`), à faire avec la lecture avancée.
+
+**Vignettes bornées.** Les posters et images passent par une file à 3
+travailleurs (`verso-app/src/media.rs`) : déposer un dossier de 300 clips ne
+lance plus 600 processus d'un coup.
+
+**Mesure (31/10/2026, Windows, 24 cœurs, décodage seul, sans upload GPU) :**
+`cargo test -p verso-media --release -- --ignored --nocapture bench` : 4
+lecteurs 1080p60 HAP à 59,9 fps chacun, 4 lecteurs 1080p60 H.264 à 59,9 fps
+chacun. À refaire sur la machine cible Fedora et dans l'app (upload inclus).
 Les binaires sont cherchés dans `PATH`, ou via `VERSO_FFMPEG` / `VERSO_FFPROBE`.
 
 Ouverture vidéo (ffprobe + lancement), chargement d'image et poster tournent
@@ -397,7 +419,7 @@ composition.
 | Version | Contenu | Critère de sortie |
 |---|---|---|
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
-| v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
+| v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps : 59,9 fps mesurés en décodage seul sur un poste Windows 24 cœurs (§ 6) ; à confirmer dans l'app et sur Fedora |
 | v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
 | v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |

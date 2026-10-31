@@ -102,6 +102,17 @@ conserve les clips en cours de lecture). `RemoveLayer` et `RemoveColumn`
 décalent ou suppriment les modulateurs et mappings MIDI concernés, comme
 `RemoveGroup` pour les groupes.
 
+Toutes les deux minutes, une composition modifiée est copiée dans
+`nom.verso.bak` à côté de son fichier (ou `Untitled.verso.bak` dans le
+dossier utilisateur si elle n'a pas encore de fichier). Enregistrer supprime
+la copie. Un échec d'enregistrement automatique n'interrompt jamais le set :
+il va seulement dans le journal.
+
+Le journal `verso.log` (dossier utilisateur, run précédent dans
+`verso.log.old`, module `verso-app/src/logging.rs`) reçoit chaque message de
+la barre de statut, les avertissements de wgpu / winit / naga, et tout
+plantage via un panic hook. La fenêtre Messages affiche son chemin.
+
 Les dialogues de fichiers natifs bloquent leur thread ; ils tournent sur un
 thread dédié (`verso-app/src/dialogs.rs`) pour que la sortie continue de
 rendre pendant qu'un dialogue est ouvert (sauf macOS, qui impose le thread

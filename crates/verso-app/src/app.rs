@@ -15,6 +15,8 @@ use crate::theme;
 const UNDO_DEPTH: usize = 50;
 /// Status messages kept in the log.
 const LOG_LINES: usize = 200;
+/// Unsaved changes are copied to a `.verso.bak` file this often.
+const AUTOSAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// What to do once the user has answered the "unsaved changes" question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +77,8 @@ pub struct VersoApp {
     /// Seconds since the previous frame.
     frame_dt: f64,
     path: Option<PathBuf>,
+    /// Last autosave, or last save / open, after which a backup is pointless.
+    last_autosave: Instant,
     pub(crate) selected_clip: Option<(usize, usize)>,
     pub(crate) selected_layer: usize,
     /// Layers picked with Ctrl/Shift-click, for grouping.
@@ -161,6 +165,7 @@ impl VersoApp {
             last_frame: Instant::now(),
             frame_dt: 0.0,
             path: None,
+            last_autosave: Instant::now(),
             selected_clip: None,
             selected_layer: 0,
             selected_layers: Default::default(),
@@ -554,6 +559,8 @@ impl VersoApp {
                 self.status = format!("Saved {}", path.display());
                 self.path = Some(path.to_owned());
                 self.dirty = false;
+                self.last_autosave = Instant::now();
+                let _ = std::fs::remove_file(path.with_extension("verso.bak"));
                 if let Some(after) = self.after_save.take() {
                     self.proceed(after);
                 }
@@ -611,7 +618,35 @@ impl VersoApp {
         self.undo.clear();
         self.redo.clear();
         self.dirty = false;
+        self.last_autosave = Instant::now();
         self.edit_size = None;
+    }
+
+    /// Where unsaved changes are backed up: next to the composition file, or
+    /// in the user directory for a composition that has no file yet.
+    fn autosave_path(&self) -> Option<PathBuf> {
+        match &self.path {
+            Some(path) => Some(path.with_extension("verso.bak")),
+            None => crate::online_ui::user_dir().map(|d| d.join("Untitled.verso.bak")),
+        }
+    }
+
+    /// Writes the backup of a modified composition. Failures only go to the
+    /// log: a backup must never interrupt a set.
+    fn autosave(&mut self) {
+        self.last_autosave = Instant::now();
+        let Some(path) = self.autosave_path() else {
+            return;
+        };
+        let result = self
+            .comp
+            .to_ron()
+            .map_err(|e| e.to_string())
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        match result {
+            Ok(()) => log::info!("autosaved to {}", path.display()),
+            Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
+        }
     }
 
     /// Results of file dialogs that finished.
@@ -686,11 +721,15 @@ impl VersoApp {
         if self.status != self.last_status {
             self.last_status = self.status.clone();
             if !self.status.is_empty() {
+                log::info!("{}", self.status);
                 self.log.push_back((Instant::now(), self.status.clone()));
                 if self.log.len() > LOG_LINES {
                     self.log.pop_front();
                 }
             }
+        }
+        if self.dirty && self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
+            self.autosave();
         }
         let title = self.window_title();
         if title != self.title {
@@ -712,9 +751,21 @@ impl VersoApp {
             .open(&mut open)
             .default_size([520.0, 300.0])
             .show(ctx, |ui| {
-                if ui.button("Clear").clicked() {
-                    self.log.clear();
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        self.log.clear();
+                    }
+                    if let Some(path) = crate::logging::path() {
+                        ui.label(
+                            egui::RichText::new(format!("Log file: {}", path.display()))
+                                .color(theme::text_dim()),
+                        )
+                        .on_hover_text(
+                            "Every message shown here, warnings from the GPU and window \
+                             layers, and any crash.",
+                        );
+                    }
+                });
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .show(ui, |ui| {

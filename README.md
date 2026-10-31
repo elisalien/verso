@@ -78,6 +78,21 @@ cargo run --release -p verso-app
 | `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
+## Files
+
+Verso keeps its own files in a user folder: `%APPDATA%\Verso` on Windows,
+`~/.config/verso` on Linux, `~/Library/Application Support/Verso` on macOS.
+
+| File | Content |
+|---|---|
+| `layout.ron` | Panel layout |
+| `verso.log`, `verso.log.old` | Log of this run and the previous one: status messages, GPU and window warnings, crashes. Open Window › Messages to see the path. |
+| `Untitled.verso.bak` | Autosave of a composition that has no file yet |
+| `shaders/`, `milkdrop/` | Imported shaders and your own MilkDrop presets |
+
+A modified composition is also copied every two minutes to `name.verso.bak`
+next to its file; saving removes the copy.
+
 ## Effects
 
 Verso loads `.wgsl` (Verso format) and `.fs` (ISF) files from an `effects` folder

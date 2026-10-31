@@ -1,4 +1,10 @@
 //! Real-time video playback from an `ffmpeg` child process.
+//!
+//! Restarting a clip (a retrigger, or a loop reaching its end) must not show a
+//! frozen frame while a new `ffmpeg` starts, so a *standby* decoder is kept
+//! ready on the first frame. Restarting swaps it in and spawns the next
+//! standby on a worker thread. The cost is one extra `ffmpeg` process per
+//! playing clip, blocked on a full pipe.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -46,6 +52,15 @@ impl Decoder {
             .map_err(|source| Error::Spawn { program, source })?;
         Ok(Self { child, frames })
     }
+
+    /// Spawns on a worker thread; the result arrives on the returned channel.
+    fn spawn_in_background(path: PathBuf, size: (u32, u32)) -> Receiver<Result<Decoder>> {
+        let (sender, receiver) = sync_channel(1);
+        thread::spawn(move || {
+            let _ = sender.send(Decoder::spawn(&path, size));
+        });
+        receiver
+    }
 }
 
 fn read_frames(mut stdout: impl Read, frame_len: usize, sender: SyncSender<Message>) {
@@ -69,12 +84,41 @@ impl Drop for Decoder {
     }
 }
 
+/// The next decoder, ready to take over on restart.
+enum Standby {
+    Spawning(Receiver<Result<Decoder>>),
+    Ready(Decoder),
+    /// Spawning failed; the next restart spawns synchronously and reports.
+    Failed,
+}
+
+/// Where a clip is in its playback, for the interface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transport {
+    /// Seconds since the first frame of this run.
+    pub position: f64,
+    /// Seconds, when the container reports it.
+    pub duration: Option<f64>,
+    /// Source frames shown since the first frame of this run.
+    pub frame: u64,
+    pub ended: bool,
+}
+
+impl Transport {
+    /// 0 to 1 through the clip, when the duration is known.
+    pub fn progress(&self) -> Option<f32> {
+        let duration = self.duration.filter(|d| *d > 0.0)?;
+        Some((self.position / duration).clamp(0.0, 1.0) as f32)
+    }
+}
+
 /// Plays one video file. Call [`VideoPlayer::advance`] once per rendered frame.
 pub struct VideoPlayer {
     path: PathBuf,
     info: VideoInfo,
     size: (u32, u32),
     decoder: Decoder,
+    standby: Standby,
     /// Playback position in source frames since the decoder started.
     position: f64,
     /// Frames received from the current decoder.
@@ -93,6 +137,7 @@ impl VideoPlayer {
             info,
             size,
             decoder: Decoder::spawn(path, size)?,
+            standby: Standby::Spawning(Decoder::spawn_in_background(path.to_owned(), size)),
             position: 0.0,
             received: 0,
             current: None,
@@ -118,13 +163,52 @@ impl VideoPlayer {
         self.ended
     }
 
-    /// Restarts from the first frame.
+    /// Position and duration for the interface.
+    pub fn transport(&self) -> Transport {
+        // The frame on screen is the last one received.
+        let shown = self.received.saturating_sub(1);
+        Transport {
+            position: shown as f64 / self.info.fps,
+            duration: self.info.duration,
+            frame: shown,
+            ended: self.ended,
+        }
+    }
+
+    /// Restarts from the first frame, taking the standby decoder so no frame
+    /// is lost waiting for a new process. When the standby is still starting,
+    /// the restart waits for it rather than launching a third process.
     pub fn restart(&mut self) -> Result<()> {
-        self.decoder = Decoder::spawn(&self.path, self.size)?;
+        let standby = std::mem::replace(&mut self.standby, Standby::Failed);
+        let next = match standby {
+            Standby::Ready(decoder) => Ok(decoder),
+            Standby::Spawning(receiver) => match receiver.recv() {
+                Ok(result) => result,
+                Err(_) => Decoder::spawn(&self.path, self.size),
+            },
+            Standby::Failed => Decoder::spawn(&self.path, self.size),
+        };
+        self.decoder = next?;
+        self.standby = Standby::Spawning(Decoder::spawn_in_background(
+            self.path.clone(),
+            self.size,
+        ));
         self.position = 0.0;
         self.received = 0;
         self.ended = false;
         Ok(())
+    }
+
+    /// Moves the standby from "spawning" to "ready" once its process is up,
+    /// without blocking.
+    fn poll_standby(&mut self) {
+        if let Standby::Spawning(receiver) = &self.standby {
+            match receiver.try_recv() {
+                Ok(Ok(decoder)) => self.standby = Standby::Ready(decoder),
+                Ok(Err(_)) | Err(TryRecvError::Disconnected) => self.standby = Standby::Failed,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
     }
 
     /// Moves playback forward by `dt` seconds at `speed`, and returns the frame
@@ -133,6 +217,7 @@ impl VideoPlayer {
     /// When decoding is slower than playback, the newest available frame is
     /// shown; playback does not skip ahead of the decoder.
     pub fn advance(&mut self, dt: f64, speed: f64, looping: bool) -> Result<Option<&Frame>> {
+        self.poll_standby();
         if !self.ended {
             self.position += dt * speed.max(0.0) * self.info.fps;
         }
@@ -241,6 +326,26 @@ mod tests {
     }
 
     #[test]
+    fn restart_shows_a_frame_at_once() {
+        let Some(path) = test_clip("restart.mp4", 25) else {
+            eprintln!("ffmpeg not available, skipping");
+            return;
+        };
+        let mut player = VideoPlayer::open(&path, (320, 180)).unwrap();
+        // Play a little: the standby decoder has time to start.
+        play_until(&mut player, false, |p| p.received >= 5);
+        let before = player.transport();
+        assert!(before.position > 0.1, "{before:?}");
+        assert_eq!(before.duration.map(f64::round), Some(1.0));
+
+        player.restart().unwrap();
+        // The standby already holds the first frames: no wait for a process.
+        let frame = player.advance(0.0, 1.0, false).unwrap();
+        assert!(frame.is_some(), "no frame right after restart");
+        assert_eq!(player.transport().frame, 0);
+    }
+
+    #[test]
     fn looping_restarts() {
         let Some(path) = test_clip("five.mp4", 5) else {
             eprintln!("ffmpeg not available, skipping");
@@ -268,5 +373,72 @@ mod tests {
         };
         let frame = crate::poster(&path, (64, 64)).unwrap();
         assert_eq!((frame.width, frame.height), (64, 36));
+    }
+}
+
+/// Throughput measurement, not a pass/fail test. Run with
+/// `cargo test -p verso-media --release -- --ignored --nocapture bench`.
+/// Encodes a 1080p HAP and a 1080p H.264 clip, plays four of each at once for
+/// 5 seconds and prints the frame rate reached per player.
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn clip(name: &str, codec: &[&str]) -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join("verso-media-bench");
+        std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+        let status = command(&tool_path("ffmpeg"))
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=1920x1080:rate=60:duration=12")
+            .args(codec)
+            .arg(&path)
+            .status()
+            .ok()?;
+        status.success().then_some(path)
+    }
+
+    fn measure(label: &str, path: &Path, players: usize) {
+        let mut all: Vec<VideoPlayer> = (0..players)
+            .map(|_| VideoPlayer::open(path, (1920, 1080)).unwrap())
+            .collect();
+        // Let the decoders start before the clock runs.
+        std::thread::sleep(Duration::from_millis(500));
+        let start = Instant::now();
+        let mut last = start;
+        while start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(4));
+            let now = Instant::now();
+            let dt = (now - last).as_secs_f64();
+            last = now;
+            for p in &mut all {
+                p.advance(dt, 1.0, true).unwrap();
+            }
+        }
+        let seconds = start.elapsed().as_secs_f64();
+        let rates: Vec<String> = all
+            .iter()
+            .map(|p| format!("{:.1}", p.transport().frame as f64 / seconds))
+            .collect();
+        println!("{label}: {players} × 1080p60, fps per player: {}", rates.join(" "));
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_four_1080p() {
+        let hap = clip("hap.mov", &["-c:v", "hap"]);
+        let h264 = clip("h264.mp4", &["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]);
+        let (Some(hap), Some(h264)) = (hap, h264) else {
+            eprintln!("ffmpeg with hap and libx264 needed, skipping");
+            return;
+        };
+        for n in [1, 4] {
+            measure("HAP", &hap, n);
+            measure("H.264", &h264, n);
+        }
     }
 }

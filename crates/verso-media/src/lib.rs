@@ -10,7 +10,7 @@ mod player;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub use player::VideoPlayer;
+pub use player::{Transport, VideoPlayer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

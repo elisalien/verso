@@ -7,6 +7,7 @@ mod dock;
 mod effects_ui;
 mod grid;
 mod groups_ui;
+mod logging;
 mod media;
 mod milkdrop_ui;
 mod online_ui;
@@ -18,6 +19,7 @@ mod widgets;
 mod workspace;
 
 fn main() -> eframe::Result {
+    logging::init();
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()

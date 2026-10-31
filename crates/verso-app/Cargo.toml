@@ -23,6 +23,7 @@ verso-io.workspace = true
 verso-online.workspace = true
 verso-milkdrop.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+log = "0.4"
 
 [dev-dependencies]
 pollster = "1.0.1"

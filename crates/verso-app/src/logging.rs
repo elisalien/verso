@@ -1,0 +1,103 @@
+//! Log file and panic hook.
+//!
+//! Messages go to `verso.log` in the user directory (the previous run is kept
+//! as `verso.log.old`), so a crash can be reported without a terminal. In
+//! release builds on Windows there is no console at all. Everything from the
+//! `verso*` crates is logged at `info` and above; dependencies (wgpu, winit,
+//! naga…) only at `warn` and above.
+
+use log::Log;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+static PATH: OnceLock<PathBuf> = OnceLock::new();
+
+struct FileLog {
+    file: Mutex<File>,
+    start: Instant,
+}
+
+impl log::Log for FileLog {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        let max = if m.target().starts_with("verso") {
+            log::Level::Info
+        } else {
+            log::Level::Warn
+        };
+        m.level() <= max
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let line = format!(
+            "{:>10.3} {:<5} [{}] {}\n",
+            self.start.elapsed().as_secs_f64(),
+            record.level(),
+            record.target(),
+            record.args()
+        );
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.write_all(line.as_bytes());
+        }
+        #[cfg(debug_assertions)]
+        eprint!("{line}");
+    }
+
+    fn flush(&self) {
+        if let Ok(mut file) = self.file.lock() {
+            let _ = file.flush();
+        }
+    }
+}
+
+/// Where the current log file is, once `init` succeeded.
+pub fn path() -> Option<&'static PathBuf> {
+    PATH.get()
+}
+
+/// Opens the log file, installs the logger and a panic hook that writes the
+/// panic before the default hook runs. Does nothing when the user directory
+/// is unknown or the file cannot be created: the app still starts.
+pub fn init() {
+    let Some(dir) = crate::online_ui::user_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("verso.log");
+    let _ = std::fs::rename(&path, dir.join("verso.log.old"));
+    let Ok(file) = File::create(&path) else {
+        return;
+    };
+    let logger: &'static FileLog = Box::leak(Box::new(FileLog {
+        file: Mutex::new(file),
+        start: Instant::now(),
+    }));
+    if log::set_logger(logger).is_err() {
+        return;
+    }
+    log::set_max_level(log::LevelFilter::Info);
+    let _ = PATH.set(path);
+
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    log::info!(
+        "Verso {} starting ({} {}), unix time {epoch}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        logger.flush();
+        default_hook(info);
+    }));
+}

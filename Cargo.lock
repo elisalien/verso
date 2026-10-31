@@ -3396,6 +3396,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "image",
+ "log",
  "pollster 1.0.1",
  "rfd",
  "ron",

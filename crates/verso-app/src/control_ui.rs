@@ -116,9 +116,8 @@ impl VersoApp {
                 event.address,
                 event.value.map(|v| format!("{v:.3}")).unwrap_or_default()
             );
-            match Action::parse(&event.address) {
-                // A message without a value acts like a button press.
-                Some(action) => self.run_action(&action, event.value.unwrap_or(1.0)),
+            match Action::parse_osc(&event.address, event.value) {
+                Some((action, value)) => self.run_action(&action, value),
                 None => self.status = format!("Unknown OSC address {}", event.address),
             }
         }
@@ -206,12 +205,12 @@ impl VersoApp {
         painter.rect_filled(
             rect,
             2.0,
-            theme::ACCENT.gamma_multiply(if target { 0.45 } else { 0.12 }),
+            theme::accent().gamma_multiply(if target { 0.45 } else { 0.12 }),
         );
         painter.rect_stroke(
             rect,
             2.0,
-            Stroke::new(if target { 2.0 } else { 1.0 }, theme::ACCENT),
+            Stroke::new(if target { 2.0 } else { 1.0 }, theme::accent()),
             StrokeKind::Inside,
         );
         if let Some(key) = mapped {
@@ -220,7 +219,7 @@ impl VersoApp {
                 egui::Align2::CENTER_CENTER,
                 key.label(),
                 egui::FontId::proportional(9.5),
-                theme::TEXT,
+                theme::text(),
             );
         }
         let clicked = ui.input(|i| {
@@ -239,7 +238,7 @@ impl VersoApp {
             ui.label(
                 egui::RichText::new(Action::Set(param.clone()).address())
                     .small()
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
             let mut add = |source| {
                 self.send(Command::AddModulator(Modulator {
@@ -270,14 +269,14 @@ impl VersoApp {
     pub(crate) fn control_bar(&mut self, ui: &mut egui::Ui) {
         let learn = self.controls.learn;
         let label = egui::RichText::new("MIDI Learn").color(if learn {
-            theme::BG_DEEP
+            theme::bg_deep()
         } else {
-            theme::TEXT
+            theme::text()
         });
         let button = egui::Button::new(label).fill(if learn {
-            theme::ACCENT
+            theme::accent()
         } else {
-            theme::BG_RAISED
+            theme::bg_raised()
         });
         if ui
             .add(button)
@@ -300,7 +299,11 @@ impl VersoApp {
         ui.painter().circle_filled(
             rect.center(),
             4.5,
-            if on { theme::ACCENT } else { theme::BG_DEEP },
+            if on {
+                theme::accent()
+            } else {
+                theme::bg_deep()
+            },
         );
         if ui.button("TAP").on_hover_text("Tap tempo (T)").clicked() {
             self.tap_tempo();
@@ -322,19 +325,19 @@ impl VersoApp {
             let levels = self.controls.levels;
             for (label, value) in [("B", levels.bass), ("M", levels.mid), ("H", levels.high)] {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(6.0, 16.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 1.0, theme::BG_DEEP);
+                ui.painter().rect_filled(rect, 1.0, theme::bg_deep());
                 let fill = Rect::from_min_max(
                     egui::pos2(rect.left(), rect.bottom() - rect.height() * value),
                     rect.right_bottom(),
                 );
-                ui.painter().rect_filled(fill, 1.0, theme::ACCENT);
+                ui.painter().rect_filled(fill, 1.0, theme::accent());
                 let _ = label;
             }
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
             ui.painter().circle_filled(
                 rect.center(),
                 4.5,
-                theme::SOLO.gamma_multiply(levels.beat.max(0.08)),
+                theme::solo().gamma_multiply(levels.beat.max(0.08)),
             );
         }
     }
@@ -414,10 +417,10 @@ impl VersoApp {
         });
         ui.label(
             egui::RichText::new(
-                "Values are 0–1. Addresses: /master, /crossfader, /bpm, /clear, /column/N/launch, /layer/N/opacity|bypass|solo|eject, /layer/N/clip/M/launch, /layer/N/effect/I/<param>, /group/N/…, /composition/effect/I/<param>",
+                "Values are 0–1. Addresses: /master, /crossfader, /bpm, /clear, /column/N/launch, /layer/N/opacity|bypass|solo|eject, /layer/N/clip/M/launch, /layer/N/effect/I/<param>, /group/N/…, /composition/effect/I/<param>. Also accepted: /composition/layers/N/clips/M/connect, /composition/columns/M/connect, /composition/layers/N/clear, /composition/layers/N/video/opacity, /composition/master, /composition/crossfader/phase, /composition/tempocontroller/tempo (BPM), /composition/disconnectall, so OSC presets made for other clip-grid software work as they are.",
             )
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::text_dim()),
         );
 
         ui.add_space(8.0);
@@ -437,12 +440,12 @@ impl VersoApp {
             } else {
                 midi.ports().join(", ")
             };
-            ui.label(egui::RichText::new(ports).small().color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(ports).small().color(theme::text_dim()));
         }
         if let Some(target) = &self.controls.learn_target {
             ui.label(
                 egui::RichText::new(format!("Move a MIDI control to map {}", target.address()))
-                    .color(theme::ACCENT),
+                    .color(theme::accent()),
             );
         }
         let mut unmap = None;
@@ -519,7 +522,7 @@ impl VersoApp {
                     .bpm
                     .map(|b| format!("{b:.1} BPM"))
                     .unwrap_or_else(|| "listening…".into());
-                ui.label(egui::RichText::new(detected).color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(detected).color(theme::text_dim()));
             });
         }
 
@@ -531,7 +534,7 @@ impl VersoApp {
                     "Right-click a fader or an effect parameter to add an LFO or audio modulation.",
                 )
                 .small()
-                .color(theme::TEXT_DIM),
+                .color(theme::text_dim()),
             );
         }
         let mut changes = Vec::new();
@@ -539,12 +542,13 @@ impl VersoApp {
         for (index, modulator) in self.comp.modulators.iter().enumerate() {
             let mut m = modulator.clone();
             egui::Frame::NONE
-                .fill(theme::BG_HEADER)
+                .fill(theme::bg_header())
                 .inner_margin(egui::Margin::same(4))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut on = !m.bypass;
-                        if widgets::toggle(ui, &mut on, "●", theme::ACCENT, "On / bypass").changed()
+                        if widgets::toggle(ui, &mut on, "●", theme::accent(), "On / bypass")
+                            .changed()
                         {
                             m.bypass = !on;
                         }
@@ -618,7 +622,7 @@ impl VersoApp {
             egui::RichText::new(&self.controls.last_message)
                 .small()
                 .monospace()
-                .color(theme::TEXT_DIM),
+                .color(theme::text_dim()),
         );
     }
 }

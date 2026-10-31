@@ -2,15 +2,20 @@
 
 mod app;
 mod control_ui;
+mod dialogs;
+mod dock;
 mod effects_ui;
 mod grid;
+mod groups_ui;
 mod media;
+mod milkdrop_ui;
 mod online_ui;
 mod outputs;
 mod panels;
 mod scripts_ui;
 mod theme;
 mod widgets;
+mod workspace;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

@@ -89,6 +89,41 @@ Composition
 - Les identifiants stables (`LayerId`, `ClipId`) arriveront avec l'édition
   (déplacement de couches) ; v0.1 utilise des index.
 
+### Document, annulation et dialogues
+
+Chaque `Command` a un `CommandKind` : `Play` (déclencher, éjecter : ne modifie
+pas le document), `Tweak` (faders, paramètres, noms : modifie le document,
+trop fréquent pour une annulation pas à pas) ou `Edit` (clips, couches,
+colonnes, groupes, chaînes d'effets, mappings : modifie le document et
+s'annule). L'app marque la composition « non enregistrée » sur tout `Tweak`
+ou `Edit`, demande confirmation avant Nouveau / Ouvrir / Quitter, et garde
+50 instantanés pour `Ctrl+Z` / `Ctrl+Shift+Z` (restaurer un instantané
+conserve les clips en cours de lecture). `RemoveLayer` et `RemoveColumn`
+décalent ou suppriment les modulateurs et mappings MIDI concernés, comme
+`RemoveGroup` pour les groupes.
+
+Les dialogues de fichiers natifs bloquent leur thread ; ils tournent sur un
+thread dédié (`verso-app/src/dialogs.rs`) pour que la sortie continue de
+rendre pendant qu'un dialogue est ouvert (sauf macOS, qui impose le thread
+principal).
+
+## 5 bis. Espace de travail
+
+Tous les panneaux (Clips, Composition, Group, Layer, Clip, Preview, Output,
+Browser) sont des onglets d'un dock maison (`verso-app/src/dock.rs`, egui_dock
+ne suivant pas egui 0.37) : glisser un onglet sur une barre ou le centre d'un
+groupe l'y déplace, sur un bord il scinde le groupe ; les séparateurs se
+redimensionnent ; les onglets se ferment et se rouvrent depuis le menu Window.
+La disposition est enregistrée dans `<dossier utilisateur>/layout.ron` à la
+fermeture.
+
+Les panneaux Properties peuvent être multiples. Chacun suit la sélection
+(🔗) ou reste verrouillé (🔒) sur un groupe, une couche ou un clip ; sa liste
+déroulante choisit la cible directement (en mode suivi, elle change la
+sélection). Un nouveau panneau ouvert depuis Window démarre verrouillé sur la
+cible courante. Sélectionner un élément dans la grille met au premier plan le
+panneau qui suit ce type d'élément.
+
 ## 6. Médias
 
 | Format | Chemin de décodage | Phase |
@@ -170,6 +205,49 @@ use only ». Heuristique : la page du shader fait foi.
 Compatibilité mesurée sur 20 shaders ISF réels : 18 compilent ; échecs restants :
 multi-passe, vertex shader personnalisé (`varying`).
 
+### Presets MilkDrop
+
+Source `Source::Milkdrop { family, variant }` : un preset MilkDrop rendu
+nativement (crate `verso-milkdrop` pour le CPU, `verso-render::milkdrop` pour
+le GPU), porté de Butterchurn (MIT). Format lu : JSON Butterchurn (équations
+EEL d'origine + shaders warp/comp déjà traduits de HLSL en GLSL).
+
+- CPU : interpréteur EEL (ns-eel2 : division par zéro = 0, `megabuf`,
+  `loop`/`while`, variables insensibles à la casse), équations par frame, par
+  sommet (maillage 48×36), formes et ondes personnalisées, ondes de base
+  (modes 0–7), vecteurs de mouvement, bordures. Audio : forme d'onde brute de
+  l'entrée audio (1024 échantillons), FFT égalisée et niveaux bass/mid/treb
+  relatifs à leur moyenne longue, comme MilkDrop.
+- GPU : tampon de rétroaction RGBA8 par clip (clé couche, colonne), passe
+  warp, chaîne de flou à 3 niveaux, sprites, passe comp vers la couche
+  (converti en linéaire). Les passes internes inversent y pour garder l'ordre
+  des lignes d'OpenGL ; les shaders des presets tournent donc sans retouche.
+  Shaders GLSL enveloppés (prélude d'uniformes, textures de bruit, `texture`
+  → `textureLod`) puis traduits en WGSL par naga.
+- Familles : un fichier JSON regroupe les remixes d'un même preset
+  (variantes). Le panneau du clip choisit la variante (◀ ▶, liste).
+- Fondu MilkDrop : changer de variante garde le tampon de rétroaction et
+  fond l'ancien preset vers le nouveau pendant `blend` secondes (2,5 par
+  défaut, 0 = coupe). Motif de fondu par sommet tiré au hasard (balayage,
+  plasma, radial), maillage warp mélangé, warp et comp du nouveau preset
+  dessinés en fondu sur l'ancien, sprites des deux presets pondérés.
+- Entrée : `input` désigne une autre couche dont l'image (convertie en
+  couleurs d'affichage) sert de texture image au preset (`sampler_<nom>`,
+  bruit sans entrée) ; `input_mix` la mélange dans la rétroaction à chaque
+  image, que le preset déforme alors comme sa propre image (équivalent de
+  l'entrée NDI/Spout de NestDrop). Mettre l'opacité de la couche source à 0
+  pour ne l'utiliser que comme entrée ; une couche placée au-dessus arrive
+  avec une image de retard.
+- Bibliothèque : `presets/milkdrop` (147 familles, 206 presets, sélection
+  Cream of the Crop de NestDrop croisée avec les presets Butterchurn, voir
+  `presets/milkdrop/CREDITS.md`) et `%APPDATA%\Verso\milkdrop` pour les
+  presets Butterchurn de l'utilisateur.
+
+Compatibilité mesurée sur les 504 presets Butterchurn : 504 équations
+compilent, 489 shaders traduisent (échecs : bugs de conversion d'origine).
+Limites : pas de sprites ni de texte, import des `.milk` bruts (HLSL) non
+géré, choix de variante et entrée non pilotables en MIDI/OSC pour l'instant. Outillage de sélection : `scripts/milkdrop`.
+
 ### Transitions
 
 Durée par couche (0 = coupe). Au changement de clip, la dernière image affichée
@@ -179,9 +257,21 @@ fondu au lieu de continuer à jouer. Seul le fondu enchaîné existe.
 
 ### Groupes
 
-Les couches d'un groupe se mélangent entre elles, puis le groupe reçoit ses
-effets et se mélange à la composition avec son propre blend, opacité et bypass.
-Un groupe est rendu à la position de sa couche la plus basse.
+Un groupe peut contenir des couches et d'autres groupes (`Group::parent`). Une
+couche appartient à son groupe le plus interne. Rendu récursif : chaque
+groupe se compose dans sa propre paire de textures (une par profondeur), reçoit
+ses effets puis se mélange dans son parent avec son blend, son opacité, son
+bypass ; les opacités se multiplient. Le solo d'un groupe laisse passer toutes
+ses couches.
+
+Grille : en-tête coloré au-dessus de chaque groupe (flèche de repli, nom,
+X, B, S, fader d'opacité, bouton ▶ par colonne qui ne lance que ce groupe),
+bandes de couleur à gauche des couches selon l'imbrication, double-clic ou
+flèche pour replier. Sélection multiple des couches par Ctrl/Maj-clic ;
+`Ctrl+G` groupe la sélection (les couches doivent être adjacentes, un groupe
+sélectionné en partie est inclus en entier et devient imbriqué) ;
+`Ctrl+Shift+G` dissout le groupe courant, son contenu remonte d'un niveau.
+OSC : `/group/N/column/M/launch`.
 
 ## 8. Contrôle et I/O
 
@@ -214,6 +304,16 @@ valeur vaut un appui) :
 /group/N/effect/I/<param>   /layer/N/effect/I/<param>
 /layer/N/clip/M/effect/I/<param>
 ```
+
+Compatibilité : `Action::parse_osc` accepte aussi le schéma
+`/composition/layers/N/clips/M/connect`, `/composition/columns/M/connect`,
+`/composition/layers/N/clear`, `/composition/layers/N/video/opacity`,
+`/composition/master`, `/composition/crossfader/phase`,
+`/composition/tempocontroller/tempo` (en BPM) et `/composition/disconnectall`,
+documenté publiquement par les logiciels de VJ à grille, pour que les presets
+OSC existants (TouchOSC, Chataigne, contrôleurs) pilotent Verso sans
+modification. Seules les adresses des manuels publics sont reprises ; aucun
+code tiers n'est consulté (voir README § OSC pour la table).
 
 Les déclencheurs réagissent au passage au-dessus de 0,5 (le relâchement d'un
 bouton ne fait rien). Port OSC par défaut : 7000, écoute activée depuis la
@@ -313,9 +413,12 @@ Verso/
 │   ├── verso-script/       scripts Lua en bac à sable
 │   ├── verso-io/           sorties vers d'autres applications (NDI)
 │   ├── verso-online/       recherche et import ISF / ShaderToy
+│   ├── verso-milkdrop/     presets MilkDrop : EEL, moteur, audio (sans GPU)
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel
 │   └── verso-app/          application eframe/egui (binaire `verso`)
+├── presets/milkdrop/       presets MilkDrop embarqués, par catégorie
+├── scripts/milkdrop/       outillage de sélection des presets
 └── docs/                   spécification, décisions
 ```

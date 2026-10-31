@@ -35,7 +35,12 @@ cargo run --release -p verso-app
 | Click the playing clip again | Restart it |
 | Drag an effect from Browser › Effects onto a clip, layer header or Composition header | Add it to that chain |
 | Properties › + Add Effect | Add an effect to the selected composition, group, layer or clip |
-| Layer › Group Selected Layer | Put the selected layer in a new group |
+| Ctrl/Shift-click layer headers, then `Ctrl+G` | Group adjacent layers; grouping a group with its neighbours nests it |
+| `Ctrl+Shift+G` | Ungroup: contents move up one level |
+| Group header ▸/▾ or double-click | Collapse or expand the group; ▶ buttons launch a column in that group only |
+| Right-click a panel tab › Undock | Open the panel in its own window (Dock back or close it to return) |
+| Hover a clip thumbnail | Show it in the Preview panel |
+| Window › Interface Colors… | Pick a preset or any color for each interface role |
 | Right-click a cell | Change its source or clear it |
 | `X` / `B` / `S` on a layer | Eject / bypass / solo |
 | `A` / `B` on a layer | Assign it to a crossfader side |
@@ -46,9 +51,17 @@ cargo run --release -p verso-app
 | **Control…** | OSC port, MIDI inputs and mappings, audio input, modulators |
 | **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
 | `Esc` | Clear all layers |
+| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | New, open, save, save as. Verso asks before losing unsaved changes (`*` in the title) |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo structure edits: clips, layers, columns, groups, effect chains, mappings (fader moves are not undone) |
+| Right-click a layer header › Delete Layer, a column header › Delete Column | Remove them with their clips (undoable) |
+| Click the status bar, or Window › Messages… | History of status messages and errors |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 | Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
+| Drag a panel tab | Move it to another tab group, or to an edge to split; drag separators to resize |
+| Window menu | Open more Composition, Group, Layer or Clip panels, reopen panels, reset the layout |
+| 🔗 Follow / 🔒 Locked in a Properties panel | Follow the selection, or stay on one group, layer or clip; the list picks the target |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
+| Browser › Sources › MilkDrop | Audio-reactive MilkDrop presets by category; a clip's Properties pick among the remixes of its preset (with a MilkDrop blend) and can feed another layer into it |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
 
 ## Workspace
@@ -61,6 +74,7 @@ cargo run --release -p verso-app
 | `verso-script` | Sandboxed Lua 5.4 scripts |
 | `verso-io` | NDI output, runtime loaded at run time |
 | `verso-online` | ISF and ShaderToy search and import |
+| `verso-milkdrop` | MilkDrop presets: EEL interpreter, frame engine, audio analysis |
 | `verso-render` | wgpu engine: sources, media, blend modes, master |
 | `verso-app` | eframe/egui application |
 
@@ -77,10 +91,47 @@ Listen from the Control window (default port 7000). Values are 0–1; indices
 start at 1. Examples: `/layer/2/opacity 0.5`, `/column/3/launch`,
 `/layer/1/effect/1/radius 0.8`. The full list is in [docs/SPEC.md](docs/SPEC.md).
 
+Verso also answers the `/composition/…` address scheme that common clip-grid
+VJ software and the OSC presets made for it use, so a TouchOSC layout, a
+Chataigne module or a controller template built for that scheme drives Verso
+unchanged:
+
+| Address | Verso action |
+|---|---|
+| `/composition/layers/N/clips/M/connect` | Launch clip (layer N from the bottom, column M) |
+| `/composition/columns/M/connect` | Launch column |
+| `/composition/groups/G/columns/M/connect` | Launch column in group G |
+| `/composition/layers/N/clear` | Eject layer |
+| `/composition/disconnectall` | Clear all layers |
+| `/composition/layers/N/video/opacity`, `/composition/groups/G/video/opacity` | Opacity 0–1 |
+| `/composition/layers/N/bypassed`, `/solo`, `/composition/groups/G/bypassed` | Toggles (above 0.5 = on) |
+| `/composition/layers/N/transition/duration` | Transition, in seconds |
+| `/composition/master` | Master opacity 0–1 |
+| `/composition/crossfader/phase` | Crossfader 0–1 |
+| `/composition/tempocontroller/tempo` | Tempo, in BPM |
+
+Only addresses documented in public user manuals are mapped; effect
+parameters keep Verso's own `/layer/N/effect/I/<param>` form.
+
 Imported shaders are saved in Verso's user folder (`%APPDATA%\Verso\shaders` on
 Windows). Generators (no input image) appear under Sources; filters under
 Effects. ShaderToy shaders are CC BY-NC-SA 3.0 unless their code says
 otherwise: use the "Commercial use only" filter and check the shader page.
+
+## MilkDrop
+
+Verso runs MilkDrop presets natively (a port of
+[Butterchurn](https://github.com/jberg/butterchurn)), reacting to the audio
+input. 147 preset families ship in `presets/milkdrop`, picked from the
+[Cream of the Crop](https://github.com/projectM-visualizer/presets-cream-of-the-crop)
+collection curated for NestDrop; remixes of one preset are grouped as one
+source with several presets. Credits: [presets/milkdrop/CREDITS.md](presets/milkdrop/CREDITS.md).
+Changing the preset of a clip blends like MilkDrop (Blend, in seconds). A
+clip's Input feeds another layer into the preset, as its image textures and
+mixed into its feedback (Input Mix), like NestDrop's video input; set that
+layer's opacity to 0 to use it only as an input.
+Add your own presets as Butterchurn `.json` files in `%APPDATA%\Verso\milkdrop`.
+Raw `.milk` files are not supported yet.
 
 ## Scripts
 

@@ -38,6 +38,7 @@ pub enum Action {
     Set(Param),
     LaunchClip { layer: usize, column: usize },
     LaunchColumn(usize),
+    LaunchGroupColumn { group: usize, column: usize },
     EjectLayer(usize),
     ClearAll,
 }
@@ -183,6 +184,104 @@ impl Param {
     }
 }
 
+impl Param {
+    /// The parameter after layer `removed` is deleted, or `None` if it was on
+    /// that layer.
+    pub fn without_layer(&self, removed: usize) -> Option<Param> {
+        self.remap(
+            |l| crate::effect::shifted(l, removed),
+            Some,
+            |t| t.without_layer(removed),
+        )
+    }
+
+    pub fn without_column(&self, removed: usize) -> Option<Param> {
+        self.remap(Some, Some, |t| t.without_column(removed))
+    }
+
+    pub fn without_group(&self, removed: usize) -> Option<Param> {
+        self.remap(
+            Some,
+            |g| crate::effect::shifted(g, removed),
+            |t| t.without_group(removed),
+        )
+    }
+
+    fn remap(
+        &self,
+        layer: impl Fn(usize) -> Option<usize>,
+        group: impl Fn(usize) -> Option<usize>,
+        target: impl Fn(EffectTarget) -> Option<EffectTarget>,
+    ) -> Option<Param> {
+        Some(match self.clone() {
+            Param::LayerOpacity(l) => Param::LayerOpacity(layer(l)?),
+            Param::LayerBypass(l) => Param::LayerBypass(layer(l)?),
+            Param::LayerSolo(l) => Param::LayerSolo(layer(l)?),
+            Param::LayerTransition(l) => Param::LayerTransition(layer(l)?),
+            Param::GroupOpacity(g) => Param::GroupOpacity(group(g)?),
+            Param::GroupBypass(g) => Param::GroupBypass(group(g)?),
+            Param::Effect {
+                target: t,
+                index,
+                name,
+            } => Param::Effect {
+                target: target(t)?,
+                index,
+                name,
+            },
+            Param::EffectBypass { target: t, index } => Param::EffectBypass {
+                target: target(t)?,
+                index,
+            },
+            other @ (Param::Master | Param::Crossfader | Param::Bpm) => other,
+        })
+    }
+}
+
+impl Action {
+    pub fn without_layer(&self, removed: usize) -> Option<Action> {
+        let shift = |i| crate::effect::shifted(i, removed);
+        Some(match self.clone() {
+            Action::Set(p) => Action::Set(p.without_layer(removed)?),
+            Action::LaunchClip { layer, column } => Action::LaunchClip {
+                layer: shift(layer)?,
+                column,
+            },
+            Action::EjectLayer(l) => Action::EjectLayer(shift(l)?),
+            other => other,
+        })
+    }
+
+    pub fn without_column(&self, removed: usize) -> Option<Action> {
+        let shift = |i| crate::effect::shifted(i, removed);
+        Some(match self.clone() {
+            Action::Set(p) => Action::Set(p.without_column(removed)?),
+            Action::LaunchClip { layer, column } => Action::LaunchClip {
+                layer,
+                column: shift(column)?,
+            },
+            Action::LaunchColumn(c) => Action::LaunchColumn(shift(c)?),
+            Action::LaunchGroupColumn { group, column } => Action::LaunchGroupColumn {
+                group,
+                column: shift(column)?,
+            },
+            other => other,
+        })
+    }
+
+    pub fn without_group(&self, removed: usize) -> Option<Action> {
+        let shift = |i| crate::effect::shifted(i, removed);
+        Some(match self.clone() {
+            Action::Set(p) => Action::Set(p.without_group(removed)?),
+            Action::LaunchGroupColumn { group, column } => Action::LaunchGroupColumn {
+                group: shift(group)?,
+                column,
+            },
+            other => other,
+        })
+    }
+}
+
 fn effect_prefix(target: EffectTarget) -> String {
     match target {
         EffectTarget::Composition => "/composition".to_owned(),
@@ -218,6 +317,9 @@ impl Action {
                 format!("/layer/{}/clip/{}/launch", layer + 1, column + 1)
             }
             Action::LaunchColumn(c) => format!("/column/{}/launch", c + 1),
+            Action::LaunchGroupColumn { group, column } => {
+                format!("/group/{}/column/{}/launch", group + 1, column + 1)
+            }
             Action::EjectLayer(l) => format!("/layer/{}/eject", l + 1),
             Action::ClearAll => "/clear".into(),
         }
@@ -257,6 +359,10 @@ impl Action {
                 layer: index(l)?,
                 column: index(c)?,
             },
+            ["group", g, "column", c, "launch"] => Action::LaunchGroupColumn {
+                group: index(g)?,
+                column: index(c)?,
+            },
             ["group", g, "opacity"] => Action::Set(Param::GroupOpacity(index(g)?)),
             ["group", g, "bypass"] => Action::Set(Param::GroupBypass(index(g)?)),
             ["composition", rest @ ..] => return effect(EffectTarget::Composition, rest),
@@ -275,6 +381,76 @@ impl Action {
         })
     }
 
+    /// Parses an OSC message in either Verso's own address space or the
+    /// address scheme used by clip-grid VJ software and their controller
+    /// presets (`/composition/layers/1/clips/2/connect`, see
+    /// [`Action::parse_arena`]). Returns the action and its value in 0..1.
+    ///
+    /// Values arriving in their own unit (tempo in BPM, transition in
+    /// seconds) are converted to 0..1 here. A message without a value is a
+    /// button press.
+    pub fn parse_osc(address: &str, value: Option<f32>) -> Option<(Action, f32)> {
+        if let Some(action) = Action::parse(address) {
+            return Some((action, value.unwrap_or(1.0)));
+        }
+        let (action, raw) = Action::parse_arena(address)?;
+        let value = value.unwrap_or(1.0);
+        let unit = match (raw, &action) {
+            (true, Action::Set(param)) => param.builtin_range()?.to_unit(value),
+            _ => value,
+        };
+        Some((action, unit))
+    }
+
+    /// Parses the `/composition/...` address scheme shared by common VJ
+    /// software, so controller presets and OSC apps built for it drive Verso
+    /// unchanged. Only addresses documented publicly in their user manuals
+    /// are covered. Returns the action and whether the value comes in its own
+    /// unit (BPM, seconds) rather than 0..1.
+    ///
+    /// Layers count from the bottom and indices start at 1, as in Verso.
+    pub fn parse_arena(address: &str) -> Option<(Action, bool)> {
+        let parts: Vec<&str> = address.trim_start_matches('/').split('/').collect();
+        let index = |s: &str| s.parse::<usize>().ok()?.checked_sub(1);
+        let unit = |a| Some((a, false));
+        let raw = |a| Some((a, true));
+        match parts.as_slice() {
+            ["composition", "master"] => unit(Action::Set(Param::Master)),
+            ["composition", "crossfader", "phase"] => unit(Action::Set(Param::Crossfader)),
+            ["composition", "tempocontroller", "tempo"] => raw(Action::Set(Param::Bpm)),
+            ["composition", "disconnectall"] => unit(Action::ClearAll),
+            ["composition", "columns", c, "connect"] => unit(Action::LaunchColumn(index(c)?)),
+            ["composition", "layers", l, "clips", c, "connect"] => unit(Action::LaunchClip {
+                layer: index(l)?,
+                column: index(c)?,
+            }),
+            ["composition", "layers", l, "clear"] => unit(Action::EjectLayer(index(l)?)),
+            ["composition", "layers", l, "video", "opacity"] => {
+                unit(Action::Set(Param::LayerOpacity(index(l)?)))
+            }
+            ["composition", "layers", l, "bypassed"] => {
+                unit(Action::Set(Param::LayerBypass(index(l)?)))
+            }
+            ["composition", "layers", l, "solo"] => unit(Action::Set(Param::LayerSolo(index(l)?))),
+            ["composition", "layers", l, "transition", "duration"] => {
+                raw(Action::Set(Param::LayerTransition(index(l)?)))
+            }
+            ["composition", "groups", g, "columns", c, "connect"] => {
+                unit(Action::LaunchGroupColumn {
+                    group: index(g)?,
+                    column: index(c)?,
+                })
+            }
+            ["composition", "groups", g, "video", "opacity"] => {
+                unit(Action::Set(Param::GroupOpacity(index(g)?)))
+            }
+            ["composition", "groups", g, "bypassed"] => {
+                unit(Action::Set(Param::GroupBypass(index(g)?)))
+            }
+            _ => None,
+        }
+    }
+
     /// Command for a control value in 0..1. Triggers fire when the value rises
     /// above 0.5, so a button's release does nothing.
     pub fn command(&self, unit: f32, range: Option<Range>) -> Option<Command> {
@@ -289,6 +465,12 @@ impl Action {
                 column: *column,
             }),
             Action::LaunchColumn(c) => pressed.then_some(Command::TriggerColumn(*c)),
+            Action::LaunchGroupColumn { group, column } => {
+                pressed.then_some(Command::LaunchGroupColumn {
+                    group: *group,
+                    column: *column,
+                })
+            }
             Action::EjectLayer(l) => pressed.then_some(Command::EjectLayer(*l)),
             Action::ClearAll => pressed.then_some(Command::ClearAll),
         }
@@ -401,6 +583,10 @@ mod tests {
                 column: 5,
             },
             Action::LaunchColumn(3),
+            Action::LaunchGroupColumn {
+                group: 1,
+                column: 2,
+            },
             Action::EjectLayer(2),
             Action::ClearAll,
         ];
@@ -418,6 +604,70 @@ mod tests {
             "indices are 1-based"
         );
         assert_eq!(Action::parse("/nope"), None);
+    }
+
+    #[test]
+    fn arena_style_addresses_are_accepted() {
+        let cases = [
+            (
+                "/composition/layers/2/clips/3/connect",
+                Action::LaunchClip {
+                    layer: 1,
+                    column: 2,
+                },
+            ),
+            ("/composition/columns/4/connect", Action::LaunchColumn(3)),
+            ("/composition/layers/1/clear", Action::EjectLayer(0)),
+            ("/composition/disconnectall", Action::ClearAll),
+            (
+                "/composition/layers/3/video/opacity",
+                Action::Set(Param::LayerOpacity(2)),
+            ),
+            (
+                "/composition/layers/1/bypassed",
+                Action::Set(Param::LayerBypass(0)),
+            ),
+            ("/composition/layers/1/solo", Action::Set(Param::LayerSolo(0))),
+            ("/composition/master", Action::Set(Param::Master)),
+            (
+                "/composition/crossfader/phase",
+                Action::Set(Param::Crossfader),
+            ),
+            (
+                "/composition/groups/2/columns/1/connect",
+                Action::LaunchGroupColumn {
+                    group: 1,
+                    column: 0,
+                },
+            ),
+            (
+                "/composition/groups/1/video/opacity",
+                Action::Set(Param::GroupOpacity(0)),
+            ),
+        ];
+        for (address, action) in cases {
+            assert_eq!(
+                Action::parse_osc(address, Some(1.0)),
+                Some((action, 1.0)),
+                "{address}"
+            );
+        }
+        // Tempo arrives in BPM and transition in seconds: converted to 0..1.
+        let (action, unit) =
+            Action::parse_osc("/composition/tempocontroller/tempo", Some(260.0)).unwrap();
+        assert_eq!(action, Action::Set(Param::Bpm));
+        assert!((unit - 0.5).abs() < 1e-6);
+        let (action, unit) =
+            Action::parse_osc("/composition/layers/1/transition/duration", Some(5.0)).unwrap();
+        assert_eq!(action, Action::Set(Param::LayerTransition(0)));
+        assert!((unit - 0.5).abs() < 1e-6);
+        // Verso's own addresses still win, and a missing value is a press.
+        assert_eq!(
+            Action::parse_osc("/column/1/launch", None),
+            Some((Action::LaunchColumn(0), 1.0))
+        );
+        assert_eq!(Action::parse_osc("/composition/layers/0/clear", Some(1.0)), None);
+        assert_eq!(Action::parse_osc("/composition/nope", Some(1.0)), None);
     }
 
     #[test]

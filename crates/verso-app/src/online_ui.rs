@@ -225,7 +225,7 @@ impl VersoApp {
                     "Only shaders published as Public+API. Single pass; iChannel0 is the input image. Respect each shader's license (default CC BY-NC-SA 3.0).",
                 )
                 .small()
-                .color(theme::TEXT_DIM),
+                .color(theme::text_dim()),
             );
         }
 
@@ -267,7 +267,7 @@ impl VersoApp {
             ui.label(
                 egui::RichText::new(&online.message)
                     .small()
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let page = match online.site {
@@ -317,12 +317,12 @@ impl VersoApp {
                                 ui.label(
                                     egui::RichText::new(&listing.author)
                                         .small()
-                                        .color(theme::TEXT_DIM),
+                                        .color(theme::text_dim()),
                                 );
                                 let color = match listing.usage {
-                                    Usage::Commercial(_) => theme::ACCENT,
-                                    Usage::NonCommercial(_) => theme::WARN,
-                                    Usage::Unknown => theme::TEXT_DIM,
+                                    Usage::Commercial(_) => theme::accent(),
+                                    Usage::NonCommercial(_) => theme::warn(),
+                                    Usage::Unknown => theme::text_dim(),
                                 };
                                 ui.label(
                                     egui::RichText::new(listing.usage.label())
@@ -335,14 +335,14 @@ impl VersoApp {
                             match self.online.imported.get(&listing.id) {
                                 Some(Ok(done)) => {
                                     ui.label(
-                                        egui::RichText::new(done).small().color(theme::ACCENT),
+                                        egui::RichText::new(done).small().color(theme::accent()),
                                     );
                                 }
                                 Some(Err(e)) => {
                                     ui.label(
                                         egui::RichText::new("Not supported")
                                             .small()
-                                            .color(theme::WARN),
+                                            .color(theme::warn()),
                                     )
                                     .on_hover_text(e);
                                 }

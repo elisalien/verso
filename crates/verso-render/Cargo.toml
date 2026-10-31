@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 verso-core.workspace = true
+verso-milkdrop.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "wgsl-out"] }

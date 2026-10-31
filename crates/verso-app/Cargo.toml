@@ -13,12 +13,16 @@ path = "src/main.rs"
 verso-core.workspace = true
 verso-render.workspace = true
 eframe.workspace = true
+serde.workspace = true
+ron.workspace = true
 rfd = "0.17.2"
 verso-media.workspace = true
 verso-control.workspace = true
 verso-script.workspace = true
 verso-io.workspace = true
 verso-online.workspace = true
+verso-milkdrop.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 
 [dev-dependencies]
 pollster = "1.0.1"

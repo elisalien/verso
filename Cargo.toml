@@ -16,6 +16,7 @@ verso-control = { path = "crates/verso-control" }
 verso-script = { path = "crates/verso-script" }
 verso-io = { path = "crates/verso-io" }
 verso-online = { path = "crates/verso-online" }
+verso-milkdrop = { path = "crates/verso-milkdrop" }
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1", features = ["derive"] }

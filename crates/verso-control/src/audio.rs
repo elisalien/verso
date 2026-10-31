@@ -77,6 +77,14 @@ impl AudioInput {
     pub fn levels(&self) -> Levels {
         self.analyzer.lock().map(|a| a.levels()).unwrap_or_default()
     }
+
+    /// The last mono samples and their sample rate.
+    pub fn waveform(&self) -> (Vec<f32>, f32) {
+        self.analyzer
+            .lock()
+            .map(|a| (a.waveform(), a.sample_rate()))
+            .unwrap_or_else(|_| (Vec::new(), 44100.0))
+    }
 }
 
 fn build<T: SizedSample + Copy + 'static>(

@@ -103,9 +103,9 @@ impl VersoApp {
                         let failed =
                             self.scripts.host.error(&script.name).is_some() && script.enabled;
                         let label = egui::RichText::new(&script.name).color(if failed {
-                            theme::WARN
+                            theme::warn()
                         } else {
-                            theme::TEXT
+                            theme::text()
                         });
                         if ui
                             .selectable_label(self.scripts.selected == index, label)
@@ -123,7 +123,7 @@ impl VersoApp {
                 egui::RichText::new(
                     "Scripts automate the composition in Lua. Create one to start.",
                 )
-                .color(theme::TEXT_DIM),
+                .color(theme::text_dim()),
             );
             return;
         };
@@ -180,7 +180,7 @@ impl VersoApp {
             .error(&script.name)
             .filter(|_| script.enabled)
         {
-            ui.label(egui::RichText::new(error).color(theme::WARN).monospace());
+            ui.label(egui::RichText::new(error).color(theme::warn()).monospace());
         }
 
         let log = self.scripts.host.log(&script.name).join("\n");
@@ -196,7 +196,7 @@ impl VersoApp {
                             egui::RichText::new(log)
                                 .small()
                                 .monospace()
-                                .color(theme::TEXT_DIM),
+                                .color(theme::text_dim()),
                         );
                     });
             });

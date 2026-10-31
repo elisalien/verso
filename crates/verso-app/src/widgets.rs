@@ -19,7 +19,7 @@ pub fn fader(ui: &mut Ui, value: &mut f32, size: Vec2, color: Color32, reset: f3
     }
 
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::BG_DEEP);
+    painter.rect_filled(rect, 2.0, theme::bg_deep());
     let mut fill = rect;
     fill.set_width(rect.width() * value.clamp(0.0, 1.0));
     painter.rect_filled(
@@ -27,13 +27,18 @@ pub fn fader(ui: &mut Ui, value: &mut f32, size: Vec2, color: Color32, reset: f3
         2.0,
         color.gamma_multiply(if response.hovered() { 0.85 } else { 0.65 }),
     );
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        Stroke::new(1.0, theme::line()),
+        StrokeKind::Inside,
+    );
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         format!("{:.0}%", *value * 100.0),
         FontId::proportional(10.0),
-        theme::TEXT,
+        theme::text(),
     );
     response
 }
@@ -53,7 +58,7 @@ pub fn vfader(ui: &mut Ui, value: &mut f32, size: Vec2, color: Color32, reset: f
     }
 
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::BG_DEEP);
+    painter.rect_filled(rect, 2.0, theme::bg_deep());
     let level = value.clamp(0.0, 1.0);
     let fill = Rect::from_min_max(
         egui::pos2(rect.left(), rect.bottom() - rect.height() * level),
@@ -67,9 +72,14 @@ pub fn vfader(ui: &mut Ui, value: &mut f32, size: Vec2, color: Color32, reset: f
     // Cap line at the current level.
     painter.line_segment(
         [fill.left_top(), fill.right_top()],
-        Stroke::new(2.0, theme::TEXT),
+        Stroke::new(2.0, theme::text()),
     );
-    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        Stroke::new(1.0, theme::line()),
+        StrokeKind::Inside,
+    );
     let percent = format!("{:.0}%", level * 100.0);
     response.on_hover_text(percent)
 }
@@ -88,7 +98,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str, on_color: Color32, hint: 
 /// Small square push button.
 pub fn square_button(ui: &mut Ui, label: &str, hint: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-    paint_square(ui, rect, label, false, theme::ACCENT, response.hovered());
+    paint_square(ui, rect, label, false, theme::accent(), response.hovered());
     response.on_hover_text(hint)
 }
 
@@ -97,9 +107,9 @@ fn paint_square(ui: &Ui, rect: Rect, label: &str, on: bool, on_color: Color32, h
     let fill = if on {
         on_color
     } else if hovered {
-        theme::BG_RAISED.gamma_multiply(1.4)
+        theme::bg_raised().gamma_multiply(1.4)
     } else {
-        theme::BG_RAISED
+        theme::bg_raised()
     };
     painter.rect_filled(rect, 2.0, fill);
     painter.text(
@@ -107,20 +117,20 @@ fn paint_square(ui: &Ui, rect: Rect, label: &str, on: bool, on_color: Color32, h
         Align2::CENTER_CENTER,
         label,
         FontId::proportional(11.0),
-        if on { theme::BG_DEEP } else { theme::TEXT },
+        if on { theme::bg_deep() } else { theme::text() },
     );
 }
 
 /// Panel title bar.
 pub fn header(ui: &mut Ui, title: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, theme::BG_HEADER);
+    ui.painter().rect_filled(rect, 0.0, theme::bg_header());
     ui.painter().text(
         rect.left_center() + Vec2::new(6.0, 0.0),
         Align2::LEFT_CENTER,
         title,
         FontId::proportional(11.0),
-        theme::TEXT_DIM,
+        theme::text_dim(),
     );
 }
 
@@ -130,9 +140,9 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, items: &[(T, &str
         for (value, label) in items {
             let selected = *current == *value;
             let text = egui::RichText::new(*label).color(if selected {
-                theme::ACCENT
+                theme::accent()
             } else {
-                theme::TEXT_DIM
+                theme::text_dim()
             });
             if ui.selectable_label(selected, text).clicked() {
                 *current = *value;

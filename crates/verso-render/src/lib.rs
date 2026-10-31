@@ -10,6 +10,7 @@
 mod effects;
 mod grab;
 mod media;
+pub mod milkdrop;
 mod thumbnails;
 
 use std::collections::HashMap;
@@ -104,7 +105,10 @@ impl GeneratorParams {
         let (kind, color, speed) = match *source {
             Source::Solid { color } => (SOLID_KIND, color, 0.0),
             Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
-            Source::Image { .. } | Source::Video { .. } | Source::Shader(_) => return None,
+            Source::Image { .. }
+            | Source::Video { .. }
+            | Source::Shader(_)
+            | Source::Milkdrop { .. } => return None,
         };
         Some(Self {
             time,
@@ -547,10 +551,12 @@ pub struct Renderer {
     /// 1×1 transparent texture: the input of generator shaders.
     blank: Target,
     composition: Pair,
-    group: Pair,
+    /// One pair per group nesting depth.
+    groups: Vec<Pair>,
     output: Target,
     layers: Vec<LayerState>,
     uniforms: UniformPool,
+    milk: milkdrop::MilkRenderer,
 }
 
 impl Renderer {
@@ -636,10 +642,11 @@ impl Renderer {
             effects: HashMap::new(),
             blank: Target::new(device, "blank", (1, 1), WORK_FORMAT),
             composition: Pair::new(device, "composition", size),
-            group: Pair::new(device, "group", size),
+            groups: Vec::new(),
             output: Target::new(device, "output", size, OUTPUT_FORMAT),
             layers: Vec::new(),
             uniforms: UniformPool::default(),
+            milk: milkdrop::MilkRenderer::default(),
         }
     }
 
@@ -667,6 +674,15 @@ impl Renderer {
         &mut self.library
     }
 
+    /// MilkDrop presets and their running state.
+    pub fn milkdrop(&self) -> &milkdrop::MilkRenderer {
+        &self.milk
+    }
+
+    pub fn milkdrop_mut(&mut self) -> &mut milkdrop::MilkRenderer {
+        &mut self.milk
+    }
+
     /// Recreates every size-dependent resource.
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
         let size = (size.0.max(1), size.1.max(1));
@@ -675,9 +691,10 @@ impl Renderer {
         }
         self.size = size;
         self.composition = Pair::new(device, "composition", size);
-        self.group = Pair::new(device, "group", size);
+        self.groups.clear();
         self.output = Target::new(device, "output", size, OUTPUT_FORMAT);
         self.layers.clear();
+        self.milk.reset();
     }
 
     /// Compiles the pipelines of every effect `comp` uses.
@@ -779,6 +796,13 @@ impl Renderer {
             self.layers.push(LayerState::new(device, self.size));
         }
         self.layers.truncate(comp.layers.len());
+        let depth = (0..comp.groups.len())
+            .map(|g| comp.group_depth(g) + 1)
+            .max()
+            .unwrap_or(0);
+        while self.groups.len() < depth {
+            self.groups.push(Pair::new(device, "group", self.size));
+        }
         self.uniforms.next = 0;
 
         let frame = Frame {
@@ -794,54 +818,23 @@ impl Renderer {
         drop(pass(encoder, &self.blank.view, true));
         let uniforms = &mut self.uniforms;
         let composition = &mut self.composition;
-        let group_pair = &mut self.group;
+        let group_pairs = &mut self.groups[..];
         composition.clear(encoder);
+        self.milk.begin_frame();
 
-        let mut groups_done = vec![false; comp.groups.len()];
-        for index in 0..comp.layers.len() {
-            match comp.layers[index].group.filter(|&g| g < comp.groups.len()) {
-                None => render_layer(
-                    &frame,
-                    encoder,
-                    uniforms,
-                    comp,
-                    media,
-                    index,
-                    &mut self.layers[index],
-                    composition,
-                ),
-                Some(g) if !groups_done[g] => {
-                    groups_done[g] = true;
-                    group_pair.clear(encoder);
-                    for member in comp.group_layers(g) {
-                        render_layer(
-                            &frame,
-                            encoder,
-                            uniforms,
-                            comp,
-                            media,
-                            member,
-                            &mut self.layers[member],
-                            group_pair,
-                        );
-                    }
-                    let group = &comp.groups[g];
-                    frame.run_chain(encoder, uniforms, &group.effects, None, group_pair);
-                    let gain = comp.group_gain(g);
-                    if gain > 0.0 {
-                        frame.blend(
-                            encoder,
-                            uniforms,
-                            composition,
-                            &group_pair.current().view,
-                            group.blend,
-                            gain,
-                        );
-                    }
-                }
-                Some(_) => {}
-            }
-        }
+        render_scope(
+            &frame,
+            encoder,
+            uniforms,
+            &mut self.milk,
+            comp,
+            media,
+            None,
+            composition,
+            &mut self.layers,
+            group_pairs,
+        );
+        self.milk.end_frame();
         frame.run_chain(encoder, uniforms, &comp.effects, None, composition);
 
         let params = OutputParams {
@@ -864,16 +857,104 @@ impl Renderer {
     }
 }
 
+/// Renders the layers of `scope` (a group, or the whole composition) onto
+/// `dest`, bottom first. Each group inside renders into its own pair from
+/// `spare`, gets its effects, and blends onto `dest` as one image.
+#[allow(clippy::too_many_arguments)]
+fn render_scope(
+    frame: &Frame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    uniforms: &mut UniformPool,
+    milk: &mut milkdrop::MilkRenderer,
+    comp: &Composition,
+    media: &[Option<MediaView<'_>>],
+    scope: Option<usize>,
+    dest: &mut Pair,
+    states: &mut [LayerState],
+    spare: &mut [Pair],
+) {
+    let mut done = vec![false; comp.groups.len()];
+    for index in 0..comp.layers.len() {
+        if scope.is_some_and(|s| !comp.layer_in_group(index, s)) {
+            continue;
+        }
+        match comp.child_toward(scope, index) {
+            None => {
+                // A MilkDrop clip can read another layer's last image.
+                let input = milk_input(comp, index)
+                    .filter(|&i| i != index)
+                    .and_then(|i| states.get(i))
+                    .map(|s| s.mixed.view.clone());
+                render_layer(
+                    frame,
+                    encoder,
+                    uniforms,
+                    milk,
+                    comp,
+                    media,
+                    index,
+                    &mut states[index],
+                    input,
+                    dest,
+                )
+            }
+            Some(g) if !done[g] => {
+                done[g] = true;
+                let Some((pair, deeper)) = spare.split_first_mut() else {
+                    continue;
+                };
+                pair.clear(encoder);
+                render_scope(
+                    frame,
+                    encoder,
+                    uniforms,
+                    milk,
+                    comp,
+                    media,
+                    Some(g),
+                    pair,
+                    states,
+                    deeper,
+                );
+                let group = &comp.groups[g];
+                frame.run_chain(encoder, uniforms, &group.effects, None, pair);
+                let gain = comp.group_gain(g);
+                if gain > 0.0 {
+                    frame.blend(
+                        encoder,
+                        uniforms,
+                        dest,
+                        &pair.current().view,
+                        group.blend,
+                        gain,
+                    );
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// Layer whose image feeds the MilkDrop clip playing on layer `index`.
+fn milk_input(comp: &Composition, index: usize) -> Option<usize> {
+    match &comp.layers.get(index)?.active_clip()?.source {
+        Source::Milkdrop { input, .. } => *input,
+        _ => None,
+    }
+}
+
 /// Renders layer `index` and blends it onto `dest`.
 #[allow(clippy::too_many_arguments)]
 fn render_layer(
     frame: &Frame<'_>,
     encoder: &mut wgpu::CommandEncoder,
     uniforms: &mut UniformPool,
+    milk: &mut milkdrop::MilkRenderer,
     comp: &Composition,
     media: &[Option<MediaView<'_>>],
     index: usize,
     state: &mut LayerState,
+    input: Option<wgpu::TextureView>,
     dest: &mut Pair,
 ) {
     let layer = &comp.layers[index];
@@ -919,6 +1000,36 @@ fn render_layer(
                 frame.blank,
                 &state.work.current().view,
                 WORK_FORMAT,
+            );
+        }
+        if let (
+            Source::Milkdrop {
+                family,
+                variant,
+                blend,
+                input_mix,
+                ..
+            },
+            Some(column),
+        ) = (&clip.source, active)
+        {
+            let options = milkdrop::PlayOptions {
+                blend: *blend,
+                input: input.as_ref(),
+                input_mix: *input_mix,
+            };
+            milk.draw(
+                frame.device,
+                frame.queue,
+                encoder,
+                (index, column),
+                family,
+                *variant,
+                options,
+                &state.work.current().view,
+                WORK_FORMAT,
+                frame.size,
+                frame.time,
             );
         }
         let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {

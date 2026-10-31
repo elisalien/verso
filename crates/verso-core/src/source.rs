@@ -57,6 +57,21 @@ pub enum Source {
     /// Generator shader from the effect library (ISF or ShaderToy without an
     /// input image), with its parameters.
     Shader(Effect),
+    /// MilkDrop preset: `variant` of the preset family `family` (an id from
+    /// the MilkDrop library, `<category>/<name>`).
+    Milkdrop {
+        family: String,
+        variant: usize,
+        /// Seconds of MilkDrop blend when the variant changes; 0 cuts.
+        #[serde(default = "default_milk_blend")]
+        blend: f32,
+        /// Layer whose image the preset reads as its image textures.
+        #[serde(default)]
+        input: Option<usize>,
+        /// How much of the input layer is mixed into the feedback each frame.
+        #[serde(default)]
+        input_mix: f32,
+    },
     /// Video file, played at `speed` (1 is normal speed).
     Video {
         path: PathBuf,
@@ -65,12 +80,33 @@ pub enum Source {
     },
 }
 
+fn default_milk_blend() -> f32 {
+    Source::MILK_BLEND
+}
+
 impl Source {
+    /// Default MilkDrop blend time, in seconds.
+    pub const MILK_BLEND: f32 = 2.5;
+
+    /// A MilkDrop source with default playback options.
+    pub fn milkdrop(family: &str, variant: usize) -> Source {
+        Source::Milkdrop {
+            family: family.to_owned(),
+            variant,
+            blend: Source::MILK_BLEND,
+            input: None,
+            input_mix: 0.0,
+        }
+    }
+
     /// File the source reads, if any.
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             Source::Image { path } | Source::Video { path, .. } => Some(path),
-            Source::Solid { .. } | Source::Generator { .. } | Source::Shader(_) => None,
+            Source::Solid { .. }
+            | Source::Generator { .. }
+            | Source::Shader(_)
+            | Source::Milkdrop { .. } => None,
         }
     }
 

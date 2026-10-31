@@ -7,10 +7,11 @@ mod command;
 mod composition;
 pub mod control;
 mod effect;
+mod groups;
 pub mod modulation;
 mod source;
 
-pub use command::Command;
+pub use command::{Command, CommandKind};
 pub use composition::{
     BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master, Script,
 };
@@ -33,6 +34,12 @@ pub enum Error {
     NoModulator(usize),
     #[error("script {0} does not exist")]
     NoScript(usize),
+    #[error("only adjacent layers can be grouped")]
+    NotAdjacent,
+    #[error("a composition keeps at least one layer")]
+    LastLayer,
+    #[error("a composition keeps at least one column")]
+    LastColumn,
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

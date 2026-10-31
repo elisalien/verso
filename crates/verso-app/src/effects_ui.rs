@@ -73,13 +73,14 @@ impl VersoApp {
         let count = chain.len();
         for (index, effect) in chain.into_iter().enumerate() {
             egui::Frame::NONE
-                .fill(theme::BG_HEADER)
+                .fill(theme::bg_header())
                 .inner_margin(egui::Margin::same(4))
                 .corner_radius(2)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let mut on = !effect.bypass;
-                        if widgets::toggle(ui, &mut on, "●", theme::ACCENT, "On / bypass").changed()
+                        if widgets::toggle(ui, &mut on, "●", theme::accent(), "On / bypass")
+                            .changed()
                         {
                             self.send(edit(EffectEdit::SetBypass { index, bypass: !on }));
                         }
@@ -88,7 +89,7 @@ impl VersoApp {
                         ui.label(if def.is_some() {
                             label
                         } else {
-                            label.color(theme::WARN)
+                            label.color(theme::warn())
                         })
                         .on_hover_text(&effect.id);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -115,7 +116,7 @@ impl VersoApp {
                         ui.label(
                             egui::RichText::new("Effect not found: it is skipped.")
                                 .small()
-                                .color(theme::WARN),
+                                .color(theme::warn()),
                         );
                         return;
                     };
@@ -178,7 +179,7 @@ impl VersoApp {
             let mut category = None;
             for (cat, template) in defs {
                 if category.as_ref() != Some(&cat) {
-                    ui.label(egui::RichText::new(&cat).small().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new(&cat).small().color(theme::text_dim()));
                     category = Some(cat);
                 }
                 if ui.button(&template.name).clicked() {
@@ -195,13 +196,10 @@ impl VersoApp {
                 .button("Load Folder…")
                 .on_hover_text("Load .wgsl (Verso) and .fs (ISF) effects from a folder")
                 .clicked()
-                && let Some(folder) = rfd::FileDialog::new().pick_folder()
             {
-                let errors = self.renderer.library_mut().load_dir(&folder);
-                self.status = match errors.first() {
-                    Some(first) => format!("{} effect(s) failed. {first}", errors.len()),
-                    None => format!("Loaded effects from {}", folder.display()),
-                };
+                self.dialogs.open(crate::dialogs::DialogKind::EffectFolder, || {
+                    rfd::FileDialog::new().pick_folder()
+                });
             }
         });
         ui.label(
@@ -209,7 +207,7 @@ impl VersoApp {
                 "Drag onto a clip, a layer header or the Composition header. Double-click adds to the Properties target.",
             )
             .small()
-            .color(theme::TEXT_DIM),
+            .color(theme::text_dim()),
         );
         let defs: Vec<_> = self
             .renderer
@@ -231,7 +229,7 @@ impl VersoApp {
             for (cat, template) in defs {
                 if category.as_ref() != Some(&cat) {
                     ui.add_space(4.0);
-                    ui.label(egui::RichText::new(&cat).small().color(theme::TEXT_DIM));
+                    ui.label(egui::RichText::new(&cat).small().color(theme::text_dim()));
                     category = Some(cat);
                 }
                 let id = egui::Id::unique(("verso-effect", &template.id));
@@ -243,9 +241,9 @@ impl VersoApp {
                             Sense::click(),
                         );
                         let fill = if response.hovered() {
-                            theme::BG_RAISED
+                            theme::bg_raised()
                         } else {
-                            theme::BG_PANEL
+                            theme::bg_panel()
                         };
                         ui.painter().rect_filled(rect, 2.0, fill);
                         ui.painter().text(
@@ -253,7 +251,7 @@ impl VersoApp {
                             egui::Align2::LEFT_CENTER,
                             &name,
                             egui::FontId::proportional(12.0),
-                            theme::TEXT,
+                            theme::text(),
                         );
                         response
                     })

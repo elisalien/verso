@@ -560,3 +560,296 @@ fn generator_shader_is_a_clip_source() {
     let got = first_pixel(&render_frame(&gpu, &mut renderer, &comp, &[], 0.0));
     assert!(close(got, [0, 255, 0]), "{got:?}");
 }
+
+#[test]
+fn nested_groups_multiply_opacity_and_bypass() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = solids(&[(RED, BlendMode::Alpha, 1.0), (GREEN, BlendMode::Alpha, 1.0)]);
+    // Outer group 0 holds inner group 1, which holds the green layer.
+    comp.apply(Command::AddGroup { layers: vec![1] }).unwrap();
+    comp.apply(Command::AddGroup { layers: vec![1] }).unwrap();
+    assert_eq!(comp.groups[1].parent, Some(0));
+    for group in [0, 1] {
+        comp.apply(Command::SetGroupOpacity {
+            group,
+            opacity: 0.5,
+        })
+        .unwrap();
+    }
+    // Green at 0.25 over red: linear (0.75, 0.25, 0) in sRGB.
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [225, 137, 0]));
+
+    comp.apply(Command::SetGroupBypass {
+        group: 1,
+        bypass: true,
+    })
+    .unwrap();
+    assert!(close(first_pixel(&render(&gpu, &comp, 0.0)), [255, 0, 0]));
+}
+
+#[test]
+fn milkdrop_preset_animates_with_feedback() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("milk.json");
+    // Zooming feedback, a spinning additive shape, a wave and a blurred warp.
+    let preset = r#"{
+        "baseVals": {"decay": 0.97, "zoom": 1.02, "rot": 0.01, "wave_a": 1.0, "wave_mode": 2, "ob_size": 0.0, "ib_size": 0.0},
+        "frame_eqs_eel": "wave_r = 0.5 + 0.5*sin(time); q1 = bass;",
+        "pixel_eqs_eel": "zoom = zoom + rad*0.01;",
+        "init_eqs_eel": "",
+        "shapes": [{"baseVals": {"enabled": 1, "sides": 5, "additive": 1, "rad": 0.2, "r": 1, "g": 0.5, "b": 0, "a": 1, "a2": 0.5},
+                    "init_eqs_eel": "", "frame_eqs_eel": "ang = time;"}],
+        "waves": [],
+        "warp": " shader_body { ret = texture(sampler_main, uv).rgb * decay + texture(sampler_blur1, uv).rgb * 0.02; }",
+        "comp": ""
+    }"#;
+    std::fs::write(&path, preset).unwrap();
+    let mut comp = Composition::new("t", 1, 1);
+    comp.width = 64;
+    comp.height = 48;
+    let clip = Clip::new(
+        "Milk",
+        Source::milkdrop("User/milk", 0),
+    );
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: Some(clip),
+    })
+    .unwrap();
+    comp.apply(Command::SetLayerBlend {
+        layer: 0,
+        blend: BlendMode::Alpha,
+    })
+    .unwrap();
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer
+        .milkdrop_mut()
+        .library_mut()
+        .load_file(&path)
+        .unwrap();
+    let samples: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.07).sin() * 0.6).collect();
+    let mut frames = Vec::new();
+    for f in 0..30 {
+        renderer.milkdrop_mut().set_audio(samples.clone(), 44100.0);
+        frames.push(render_frame(&gpu, &mut renderer, &comp, &[], f as f32 / 30.0));
+    }
+    assert_eq!(renderer.milkdrop().error("User/milk", 0), None);
+    let lit = |px: &[u8]| px.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
+    let last = frames.last().unwrap();
+    assert!(lit(last) > 64 * 48 / 20, "only {} lit pixels", lit(last));
+    assert_ne!(&frames[28], last, "image is static");
+}
+
+/// Writes a two-variant family and returns its path.
+fn milk_family(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("milk-family.json");
+    // Variant 0 holds a red image, variant 1 a blue one; both keep the
+    // feedback buffer as is (decay 1, no zoom).
+    let variant = |r: f32, b: f32| {
+        format!(
+            r#"{{"name": "v", "preset": {{"baseVals": {{"decay": 1, "zoom": 1, "warp": 0, "wave_a": 0, "ob_size": 0, "ib_size": 0, "gammaadj": 1}},
+            "warp": " shader_body {{ ret = vec3({r}, 0.0, {b}); }}", "comp": ""}}}}"#
+        )
+    };
+    let json = format!(
+        r#"{{"name": "Test", "category": "Test", "variants": [{}, {}]}}"#,
+        variant(1.0, 0.0),
+        variant(0.0, 1.0)
+    );
+    std::fs::write(&path, json).unwrap();
+    path
+}
+
+fn milk_comp(source: Source, layers: usize) -> Composition {
+    let mut comp = Composition::new("t", layers, 1);
+    comp.width = 64;
+    comp.height = 36;
+    let last = layers - 1;
+    comp.apply(Command::SetClip {
+        layer: last,
+        column: 0,
+        clip: Some(Clip::new("Milk", source)),
+    })
+    .unwrap();
+    for layer in 0..layers {
+        comp.apply(Command::SetLayerBlend {
+            layer,
+            blend: BlendMode::Alpha,
+        })
+        .unwrap();
+    }
+    comp
+}
+
+fn mean_rgb(px: &[u8]) -> [f32; 3] {
+    let n = (px.len() / 4) as f32;
+    let mut sum = [0.0f32; 3];
+    for p in px.chunks(4) {
+        for c in 0..3 {
+            sum[c] += p[c] as f32;
+        }
+    }
+    sum.map(|s| s / n)
+}
+
+#[test]
+fn milkdrop_variant_change_blends() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = milk_family(&dir);
+    let mut comp = milk_comp(Source::milkdrop("Test/milk-family", 0), 1);
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    let mut t = 0.0;
+    let mut frame = |renderer: &mut Renderer, comp: &Composition| {
+        t += 0.1;
+        mean_rgb(&render_frame(&gpu, renderer, comp, &[], t))
+    };
+    for _ in 0..3 {
+        frame(&mut renderer, &comp);
+    }
+    let red = frame(&mut renderer, &comp);
+    assert!(red[0] > 200.0 && red[2] < 20.0, "{red:?}");
+
+    // Switch to the blue variant with a 1 s blend.
+    if let Some(clip) = comp.layers[0].clips[0].as_mut()
+        && let Source::Milkdrop { variant, blend, .. } = &mut clip.source
+    {
+        *variant = 1;
+        *blend = 1.0;
+    }
+    let mut seen_mix = false;
+    for _ in 0..8 {
+        let c = frame(&mut renderer, &comp);
+        seen_mix |= c[0] > 20.0 && c[2] > 20.0;
+    }
+    assert!(seen_mix, "no frame mixed both presets");
+    for _ in 0..5 {
+        frame(&mut renderer, &comp);
+    }
+    let blue = frame(&mut renderer, &comp);
+    assert!(blue[2] > 200.0 && blue[0] < 20.0, "{blue:?}");
+}
+
+#[test]
+fn milkdrop_reads_input_layer() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Default warp keeps the feedback; the input fully replaces it each frame.
+    let path = dir.join("milk-input.json");
+    std::fs::write(
+        &path,
+        r#"{"baseVals": {"decay": 1, "zoom": 1, "warp": 0, "wave_a": 0, "ob_size": 0, "ib_size": 0, "gammaadj": 1}, "warp": "", "comp": ""}"#,
+    )
+    .unwrap();
+    let mut source = Source::milkdrop("User/milk-input", 0);
+    if let Source::Milkdrop { input, input_mix, .. } = &mut source {
+        *input = Some(0);
+        *input_mix = 1.0;
+    }
+    let mut comp = milk_comp(source, 2);
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: solid([0.0, 1.0, 0.0, 1.0]),
+    })
+    .unwrap();
+    // The input layer is hidden: only the preset shows it.
+    comp.apply(Command::SetLayerOpacity { layer: 0, opacity: 0.0 }).unwrap();
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    let mut last = [0.0; 3];
+    for f in 0..4 {
+        last = mean_rgb(&render_frame(&gpu, &mut renderer, &comp, &[], f as f32 * 0.1));
+    }
+    assert!(last[1] > 200.0 && last[0] < 30.0, "{last:?}");
+}
+
+#[test]
+fn milkdrop_input_keeps_orientation() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("milk-input.json");
+    std::fs::write(
+        &path,
+        r#"{"baseVals": {"decay": 1, "zoom": 1, "warp": 0, "wave_a": 0, "ob_size": 0, "ib_size": 0, "gammaadj": 1}, "warp": "", "comp": ""}"#,
+    )
+    .unwrap();
+    // Red grows to the right, green upward: any flip changes a corner.
+    let shader = dir.join("corners.glsl");
+    std::fs::write(
+        &shader,
+        "// name: Corners
+void mainImage(out vec4 c, in vec2 p) { c = vec4(p / iResolution.xy, 0.0, 1.0); }
+",
+    )
+    .unwrap();
+    let id = shader.display().to_string();
+    let gradient = Source::Shader(Effect::new(&id, "Corners"));
+    // Reference: the gradient on its own.
+    let mut plain = Composition::new("t", 1, 1);
+    plain.width = 64;
+    plain.height = 36;
+    plain
+        .apply(Command::SetClip { layer: 0, column: 0, clip: Some(Clip::new("g", gradient.clone())) })
+        .unwrap();
+    plain.apply(Command::TriggerColumn(0)).unwrap();
+    let mut plain_renderer = Renderer::new(&gpu.device, (plain.width, plain.height));
+    plain_renderer.library_mut().load_file(&shader).unwrap();
+    let reference = render_frame(&gpu, &mut plain_renderer, &plain, &[], 0.0);
+
+    let mut source = Source::milkdrop("User/milk-input", 0);
+    if let Source::Milkdrop { input, input_mix, .. } = &mut source {
+        *input = Some(0);
+        *input_mix = 1.0;
+    }
+    let mut comp = milk_comp(source, 2);
+    comp.apply(Command::SetClip { layer: 0, column: 0, clip: Some(Clip::new("g", gradient)) })
+        .unwrap();
+    comp.apply(Command::SetLayerOpacity { layer: 0, opacity: 0.0 }).unwrap();
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    renderer.library_mut().load_file(&shader).unwrap();
+    let mut got = Vec::new();
+    for f in 0..3 {
+        got = render_frame(&gpu, &mut renderer, &comp, &[], 0.0 + f as f32 * 0.0);
+    }
+    let corner = |px: &[u8], x: usize, y: usize| {
+        let i = (y * 64 + x) * 4;
+        [px[i] as i32, px[i + 1] as i32, px[i + 2] as i32]
+    };
+    // The gradient tells the corners apart, so a flip would show.
+    let corners = [(2, 2), (61, 2), (2, 33), (61, 33)];
+    let distinct = corners.iter().map(|&(x, y)| corner(&reference, x, y)).collect::<std::collections::HashSet<_>>();
+    assert_eq!(distinct.len(), 4, "corners must differ: {distinct:?}");
+    for (x, y) in corners {
+        let (a, b) = (corner(&reference, x, y), corner(&got, x, y));
+        assert!((0..3).all(|c| (a[c] - b[c]).abs() <= 12), "({x},{y}): {a:?} vs {b:?}");
+    }
+}

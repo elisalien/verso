@@ -3395,12 +3395,16 @@ name = "verso-app"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "image",
  "pollster 1.0.1",
  "rfd",
+ "ron",
+ "serde",
  "verso-control",
  "verso-core",
  "verso-io",
  "verso-media",
+ "verso-milkdrop",
  "verso-online",
  "verso-render",
  "verso-script",
@@ -3443,6 +3447,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "verso-milkdrop"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "verso-online"
 version = "0.1.0"
 dependencies = [
@@ -3462,6 +3475,7 @@ dependencies = [
  "pollster 1.0.1",
  "serde_json",
  "verso-core",
+ "verso-milkdrop",
  "wgpu",
 ]
 

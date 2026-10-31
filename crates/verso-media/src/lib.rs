@@ -99,6 +99,20 @@ pub fn tool_path(name: &str) -> String {
         .unwrap_or_else(|| name.to_owned())
 }
 
+/// Whether `ffmpeg` and `ffprobe` can be run. Checked once at startup so the
+/// app can say so before the first video fails.
+pub fn ffmpeg_available() -> bool {
+    ["ffmpeg", "ffprobe"].iter().all(|name| {
+        let program = tool_path(name);
+        command(&program)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
+
 pub(crate) fn command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null());

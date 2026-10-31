@@ -57,12 +57,26 @@ pub enum Command {
         layer: usize,
         group: Option<usize>,
     },
-    /// New group holding `layers`.
+    /// New group holding `layers`, which must form one adjacent block once
+    /// whole groups are included; groups inside become nested.
     AddGroup {
         layers: Vec<usize>,
     },
-    /// Deletes a group; its layers stay, ungrouped.
+    /// Deletes a group; its layers and groups move up to its parent.
     RemoveGroup(usize),
+    SetGroupSolo {
+        group: usize,
+        solo: bool,
+    },
+    SetGroupCollapsed {
+        group: usize,
+        collapsed: bool,
+    },
+    /// Launches a column on the layers of one group only.
+    LaunchGroupColumn {
+        group: usize,
+        column: usize,
+    },
     RenameGroup {
         group: usize,
         name: String,
@@ -108,6 +122,85 @@ pub enum Command {
     },
     AddLayer,
     AddColumn,
+    /// Deletes a layer. Modulators and MIDI mappings of that layer go away;
+    /// those of the layers above move down with them.
+    RemoveLayer(usize),
+    /// Deletes a column and the clips in it, on every layer.
+    RemoveColumn(usize),
+    Rename(String),
+    SetResolution {
+        width: u32,
+        height: u32,
+    },
+}
+
+/// What a command means for the document: whether it needs saving and
+/// whether it can be undone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandKind {
+    /// Playback: launching and ejecting clips. Does not change the document.
+    Play,
+    /// A value edit: faders, parameters, names. Changes the document but
+    /// arrives many times a second, so it is not undone step by step.
+    Tweak,
+    /// A structure edit: clips, layers, columns, groups, effect chains,
+    /// mappings. Changes the document and can be undone.
+    Edit,
+}
+
+impl Command {
+    pub fn kind(&self) -> CommandKind {
+        use Command::*;
+        match self {
+            TriggerClip { .. }
+            | TriggerColumn(_)
+            | EjectLayer(_)
+            | ClearAll
+            | LaunchGroupColumn { .. } => CommandKind::Play,
+            SetLayerOpacity { .. }
+            | SetLayerBypass { .. }
+            | SetLayerSolo { .. }
+            | SetLayerFader { .. }
+            | SetLayerTransition { .. }
+            | SetGroupSolo { .. }
+            | SetGroupCollapsed { .. }
+            | SetGroupOpacity { .. }
+            | SetGroupBypass { .. }
+            | RenameLayer { .. }
+            | RenameColumn { .. }
+            | RenameGroup { .. }
+            | Rename(_)
+            | SetModulator { .. }
+            | SetScript { .. }
+            | SetMasterOpacity(_)
+            | SetCrossfader(_)
+            | SetBpm(_) => CommandKind::Tweak,
+            EditEffects { edit, .. } => match edit {
+                EffectEdit::SetParam { .. } | EffectEdit::SetBypass { .. } => CommandKind::Tweak,
+                EffectEdit::Add(_) | EffectEdit::Remove(_) | EffectEdit::Move { .. } => {
+                    CommandKind::Edit
+                }
+            },
+            SetClip { .. }
+            | SetLayerBlend { .. }
+            | SetGroupBlend { .. }
+            | SetLayerGroup { .. }
+            | AddGroup { .. }
+            | RemoveGroup(_)
+            | AddModulator(_)
+            | RemoveModulator(_)
+            | AddScript(_)
+            | RemoveScript(_)
+            | MapMidi(_)
+            | UnmapMidi(_)
+            | ResetLaunchCount { .. }
+            | AddLayer
+            | AddColumn
+            | RemoveLayer(_)
+            | RemoveColumn(_)
+            | SetResolution { .. } => CommandKind::Edit,
+        }
+    }
 }
 
 impl Composition {
@@ -157,8 +250,17 @@ impl Composition {
                 }
                 self.layer_mut(layer)?.group = group
             }
-            Command::AddGroup { layers } => self.add_group(&layers)?,
-            Command::RemoveGroup(group) => self.remove_group(group)?,
+            Command::AddGroup { layers } => {
+                self.group_layers_together(&layers)?;
+            }
+            Command::RemoveGroup(group) => self.ungroup(group)?,
+            Command::SetGroupSolo { group, solo } => self.group_mut(group)?.solo = solo,
+            Command::SetGroupCollapsed { group, collapsed } => {
+                self.group_mut(group)?.collapsed = collapsed
+            }
+            Command::LaunchGroupColumn { group, column } => {
+                self.launch_group_column(group, column)?
+            }
             Command::RenameGroup { group, name } => self.group_mut(group)?.name = name,
             Command::SetGroupOpacity { group, opacity } => {
                 self.group_mut(group)?.opacity = opacity.clamp(0.0, 1.0)
@@ -212,6 +314,13 @@ impl Composition {
             }
             Command::AddLayer => self.add_layer(),
             Command::AddColumn => self.add_column(),
+            Command::RemoveLayer(layer) => self.remove_layer(layer)?,
+            Command::RemoveColumn(column) => self.remove_column(column)?,
+            Command::Rename(name) => self.name = name,
+            Command::SetResolution { width, height } => {
+                self.width = width.clamp(16, 8192);
+                self.height = height.clamp(16, 8192);
+            }
         }
         Ok(())
     }
@@ -547,6 +656,151 @@ mod tests {
         })
         .unwrap();
         assert_eq!(comp.layers[0].launch_count(2), 0);
+    }
+
+    #[test]
+    fn remove_layer_shifts_references_and_keeps_one() {
+        use crate::control::{Action, Param};
+        use crate::modulation::{AudioBand, ModSource, Modulator};
+        let mut comp = Composition::new("t", 3, 2);
+        let modulator = |layer| Modulator {
+            param: Param::LayerOpacity(layer),
+            source: ModSource::Audio {
+                band: AudioBand::Bass,
+            },
+            depth: 1.0,
+            bypass: false,
+        };
+        comp.apply(Command::AddModulator(modulator(0))).unwrap();
+        comp.apply(Command::AddModulator(modulator(1))).unwrap();
+        comp.apply(Command::AddModulator(modulator(2))).unwrap();
+        comp.apply(Command::MapMidi(MidiMapping {
+            key: MidiKey::Note {
+                channel: 0,
+                note: 1,
+            },
+            action: Action::LaunchClip {
+                layer: 2,
+                column: 1,
+            },
+        }))
+        .unwrap();
+        comp.apply(Command::MapMidi(MidiMapping {
+            key: MidiKey::Note {
+                channel: 0,
+                note: 2,
+            },
+            action: Action::EjectLayer(1),
+        }))
+        .unwrap();
+        comp.apply(Command::AddGroup { layers: vec![1, 2] }).unwrap();
+
+        comp.apply(Command::RemoveLayer(1)).unwrap();
+        assert_eq!(comp.layers.len(), 2);
+        assert_eq!(comp.layers[1].name, "Layer 3");
+        let params: Vec<_> = comp.modulators.iter().map(|m| m.param.clone()).collect();
+        assert_eq!(params, [Param::LayerOpacity(0), Param::LayerOpacity(1)]);
+        assert_eq!(comp.midi.len(), 1);
+        assert_eq!(
+            comp.midi[0].action,
+            Action::LaunchClip {
+                layer: 1,
+                column: 1
+            }
+        );
+        // The group keeps its remaining layer.
+        assert_eq!(comp.layers[1].group, Some(0));
+
+        // Removing the last member dissolves the group.
+        comp.apply(Command::RemoveLayer(1)).unwrap();
+        assert!(comp.groups.is_empty());
+        assert!(matches!(
+            comp.apply(Command::RemoveLayer(0)),
+            Err(Error::LastLayer)
+        ));
+        assert!(matches!(
+            comp.apply(Command::RemoveLayer(5)),
+            Err(Error::NoLayer(5))
+        ));
+    }
+
+    #[test]
+    fn remove_column_drops_clips_and_shifts_active() {
+        use crate::control::Action;
+        let mut comp = Composition::demo();
+        comp.apply(Command::TriggerColumn(3)).unwrap();
+        comp.apply(Command::MapMidi(MidiMapping {
+            key: MidiKey::Note {
+                channel: 0,
+                note: 1,
+            },
+            action: Action::LaunchColumn(1),
+        }))
+        .unwrap();
+        comp.apply(Command::MapMidi(MidiMapping {
+            key: MidiKey::Note {
+                channel: 0,
+                note: 2,
+            },
+            action: Action::LaunchColumn(4),
+        }))
+        .unwrap();
+        comp.apply(Command::RemoveColumn(1)).unwrap();
+        assert_eq!(comp.columns.len(), 5);
+        assert!(comp.layers.iter().all(|l| l.clips.len() == 5));
+        assert!(comp.layers.iter().all(|l| l.launches.len() == 5));
+        // The playing column moved down by one.
+        assert!(comp.layers.iter().all(|l| l.active == Some(2)));
+        assert_eq!(comp.midi.len(), 1);
+        assert_eq!(comp.midi[0].action, Action::LaunchColumn(3));
+
+        // Removing the playing column ejects the layers.
+        comp.apply(Command::RemoveColumn(2)).unwrap();
+        assert!(comp.layers.iter().all(|l| l.active.is_none()));
+        let mut one = Composition::new("t", 1, 1);
+        assert!(matches!(
+            one.apply(Command::RemoveColumn(0)),
+            Err(Error::LastColumn)
+        ));
+    }
+
+    #[test]
+    fn ungroup_shifts_group_references() {
+        use crate::control::Param;
+        use crate::modulation::{ModSource, Modulator, Waveform};
+        let mut comp = Composition::new("t", 4, 1);
+        comp.apply(Command::AddGroup { layers: vec![0] }).unwrap();
+        comp.apply(Command::AddGroup { layers: vec![2] }).unwrap();
+        for g in 0..2 {
+            comp.apply(Command::AddModulator(Modulator {
+                param: Param::GroupOpacity(g),
+                source: ModSource::Lfo {
+                    waveform: Waveform::Sine,
+                    beats: 4.0,
+                },
+                depth: 1.0,
+                bypass: false,
+            }))
+            .unwrap();
+        }
+        comp.apply(Command::RemoveGroup(0)).unwrap();
+        let params: Vec<_> = comp.modulators.iter().map(|m| m.param.clone()).collect();
+        assert_eq!(params, [Param::GroupOpacity(0)]);
+    }
+
+    #[test]
+    fn command_kinds() {
+        assert_eq!(Command::TriggerColumn(0).kind(), CommandKind::Play);
+        assert_eq!(Command::SetBpm(1.0).kind(), CommandKind::Tweak);
+        assert_eq!(Command::AddLayer.kind(), CommandKind::Edit);
+        assert_eq!(
+            Command::EditEffects {
+                target: EffectTarget::Composition,
+                edit: EffectEdit::Remove(0)
+            }
+            .kind(),
+            CommandKind::Edit
+        );
     }
 
     #[test]

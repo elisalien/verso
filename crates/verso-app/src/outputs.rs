@@ -135,13 +135,13 @@ impl VersoApp {
             ui.label(
                 egui::RichText::new(format!("{receivers} receiver(s) connected"))
                     .small()
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
         } else if !verso_io::ndi::available() {
             ui.label(
                 egui::RichText::new("NDI runtime not found: install NDI Tools")
                     .small()
-                    .color(theme::WARN),
+                    .color(theme::warn()),
             );
         }
     }

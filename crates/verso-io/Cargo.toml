@@ -1,6 +1,6 @@
 [package]
 name = "verso-io"
-description = "Verso video outputs to other applications: NDI and Spout"
+description = "Verso video outputs to other applications: NDI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

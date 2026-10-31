@@ -5,11 +5,11 @@ use verso_core::control::{Action, Param};
 use verso_core::{Clip, Command, EffectTarget, FaderSide, Generator, Source};
 
 use crate::app::{PropsTab, VersoApp};
-use crate::effects_ui::{EffectTemplate, group_color};
+use crate::effects_ui::EffectTemplate;
 use crate::{theme, widgets};
 
 pub const CELL: Vec2 = Vec2::new(112.0, 63.0);
-const HEADER_WIDTH: f32 = 236.0;
+pub const HEADER_WIDTH: f32 = 236.0;
 const COLUMN_HEADER_HEIGHT: f32 = 22.0;
 
 /// A source dragged from the browser.
@@ -73,12 +73,18 @@ impl VersoApp {
                     self.column_header(ui, column);
                 }
             });
-            // Top layer first, as it renders on top.
-            for layer in (0..self.comp.layers.len()).rev() {
-                ui.horizontal(|ui| {
-                    self.layer_header(ui, layer);
-                    for column in 0..self.comp.columns.len() {
-                        self.cell(ui, layer, column);
+            // Top layer first, as it renders on top; group headers above
+            // their layers.
+            for row in crate::groups_ui::rows(&self.comp) {
+                ui.horizontal(|ui| match row {
+                    crate::groups_ui::Row::Group { group, depth } => {
+                        self.group_row(ui, group, depth)
+                    }
+                    crate::groups_ui::Row::Layer { layer } => {
+                        self.layer_header(ui, layer);
+                        for column in 0..self.comp.columns.len() {
+                            self.cell(ui, layer, column);
+                        }
                     }
                 });
             }
@@ -91,12 +97,12 @@ impl VersoApp {
             Sense::click(),
         );
         let selected = self.props_tab == PropsTab::Composition;
-        ui.painter().rect_filled(rect, 2.0, theme::BG_HEADER);
+        ui.painter().rect_filled(rect, 2.0, theme::bg_header());
         if selected {
             ui.painter().rect_stroke(
                 rect,
                 2.0,
-                Stroke::new(1.0, theme::SELECT),
+                Stroke::new(1.0, theme::select()),
                 StrokeKind::Inside,
             );
         }
@@ -104,7 +110,7 @@ impl VersoApp {
             ui.painter().rect_stroke(
                 rect,
                 2.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0, theme::accent()),
                 StrokeKind::Inside,
             );
         }
@@ -124,7 +130,7 @@ impl VersoApp {
                 ui,
                 &mut opacity,
                 Vec2::new(ui.available_width(), 16.0),
-                theme::ACCENT,
+                theme::accent(),
                 1.0,
             );
             let learning = self.learnable(ui, fader.rect, Action::Set(Param::Master));
@@ -143,9 +149,9 @@ impl VersoApp {
             ui.allocate_exact_size(Vec2::new(CELL.x, COLUMN_HEADER_HEIGHT), Sense::click());
         let playing = self.comp.layers.iter().any(|l| l.active == Some(column));
         let fill = if response.hovered() {
-            theme::BG_RAISED.gamma_multiply(1.3)
+            theme::bg_raised().gamma_multiply(1.3)
         } else {
-            theme::BG_HEADER
+            theme::bg_header()
         };
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 2.0, fill);
@@ -154,7 +160,7 @@ impl VersoApp {
                 rect.left_bottom() - Vec2::new(0.0, 2.0),
                 Vec2::new(rect.width(), 2.0),
             );
-            painter.rect_filled(bar, 0.0, theme::ACCENT);
+            painter.rect_filled(bar, 0.0, theme::accent());
         }
         painter.text(
             rect.center(),
@@ -162,9 +168,9 @@ impl VersoApp {
             &self.comp.columns[column].name,
             FontId::proportional(11.0),
             if playing {
-                theme::TEXT
+                theme::text()
             } else {
-                theme::TEXT_DIM
+                theme::text_dim()
             },
         );
         let response = response.on_hover_text("Click to launch the column");
@@ -178,6 +184,24 @@ impl VersoApp {
             if ui.text_edit_singleline(&mut name).changed() {
                 self.send(Command::RenameColumn { column, name });
             }
+            ui.separator();
+            if ui.button("Clear Column").on_hover_text("Eject this column on every layer playing it").clicked() {
+                let playing: Vec<usize> = (0..self.comp.layers.len())
+                    .filter(|&l| self.comp.layers[l].active == Some(column))
+                    .collect();
+                for layer in playing {
+                    self.send(Command::EjectLayer(layer));
+                }
+                ui.close();
+            }
+            if ui
+                .add_enabled(self.comp.columns.len() > 1, egui::Button::new("Delete Column"))
+                .on_hover_text("Deletes the column and its clips on every layer (Ctrl+Z undoes)")
+                .clicked()
+            {
+                self.send(Command::RemoveColumn(column));
+                ui.close();
+            }
         });
     }
 
@@ -185,34 +209,40 @@ impl VersoApp {
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(HEADER_WIDTH, CELL.y), Sense::click());
         let layer = &self.comp.layers[index];
-        let selected = self.props_tab == PropsTab::Layer && self.selected_layer == index;
+        let selected = (self.props_tab == PropsTab::Layer && self.selected_layer == index)
+            || self.selected_layers.contains(&index);
         let painter = ui.painter();
-        painter.rect_filled(rect, 2.0, theme::BG_HEADER);
+        painter.rect_filled(
+            rect,
+            2.0,
+            if self.selected_layers.contains(&index) {
+                theme::bg_raised()
+            } else {
+                theme::bg_header()
+            },
+        );
         if selected {
             painter.rect_stroke(
                 rect,
                 2.0,
-                Stroke::new(1.0, theme::SELECT),
+                Stroke::new(1.0, theme::select()),
                 StrokeKind::Inside,
             );
         }
-        // Playing indicator on the left edge, group tag next to it.
+        // One stripe per group around the layer, then the playing indicator.
+        let path = self.comp.layer_path(index);
+        let left = crate::groups_ui::paint_stripes(ui, rect, &path);
+        let painter = ui.painter();
         if self.comp.layer_gain(index) > 0.0 {
-            let strip = Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height()));
-            painter.rect_filled(strip, 0.0, theme::ACCENT);
-        }
-        if let Some(g) = layer.group {
-            let tag = Rect::from_min_size(
-                rect.min + Vec2::new(3.0, 0.0),
-                Vec2::new(3.0, rect.height()),
-            );
-            painter.rect_filled(tag, 0.0, group_color(g));
+            let strip =
+                Rect::from_min_size(egui::pos2(left, rect.top()), Vec2::new(3.0, rect.height()));
+            painter.rect_filled(strip, 0.0, theme::accent());
         }
         if response.dnd_hover_payload::<EffectTemplate>().is_some() {
             painter.rect_stroke(
                 rect,
                 2.0,
-                Stroke::new(2.0, theme::ACCENT),
+                Stroke::new(2.0, theme::accent()),
                 StrokeKind::Inside,
             );
         }
@@ -221,7 +251,8 @@ impl VersoApp {
             (layer.bypass, layer.solo, layer.opacity, layer.fader);
         let name = layer.name.clone();
         let blend = layer.blend.name();
-        let inner = rect.shrink2(Vec2::new(8.0, 4.0));
+        let inner = Rect::from_min_max(egui::pos2(left + 6.0, rect.top()), rect.max)
+            .shrink2(Vec2::new(2.0, 4.0));
         // Opacity fader on the right edge, full header height.
         let fader_rect = Rect::from_min_max(
             egui::pos2(inner.right() - 16.0, inner.top()),
@@ -232,7 +263,7 @@ impl VersoApp {
             &mut fader_ui,
             &mut opacity,
             fader_rect.size(),
-            theme::ACCENT,
+            theme::accent(),
             1.0,
         );
         let learning = self.learnable(ui, fader_rect, Action::Set(Param::LayerOpacity(index)));
@@ -255,7 +286,7 @@ impl VersoApp {
                 if !self.learnable(ui, eject.rect, Action::EjectLayer(index)) && eject.clicked() {
                     self.send(Command::EjectLayer(index));
                 }
-                let toggle = widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass");
+                let toggle = widgets::toggle(ui, &mut bypass, "B", theme::warn(), "Bypass");
                 if !self.learnable(ui, toggle.rect, Action::Set(Param::LayerBypass(index)))
                     && toggle.changed()
                 {
@@ -264,7 +295,7 @@ impl VersoApp {
                         bypass,
                     });
                 }
-                let toggle = widgets::toggle(ui, &mut solo, "S", theme::SOLO, "Solo");
+                let toggle = widgets::toggle(ui, &mut solo, "S", theme::solo(), "Solo");
                 if !self.learnable(ui, toggle.rect, Action::Set(Param::LayerSolo(index)))
                     && toggle.changed()
                 {
@@ -276,20 +307,20 @@ impl VersoApp {
             ui.horizontal(|ui| {
                 for (side, label) in [(FaderSide::A, "A"), (FaderSide::B, "B")] {
                     let mut on = fader_side == side;
-                    if widgets::toggle(ui, &mut on, label, theme::ACCENT, "Crossfader side")
+                    if widgets::toggle(ui, &mut on, label, theme::accent(), "Crossfader side")
                         .changed()
                     {
                         let side = if on { side } else { FaderSide::None };
                         self.send(Command::SetLayerFader { layer: index, side });
                     }
                 }
-                ui.label(egui::RichText::new(blend).small().color(theme::TEXT_DIM));
+                ui.label(egui::RichText::new(blend).small().color(theme::text_dim()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format!("{:.0}%", opacity * 100.0))
                             .small()
                             .monospace()
-                            .color(theme::TEXT_DIM),
+                            .color(theme::text_dim()),
                     );
                 });
             });
@@ -299,13 +330,19 @@ impl VersoApp {
             self.selected_layer = index;
             self.props_tab = PropsTab::Layer;
         } else if response.clicked() {
-            self.selected_layer = index;
-            self.props_tab = PropsTab::Layer;
+            let modifiers = ui.input(|i| i.modifiers);
+            self.click_layer(index, modifiers);
         }
+        response.context_menu(|ui| self.layer_group_menu(ui, index));
     }
 
     fn cell(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
         let (rect, response) = ui.allocate_exact_size(CELL, Sense::click());
+        let milk_family = match self.comp.layers[layer].clips[column].as_ref().map(|c| &c.source) {
+            Some(Source::Milkdrop { family, .. }) => Some(family.clone()),
+            _ => None,
+        };
+        let milk_preview = milk_family.and_then(|family| self.milk_preview(ui.ctx(), &family));
         let clip = self.comp.layers[layer].clips[column].as_ref();
         let active = self.comp.layers[layer].active == Some(column);
         let selected = self.selected_clip == Some((layer, column));
@@ -313,9 +350,14 @@ impl VersoApp {
             || (response.dnd_hover_payload::<EffectTemplate>().is_some() && clip.is_some());
         let painter = ui.painter_at(rect);
         self.cell_rects.push((rect, (layer, column)));
+        if response.hovered() && clip.is_some() {
+            self.hovered_clip = Some((layer, column));
+        }
 
         let texture = clip.and_then(|clip| {
-            if clip.source.is_procedural() {
+            if let Some(id) = milk_preview {
+                Some((id, None))
+            } else if clip.source.is_procedural() {
                 self.cell_textures
                     .get(&(layer, column))
                     .map(|&id| (id, None))
@@ -344,7 +386,7 @@ impl VersoApp {
                     Align2::LEFT_CENTER,
                     &clip.name,
                     FontId::proportional(10.5),
-                    theme::TEXT,
+                    theme::text(),
                 );
                 // Launch counter of this slot, bottom right over the name strip.
                 let launches = self.comp.layers[layer].launch_count(column);
@@ -352,45 +394,53 @@ impl VersoApp {
                     let galley = painter.layout_no_wrap(
                         launches.to_string(),
                         FontId::monospace(10.0),
-                        theme::BG_DEEP,
+                        theme::bg_deep(),
                     );
                     let badge = Rect::from_min_size(
                         label.right_center() - Vec2::new(galley.size().x + 8.0, 6.5),
                         Vec2::new(galley.size().x + 6.0, 13.0),
                     );
-                    painter.rect_filled(badge, 3.0, theme::ACCENT);
-                    painter.galley(badge.center() - galley.size() / 2.0, galley, theme::BG_DEEP);
+                    painter.rect_filled(badge, 3.0, theme::accent());
+                    painter.galley(
+                        badge.center() - galley.size() / 2.0,
+                        galley,
+                        theme::bg_deep(),
+                    );
                 }
             }
             (Some(clip), None) => {
-                painter.rect_filled(rect, 2.0, theme::BG_RAISED);
+                painter.rect_filled(rect, 2.0, theme::bg_raised());
                 let failed = self.media.failed(&clip.source);
                 painter.text(
                     rect.center(),
                     Align2::CENTER_CENTER,
                     if failed { "Missing" } else { "Loading…" },
                     FontId::proportional(10.5),
-                    if failed { theme::WARN } else { theme::TEXT_DIM },
+                    if failed {
+                        theme::warn()
+                    } else {
+                        theme::text_dim()
+                    },
                 );
                 painter.text(
                     rect.left_bottom() + Vec2::new(4.0, -3.0),
                     Align2::LEFT_BOTTOM,
                     &clip.name,
                     FontId::proportional(10.5),
-                    theme::TEXT_DIM,
+                    theme::text_dim(),
                 );
             }
             (None, _) => {
-                painter.rect_filled(rect, 2.0, theme::BG_PANEL);
+                painter.rect_filled(rect, 2.0, theme::bg_panel());
             }
         }
 
         let stroke = if drop_hover || active {
-            Stroke::new(2.0, theme::ACCENT)
+            Stroke::new(2.0, theme::accent())
         } else if selected {
-            Stroke::new(1.5, theme::SELECT)
+            Stroke::new(1.5, theme::select())
         } else {
-            Stroke::new(1.0, theme::LINE)
+            Stroke::new(1.0, theme::line())
         };
         painter.rect_stroke(rect, 2.0, stroke, StrokeKind::Inside);
         if active {
@@ -402,7 +452,7 @@ impl VersoApp {
                     c + Vec2::new(4.0, 0.0),
                     c + Vec2::new(-3.0, 4.0),
                 ],
-                theme::ACCENT,
+                theme::accent(),
                 Stroke::NONE,
             ));
         }
@@ -488,17 +538,17 @@ impl VersoApp {
             self.modulation_menu(&response, Param::Crossfader);
             let painter = ui.painter_at(rect);
             let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 4.0));
-            painter.rect_filled(track, 2.0, theme::BG_DEEP);
+            painter.rect_filled(track, 2.0, theme::bg_deep());
             painter.line_segment(
                 [rect.center_top(), rect.center_bottom()],
-                Stroke::new(1.0, theme::LINE),
+                Stroke::new(1.0, theme::line()),
             );
             let x = rect.left() + rect.width() * value;
             let handle =
                 Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::new(10.0, 16.0));
-            painter.rect_filled(handle, 2.0, theme::ACCENT);
+            painter.rect_filled(handle, 2.0, theme::accent());
             ui.label(egui::RichText::new("B").strong());
-            ui.label(egui::RichText::new("Crossfader").color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new("Crossfader").color(theme::text_dim()));
         });
     }
 }

@@ -9,7 +9,7 @@ mod midi;
 mod osc;
 mod tempo;
 
-pub use analysis::{Analyzer, Levels};
+pub use analysis::{Analyzer, Levels, WAVEFORM_LEN};
 pub use audio::{AudioInput, input_devices};
 pub use midi::{MidiEvent, MidiInputs};
 pub use osc::{OscEvent, OscServer};

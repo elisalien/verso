@@ -2,14 +2,14 @@
 //! texture, drawing its slices with their warps.
 //!
 //! A slice samples the composition, or one layer or group image at its
-//! opacity (group images need [`Renderer::keep_group_images`]). Soft edges
-//! are not rendered yet.
+//! opacity (group images need [`Renderer::keep_group_images`]). Soft-edged
+//! slices blend where their inputs overlap (see `verso_core::output`).
 
 use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 use verso_core::Composition;
-use verso_core::output::{ColorAdjust, InputSource, OutputSetup, Screen};
+use verso_core::output::{ColorAdjust, InputSource, MAX_SOFT_SLICES, OutputSetup, Screen};
 
 use crate::{OUTPUT_FORMAT, Renderer, Target, shader};
 
@@ -23,6 +23,47 @@ struct Vertex {
     adjust: [f32; 4],
     /// RGB offsets; `w` is 1 on the highlighted slice.
     rgb: [f32; 4],
+    /// Index in the soft edge quads, or -1.
+    soft: f32,
+}
+
+/// `Soft` in `slice.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SoftUniform {
+    params: [f32; 4],
+    gamma_rgb: [f32; 4],
+    canvas: [f32; 4],
+    quads: [[f32; 4]; 2 * MAX_SOFT_SLICES],
+}
+
+impl SoftUniform {
+    /// The soft edge of `setup`, and the index of each soft-edged slice.
+    fn new(setup: &OutputSetup) -> (Self, Vec<u64>) {
+        let quads = setup.soft_quads();
+        let soft = &setup.soft_edge;
+        let mut uniform = Self {
+            params: [
+                soft.power as f32,
+                soft.luminance as f32,
+                soft.gamma as f32,
+                quads.len() as f32,
+            ],
+            gamma_rgb: [
+                soft.gamma_rgb[0] as f32,
+                soft.gamma_rgb[1] as f32,
+                soft.gamma_rgb[2] as f32,
+                0.0,
+            ],
+            canvas: [setup.canvas.0 as f32, setup.canvas.1 as f32, 0.0, 0.0],
+            quads: [[0.0; 4]; 2 * MAX_SOFT_SLICES],
+        };
+        for (i, (_, q)) in quads.iter().enumerate() {
+            uniform.quads[2 * i] = [q[0][0], q[0][1], q[1][0], q[1][1]];
+            uniform.quads[2 * i + 1] = [q[2][0], q[2][1], q[3][0], q[3][1]];
+        }
+        (uniform, quads.into_iter().map(|(id, _)| id).collect())
+    }
 }
 
 struct ScreenTarget {
@@ -36,6 +77,7 @@ pub struct ScreenRenderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertices: Option<wgpu::Buffer>,
+    soft: wgpu::Buffer,
     screens: Vec<ScreenTarget>,
     /// Slice drawn with a striped tint on its screen, to find it on the
     /// physical output.
@@ -46,7 +88,11 @@ impl ScreenRenderer {
     pub fn new(device: &wgpu::Device) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("slice"),
-            entries: &[crate::texture_entry(0, true), crate::sampler_entry(1)],
+            entries: &[
+                crate::texture_entry(0, true),
+                crate::sampler_entry(1),
+                crate::uniform_entry(2),
+            ],
         });
         let module = shader(device, "slice", include_str!("shaders/slice.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -65,7 +111,8 @@ impl ScreenRenderer {
                     array_stride: std::mem::size_of::<Vertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4
+                        0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4,
+                        4 => Float32
                     ],
                 })],
             },
@@ -95,6 +142,12 @@ impl ScreenRenderer {
                 ..Default::default()
             }),
             vertices: None,
+            soft: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("soft edge"),
+                size: std::mem::size_of::<SoftUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
             screens: Vec::new(),
             highlight: None,
         }
@@ -138,6 +191,9 @@ impl ScreenRenderer {
             }
         }
 
+        let (soft, soft_ids) = SoftUniform::new(setup);
+        queue.write_buffer(&self.soft, 0, bytemuck::bytes_of(&soft));
+
         // One buffer for every screen: each slice draws its own range.
         let mut vertices = Vec::new();
         let mut draws: Vec<Vec<(Range<u32>, InputSource)>> = Vec::with_capacity(screens.len());
@@ -159,12 +215,17 @@ impl ScreenRenderer {
                 if self.highlight == Some(slice.id) {
                     rgb[3] = 1.0;
                 }
+                let soft = soft_ids
+                    .iter()
+                    .position(|&id| id == slice.id)
+                    .map_or(-1.0, |i| i as f32);
                 let start = vertices.len() as u32;
                 vertices.extend(slice.mesh(setup.canvas).into_iter().map(|v| Vertex {
                     position: [v.position[0] / w * 2.0 - 1.0, 1.0 - v.position[1] / h * 2.0],
                     uv: v.uv,
                     adjust,
                     rgb,
+                    soft,
                 }));
                 ranges.push((start..vertices.len() as u32, source));
             }
@@ -211,6 +272,10 @@ impl ScreenRenderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.soft.as_entire_binding(),
                     },
                 ],
             });

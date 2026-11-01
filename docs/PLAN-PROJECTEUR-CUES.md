@@ -12,7 +12,7 @@ maintenant.
 | # | Étape | Taille | Dépend de |
 |---|---|---|---|
 | 1 | Highlight Selection dans l'AO | S | — (fait le 2026-11-01) |
-| 2 | Rendu du soft edge, puis calcul automatique des recouvrements | M | — |
+| 2 | Rendu du soft edge, recouvrements calculés automatiquement | M | — (fait le 2026-11-01) |
 | 3 | Mires de test par écran | S | — |
 | 4 | Identification des projecteurs | S | 3 |
 | 5 | Cue list : modèle et commandes (`verso-core`) | M | — |
@@ -34,31 +34,37 @@ couper l'image des autres slices.
 Code : `ScreenRenderer::set_highlight`, `slice.wgsl` (`rgb.w`), test GPU
 `highlighted_slice_is_tinted`.
 
-### 1.2 Soft edge
+### 1.2 Soft edge (fait)
 
-Constat : les paramètres sont importés de Resolume (`SoftEdge` : power,
-luminance, gamma ; `Slice::soft_edge`), mais **rien n'est dessiné**.
-L'éditeur affiche « Soft edges are not drawn yet ».
+Avant : les paramètres étaient importés de Resolume (`SoftEdge` : power,
+luminance, gamma ; `Slice::soft_edge`), mais rien n'était dessiné.
 
-1. **Modèle.** Ajouter à `Slice` une largeur de fondu par bord, en pixels de
-   composition : `blend: [f32; 4]` (gauche, droite, haut, bas), `0` par
-   défaut. Champ `#[serde(default)]`, les anciens fichiers s'ouvrent.
-2. **Rendu.** Dans `slice.wgsl`, calculer la distance au bord en espace
-   d'entrée (les UV de la slice) et appliquer la courbe :
-   `f(x) = luminance · (2x)^power / 2` sous 0,5, `1 − luminance · (2(1−x))^power / 2`
-   au-dessus, puis `f^(1/gamma)`. Les paramètres viennent de
-   `OutputSetup::soft_edge`.
-3. **Calcul automatique.** Bouton « Auto Soft Edge » : pour chaque paire de
-   slices **sur des écrans différents** dont les rectangles d'entrée se
-   recouvrent, la largeur du recouvrement devient le fondu des deux bords en
-   regard. Rectangles alignés seulement au départ ; les autres formes sont
-   listées dans le rapport (« à régler à la main »).
-4. **Tests.** Unitaires dans `verso-core` : deux slices 0–1100 et 900–2000
-   donnent 200 px à droite de la première et 200 px à gauche de la seconde.
-   GPU : la colonne au milieu du fondu vaut environ la moitié de la luminance.
+Choix final, identique à Arena : pas de largeur à saisir. Chaque slice qui a
+« Soft Edge » activé se fond avec toutes les autres slices à soft edge dont
+l'entrée la recouvre, sur n'importe quel écran. Le recouvrement est donc
+calculé automatiquement, à chaque image, et le format Resolume reste
+compatible à l'export.
 
-Note honnête : Arena sait aussi détecter les recouvrements. Ce n'est pas un
-apport MadMapper, c'est un manque de l'AO actuel de Verso.
+- **Poids.** En un point de la composition, chaque slice pèse sa distance au
+  bord de sa propre entrée, divisée par la somme de ces distances sur toutes
+  les slices qui couvrent ce point. Les poids font 1 au total, la rampe
+  occupe tout le recouvrement, et cela marche à trois projecteurs ou plus.
+- **Courbe.** Courbe en S de `power` passant par (0,5 ; `luminance`), puis
+  exposant `gamma × gamma RVB / 2`, appliquée à la lumière (espace linéaire).
+  Avec les valeurs par défaut, deux projecteurs donnent ensemble la pleine
+  lumière.
+- **Limites.** 64 slices à soft edge au plus (au-delà, non fondues, signalé
+  dans l'éditeur). Les polygones utilisent le rectangle englobant de leur
+  entrée.
+- **Code.** Référence CPU testée dans `verso-core::output` (`edge_distance`,
+  `blend_weight`, `SoftEdge::curve`), calcul par pixel dans `slice.wgsl`,
+  menu « Soft Edge (n) » dans la barre AO et case par slice.
+- **Tests.** Unitaires : partage d'un recouvrement 900–1100, somme des
+  poids, courbe. GPU : deux écrans qui se recouvrent de 4 px, la lumière
+  additionnée reste à 100 % ± 8 %.
+
+À vérifier sur de vrais projecteurs : le réglage `gamma` qui compense le
+gamma réel des projecteurs.
 
 ### 1.3 Mires de test
 

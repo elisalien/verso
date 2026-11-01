@@ -709,6 +709,109 @@ pub struct Contour {
     pub output: Vec<[f32; 2]>,
 }
 
+// Soft edge.
+//
+// As in Arena, a slice with `soft_edge` on is blended with every other
+// soft-edged slice whose input overlaps it, on any screen: no widths to
+// set. Inside an overlap, each slice weighs its distance to its own input
+// edge, divided by the sum of those distances over the slices covering the
+// point. The weights add up to 1, ramp across the whole overlap, and work
+// for three or more projectors. `SoftEdge` then shapes the ramp.
+// `slice.wgsl` does the same per pixel; the functions below are its
+// reference and are tested here.
+
+/// Most soft-edged slices blended together; further ones are not blended.
+pub const MAX_SOFT_SLICES: usize = 64;
+
+impl Slice {
+    /// Input area the soft edge works on, in composition pixels: the
+    /// rotated input of a slice, the bounding box of a polygon's input.
+    pub fn blend_quad(&self) -> Option<Quad> {
+        match self.kind {
+            SliceKind::Dmx => None,
+            SliceKind::Slice => Some(rotate(&self.input, self.input_rotation)),
+            SliceKind::Polygon => {
+                let points = &self.contour.as_ref()?.input;
+                let first = *points.first()?;
+                let (min, max) = points.iter().fold((first, first), |(lo, hi), p| {
+                    ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+                });
+                Some([min, [max[0], min[1]], max, [min[0], max[1]]])
+            }
+        }
+    }
+}
+
+impl OutputSetup {
+    /// Enabled soft-edged slices of enabled video screens, with their blend
+    /// quads, at most [`MAX_SOFT_SLICES`]. The order is the one the renderer
+    /// uploads.
+    pub fn soft_quads(&self) -> Vec<(u64, Quad)> {
+        self.screens
+            .iter()
+            .filter(|s| s.enabled && !s.dmx && s.device.kind != DeviceKind::Dmx)
+            .flat_map(|s| &s.slices)
+            .filter(|s| s.enabled && s.soft_edge)
+            .filter_map(|s| Some((s.id, s.blend_quad()?)))
+            .take(MAX_SOFT_SLICES)
+            .collect()
+    }
+}
+
+/// Distance from `p` to the nearest edge of `quad`, positive inside and
+/// negative outside, whatever the winding of the quad.
+pub fn edge_distance(quad: &Quad, p: [f32; 2]) -> f32 {
+    let area: f32 = (0..4)
+        .map(|k| {
+            let (a, b) = (quad[k], quad[(k + 1) % 4]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let side = if area < 0.0 { -1.0 } else { 1.0 };
+    (0..4)
+        .filter_map(|k| {
+            let (a, b) = (quad[k], quad[(k + 1) % 4]);
+            let e = [b[0] - a[0], b[1] - a[1]];
+            let length = (e[0] * e[0] + e[1] * e[1]).sqrt();
+            (length > 0.0).then(|| {
+                side * (e[0] * (p[1] - a[1]) - e[1] * (p[0] - a[0])) / length
+            })
+        })
+        .fold(f32::MAX, f32::min)
+}
+
+/// Share of `quads[own]` at input point `p`, from 0 to 1, before the curve.
+/// 1 where no other quad covers `p`.
+pub fn blend_weight(quads: &[Quad], own: usize, p: [f32; 2]) -> f32 {
+    let distance = |q: &Quad| edge_distance(q, p).max(0.0);
+    let mine = distance(&quads[own]);
+    let total: f32 = quads.iter().map(distance).sum();
+    if total <= mine + 1e-6 {
+        1.0
+    } else {
+        mine / total
+    }
+}
+
+impl SoftEdge {
+    /// Light factor for weight `w`, per channel: the S curve of `power`
+    /// through (0.5, `luminance`), then the gammas. The image is multiplied
+    /// by this in linear light. With the defaults (power 2, luminance 0.5,
+    /// gamma 1, RGB gammas 2), two overlapping projectors add up to full
+    /// light on a projector of gamma 2.2.
+    pub fn curve(&self, w: f32) -> [f32; 3] {
+        let (power, luminance) = (self.power as f32, self.luminance as f32);
+        let w = w.clamp(0.0, 1.0);
+        let s = if w < 0.5 {
+            luminance * (2.0 * w).powf(power)
+        } else {
+            1.0 - (1.0 - luminance) * (2.0 * (1.0 - w)).powf(power)
+        };
+        self.gamma_rgb
+            .map(|g| s.powf((self.gamma * g / 2.0) as f32))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -899,5 +1002,69 @@ mod tests {
         setup.add_screen("Main", (1920, 1080));
         let text = ron::to_string(&setup).unwrap();
         assert_eq!(ron::from_str::<OutputSetup>(&text).unwrap(), setup);
+    }
+
+    fn quad(x0: f32, x1: f32) -> Quad {
+        [[x0, 0.0], [x1, 0.0], [x1, 100.0], [x0, 100.0]]
+    }
+
+    #[test]
+    fn edge_distance_ignores_winding() {
+        let q = quad(0.0, 100.0);
+        let reversed = [q[3], q[2], q[1], q[0]];
+        for quad in [q, reversed] {
+            assert_eq!(edge_distance(&quad, [10.0, 50.0]), 10.0);
+            assert_eq!(edge_distance(&quad, [50.0, 50.0]), 50.0);
+            assert!(edge_distance(&quad, [-5.0, 50.0]) < 0.0);
+        }
+    }
+
+    #[test]
+    fn two_projectors_share_their_overlap() {
+        // Inputs 0–1100 and 900–2000: the overlap is 900–1100.
+        let quads = [quad(0.0, 1100.0), quad(900.0, 2000.0)];
+        let at = |x: f32| (blend_weight(&quads, 0, [x, 50.0]), blend_weight(&quads, 1, [x, 50.0]));
+        assert_eq!(at(500.0), (1.0, 0.0));
+        assert_eq!(at(1500.0), (0.0, 1.0));
+        let (a, b) = at(1000.0);
+        assert!((a - 0.5).abs() < 0.01 && (b - 0.5).abs() < 0.01);
+        // Across the overlap the weights add up to 1 and ramp down.
+        let mut last = 1.0;
+        for x in (900..=1100).step_by(20) {
+            let (a, b) = at(x as f32);
+            assert!((a + b - 1.0).abs() < 1e-4, "{x}: {a} + {b}");
+            assert!(a <= last + 1e-4);
+            last = a;
+        }
+    }
+
+    #[test]
+    fn default_curve_adds_up_to_full_light() {
+        let soft = SoftEdge::default();
+        for w in [0.0, 0.1, 0.3, 0.5, 0.8, 1.0] {
+            let (a, b) = (soft.curve(w), soft.curve(1.0 - w));
+            for c in 0..3 {
+                assert!((a[c] + b[c] - 1.0).abs() < 1e-5, "w {w}");
+            }
+        }
+        assert_eq!(soft.curve(0.5), [0.5; 3]);
+    }
+
+    #[test]
+    fn soft_quads_keep_enabled_soft_slices() {
+        let mut setup = OutputSetup::default();
+        let a = setup.add_screen("A", (1000, 100));
+        let b = setup.add_screen("B", (1000, 100));
+        let mut left = Slice::new(a + 10, "L", quad(0.0, 1100.0), rect(1000.0, 100.0));
+        left.soft_edge = true;
+        let mut right = Slice::new(b + 10, "R", quad(900.0, 2000.0), rect(1000.0, 100.0));
+        right.soft_edge = true;
+        let plain = Slice::new(a + 11, "P", quad(0.0, 10.0), rect(10.0, 10.0));
+        setup.screens[0].slices = vec![left, plain];
+        setup.screens[1].slices = vec![right];
+        let ids: Vec<u64> = setup.soft_quads().iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, [a + 10, b + 10]);
+        setup.screens[1].enabled = false;
+        assert_eq!(setup.soft_quads().len(), 1);
     }
 }

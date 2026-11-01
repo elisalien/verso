@@ -1005,6 +1005,54 @@ fn highlighted_slice_is_tinted() {
 }
 
 #[test]
+fn soft_edges_blend_overlapping_slices() {
+    use verso_core::output::{OutputSetup, Slice, rect};
+    use verso_render::ScreenRenderer;
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut screens = ScreenRenderer::new(&gpu.device);
+    // Two 16 px screens of a 28 px composition: inputs 0–16 and 12–28
+    // overlap on 12–16.
+    let mut setup = OutputSetup {
+        canvas: (28, 8),
+        ..Default::default()
+    };
+    let a = setup.add_screen("A", (16, 8));
+    let b = setup.add_screen("B", (16, 8));
+    let input = |x0: f32| [[x0, 0.0], [x0 + 16.0, 0.0], [x0 + 16.0, 8.0], [x0, 8.0]];
+    let mut left = Slice::new(a + 10, "L", input(0.0), rect(16.0, 8.0));
+    left.soft_edge = true;
+    let mut right = Slice::new(b + 10, "R", input(12.0), rect(16.0, 8.0));
+    right.soft_edge = true;
+    setup.screens[0].slices = vec![left];
+    setup.screens[1].slices = vec![right];
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+    let left = read_back(&gpu, encoder, screens.texture(a).unwrap(), (16, 8));
+    let encoder = gpu.device.create_command_encoder(&Default::default());
+    let right = read_back(&gpu, encoder, screens.texture(b).unwrap(), (16, 8));
+    let red = |pixels: &[u8], x: usize| pixels[(4 * 16 + x) * 4];
+    // Outside the overlap, full red.
+    assert_eq!(red(&left, 2), 255);
+    assert_eq!(red(&right, 13), 255);
+    // In the overlap (composition x 12–16), each screen fades out toward
+    // its edge, and the light of both adds up to about full red.
+    let linear = |v: u8| (v as f32 / 255.0).powf(2.2);
+    let (l, r) = (red(&left, 15), red(&right, 3));
+    assert!(l < 128 && r > 200, "left {l}, right {r}");
+    for x in 12..16 {
+        let sum = linear(red(&left, x)) + linear(red(&right, x - 12));
+        assert!((sum - 1.0).abs() < 0.08, "x {x}: {sum}");
+    }
+}
+
+#[test]
 fn slices_show_layers_and_groups() {
     use verso_core::output::OutputSetup;
     use verso_render::ScreenRenderer;

@@ -214,16 +214,65 @@ impl VersoApp {
                 .small()
                 .color(theme::text_dim()),
             );
-            if setup
-                .screens
-                .iter()
-                .flat_map(|s| &s.slices)
-                .any(|s| s.soft_edge)
-            {
+            ui.separator();
+            self.soft_edge_menu(ui);
+        });
+    }
+
+    /// Curve shared by every soft-edged slice, and how many there are.
+    fn soft_edge_menu(&mut self, ui: &mut egui::Ui) {
+        let setup = &mut self.advanced.setup;
+        let soft = setup
+            .screens
+            .iter()
+            .flat_map(|s| &s.slices)
+            .filter(|s| s.soft_edge)
+            .count();
+        ui.menu_button(format!("Soft Edge ({soft})"), |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Slices with Soft Edge on blend where their inputs overlap,                      on any screen. Turn it on in each slice's settings.",
+                )
+                .small()
+                .color(theme::text_dim()),
+            );
+            let s = &mut setup.soft_edge;
+            egui::Grid::new("ao soft edge")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Power")
+                        .on_hover_text("Steepness of the ramp; 1 is linear");
+                    ui.add(egui::Slider::new(&mut s.power, 0.0..=8.0));
+                    ui.end_row();
+                    ui.label("Luminance")
+                        .on_hover_text("Light in the middle of the overlap");
+                    ui.add(egui::Slider::new(&mut s.luminance, 0.0..=1.0));
+                    ui.end_row();
+                    ui.label("Gamma")
+                        .on_hover_text("Raise if the overlap looks too bright, lower if too dark");
+                    ui.add(egui::Slider::new(&mut s.gamma, 0.0..=4.0));
+                    ui.end_row();
+                    for (channel, label) in ["Gamma Red", "Gamma Green", "Gamma Blue"]
+                        .iter()
+                        .enumerate()
+                    {
+                        ui.label(*label);
+                        ui.add(egui::Slider::new(&mut s.gamma_rgb[channel], 0.0..=4.0));
+                        ui.end_row();
+                    }
+                });
+            if ui.button("Reset Curve").clicked() {
+                *s = verso_core::output::SoftEdge::default();
+            }
+            if soft > verso_core::output::MAX_SOFT_SLICES {
                 ui.label(
-                    egui::RichText::new("Soft edges are not drawn yet")
-                        .small()
-                        .color(theme::warn()),
+                    egui::RichText::new(format!(
+                        "Only the first {} soft-edged slices are blended",
+                        verso_core::output::MAX_SOFT_SLICES
+                    ))
+                    .small()
+                    .color(theme::warn()),
                 );
             }
         });
@@ -500,6 +549,11 @@ impl VersoApp {
                         slice.flip = u8::from(h) | (u8::from(v) << 1);
                     }
                 });
+                ui.end_row();
+
+                ui.label("Soft Edge");
+                ui.checkbox(&mut slice.soft_edge, "")
+                    .on_hover_text("Blend with other soft-edged slices where the inputs overlap");
                 ui.end_row();
 
                 ui.label("Brightness");

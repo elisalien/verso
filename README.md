@@ -140,6 +140,43 @@ Windows). Generators (no input image) appear under Sources; filters under
 Effects. ShaderToy shaders are CC BY-NC-SA 3.0 unless their code says
 otherwise: use the "Commercial use only" filter and check the shader page.
 
+## MCP (agent control)
+
+Verso can run a [Model Context Protocol](https://modelcontextprotocol.io)
+server so an agent such as Claude Code reads the composition, drives it and
+gets GPU-rendered images, without screenshots or clicks. It is off unless
+asked for at launch, listens on `127.0.0.1` only, and refuses destructive
+actions (deleting layers or columns, open, save, new) without
+`"confirm": true`. Design and tool list: [docs/MCP.md](docs/MCP.md).
+
+Start Verso with the server (default port 7400), or set `VERSO_MCP_PORT`:
+
+```bash
+target/release/verso --mcp 7400
+```
+
+Then register it in Claude Code, once:
+
+```bash
+claude mcp add --transport http verso http://127.0.0.1:7400/mcp
+```
+
+`claude mcp get verso` should say "Connected" while Verso runs. Only the
+instance started with `--mcp` answers, so a second Verso window open next to
+it is never driven by mistake; the `status` tool gives its process id.
+
+Tools: `status`, `get_composition`, `get_layer`, `get_clip`, `list_sources`,
+`list_effects`, `get_log` (reading); `osc` (any address of the OSC section
+above), `set_clip`, `set_milkdrop`, `add_effect`, `apply_commands`, `select`,
+`hover`, `undo`, `redo`, `save`, `open`, `new_composition` (acting, through
+the same commands as the interface, so undo and the unsaved marker follow);
+`capture` (PNG of the whole window, the output, a layer, a column, a clip, a
+source not placed anywhere or the hover preview); `ui_widgets` and `ui_input`
+(real hovers, clicks, drags, wheel and keys in the window, in UI points), so
+an agent can test the interface itself. Indices start at 1, as in OSC. An
+instance with the server logs to `verso-mcp-<port>.log` instead of
+`verso.log`.
+
 ## MilkDrop
 
 Verso runs MilkDrop presets natively (a port of

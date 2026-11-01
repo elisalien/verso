@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::control::{MidiKey, MidiMapping};
 use crate::effect::edit_chain;
 use crate::modulation::Modulator;
@@ -5,8 +7,9 @@ use crate::{
     BlendMode, Clip, Composition, EffectEdit, EffectTarget, Error, FaderSide, Result, Script,
 };
 
-/// A single change to a composition.
-#[derive(Debug, Clone, PartialEq)]
+/// A single change to a composition. Serializable so that remote clients
+/// (the MCP server) can send any command.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     TriggerClip {
         layer: usize,

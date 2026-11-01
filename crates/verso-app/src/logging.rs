@@ -1,7 +1,9 @@
 //! Log file and panic hook.
 //!
 //! Messages go to `verso.log` in the user directory (the previous run is kept
-//! as `verso.log.old`), so a crash can be reported without a terminal. In
+//! as `verso.log.old`), so a crash can be reported without a terminal. An
+//! instance started with an MCP server writes `verso-mcp-<port>.log` instead,
+//! so a test instance never replaces the log of the one in use. In
 //! release builds on Windows there is no console at all. Everything from the
 //! `verso*` crates is logged at `info` and above; dependencies (wgpu, winit,
 //! naga…) only at `warn` and above.
@@ -68,8 +70,14 @@ pub fn init() {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("verso.log");
-    let _ = std::fs::rename(&path, dir.join("verso.log.old"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mcp = verso_mcp::requested_port(&args, std::env::var("VERSO_MCP_PORT").ok().as_deref());
+    let name = match mcp {
+        Some(port) => format!("verso-mcp-{port}.log"),
+        None => "verso.log".to_owned(),
+    };
+    let path = dir.join(&name);
+    let _ = std::fs::rename(&path, dir.join(format!("{name}.old")));
     let Ok(file) = File::create(&path) else {
         return;
     };

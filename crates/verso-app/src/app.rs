@@ -12,6 +12,8 @@ use crate::dialogs::{DialogKind, Dialogs};
 use crate::media::Media;
 use crate::theme;
 
+mod mcp;
+
 /// Snapshots kept for undo.
 const UNDO_DEPTH: usize = 50;
 /// Status messages kept in the log.
@@ -105,6 +107,8 @@ pub struct VersoApp {
     pub(crate) advanced: crate::advanced_output_ui::AdvancedOutput,
     pub(crate) online: crate::online_ui::OnlineState,
     pub(crate) milk: crate::milkdrop_ui::MilkState,
+    /// MCP server, when started with `--mcp`.
+    mcp: mcp::McpState,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
     /// Whether the composition changed since it was saved or opened.
@@ -154,6 +158,7 @@ impl VersoApp {
         );
         theme::load(&cc.egui_ctx);
         let ffmpeg = verso_media::ffmpeg_available();
+        let (mcp, mcp_message) = mcp::McpState::start(&cc.egui_ctx);
         let mut app = Self {
             output_texture_size: renderer.size(),
             cell_thumbs: Thumbnails::new(device, CELL_THUMB),
@@ -211,7 +216,11 @@ impl VersoApp {
             advanced: Default::default(),
             online: Default::default(),
             milk: Default::default(),
+            mcp,
         };
+        if let Some(message) = mcp_message {
+            app.status = message;
+        }
         if !ffmpeg {
             app.status = "FFmpeg not found: videos will not play. Install FFmpeg (ffmpeg and ffprobe on PATH) or set VERSO_FFMPEG and VERSO_FFPROBE.".into();
         }
@@ -332,6 +341,22 @@ impl VersoApp {
             HoverTarget::Source => self.hover_source.as_ref()?.0.clone(),
         };
         Some((texture, caption))
+    }
+
+    /// The pointer is over clip slot (`layer`, `column`). MilkDrop clips
+    /// preview live; other sources use the clip monitor.
+    pub(crate) fn hover_clip(&mut self, layer: usize, column: usize) {
+        self.hovered_clip = Some((layer, column));
+        let milkdrop = self
+            .comp
+            .layers
+            .get(layer)
+            .and_then(|l| l.clips.get(column))
+            .and_then(Option::as_ref)
+            .is_some_and(|clip| matches!(clip.source, Source::Milkdrop { .. }));
+        if milkdrop {
+            self.hover_target = Some(crate::hover_preview::HoverTarget::Clip(layer, column));
+        }
     }
 
     pub(crate) fn preview_slot(&self) -> Option<(usize, usize)> {
@@ -1103,10 +1128,16 @@ impl eframe::App for VersoApp {
         self.last_frame = now;
         self.handle_keys(ctx);
         self.poll_controls(self.frame_dt);
+        self.poll_mcp();
         self.run_scripts(self.frame_dt);
         self.apply_pending();
         self.render();
+        self.finish_mcp_captures();
         ctx.request_repaint();
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.mcp_raw_input(raw_input);
     }
 
     fn on_exit(&mut self) {
@@ -1161,5 +1192,6 @@ impl eframe::App for VersoApp {
         theme::settings_window(&ctx, &mut self.colors_open);
         self.output_window(&ctx);
         self.screen_windows(&ctx);
+        self.mcp_after_ui(&ctx);
     }
 }

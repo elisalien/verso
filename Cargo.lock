@@ -3628,9 +3628,11 @@ dependencies = [
  "rfd",
  "ron",
  "serde",
+ "serde_json",
  "verso-control",
  "verso-core",
  "verso-io",
+ "verso-mcp",
  "verso-media",
  "verso-milkdrop",
  "verso-online",
@@ -3666,6 +3668,14 @@ dependencies = [
  "roxmltree",
  "thiserror 2.0.21",
  "usvg",
+ "verso-core",
+]
+
+[[package]]
+name = "verso-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
  "verso-core",
 ]
 

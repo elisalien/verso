@@ -91,6 +91,13 @@ impl HoverPreview {
         self.texture.filter(|_| self.shown == Some(target))
     }
 
+    /// Renderer that drew `target`, for reading its output back.
+    pub fn renderer(&self, target: HoverTarget) -> Option<&Renderer> {
+        self.renderer
+            .as_ref()
+            .filter(|_| self.shown == Some(target))
+    }
+
     /// Renders `target` of `comp`. `setup` fills a new renderer's effect and
     /// MilkDrop libraries.
     #[allow(clippy::too_many_arguments)]

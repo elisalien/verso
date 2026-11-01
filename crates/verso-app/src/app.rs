@@ -539,6 +539,7 @@ impl VersoApp {
                 .clip_monitor
                 .render(device, queue, &mut encoder, (), source, time),
         });
+        self.outputs.highlight = self.advanced.highlighted_slice();
         let (new_screens, screen_errors) = self.outputs.render_screens(
             device,
             queue,

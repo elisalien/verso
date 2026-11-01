@@ -43,6 +43,9 @@ pub struct AdvancedOutput {
     pub(crate) view: EditorView,
     /// Show and move the points of the warp grid in the output view.
     pub(crate) edit_grid: bool,
+    /// Tint the selected slice on the live screens, to find it on the
+    /// projectors.
+    pub(crate) highlight: bool,
     pub(crate) drag: Option<crate::ao_editor::Drag>,
     /// Points of a polygon being drawn, in the space of the current view.
     pub(crate) drawing: Option<Vec<[f32; 2]>>,
@@ -51,6 +54,11 @@ pub struct AdvancedOutput {
 }
 
 impl AdvancedOutput {
+    /// Slice to tint on the live screens, when Highlight Selection is on.
+    pub(crate) fn highlighted_slice(&self) -> Option<u64> {
+        self.slice.filter(|_| self.highlight && self.window_open)
+    }
+
     pub(crate) fn selected_screen(&self) -> Option<&Screen> {
         let id = self.screen?;
         self.setup.screens.iter().find(|s| s.id == id)
@@ -190,6 +198,10 @@ impl VersoApp {
                 "Render the screens: a display screen goes full screen on its monitor, \
                  an NDI screen publishes a source",
             );
+            ui.checkbox(&mut self.advanced.highlight, "Highlight Selection")
+                .on_hover_text(
+                    "Tints the selected slice with stripes on the live screens,                      to find it on the projectors. Off when this window is closed.",
+                );
             let setup = &self.advanced.setup;
             ui.label(
                 egui::RichText::new(format!(

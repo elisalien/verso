@@ -36,5 +36,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var c = pow(max(linear, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
     c = (c - 0.5) * (1.0 + in.adjust.y) + 0.5 + in.adjust.x + in.rgb.rgb;
     c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    // Highlighted slice: diagonal stripes over a tint, visible on any image.
+    if in.rgb.w > 0.5 {
+        let stripe = step(0.5, fract((in.position.x + in.position.y) / 32.0));
+        let tint = vec3<f32>(0.0, 0.75, 1.0);
+        c = mix(c, tint, 0.35 + 0.35 * stripe);
+        return vec4<f32>(pow(c, vec3<f32>(2.2)), 1.0);
+    }
     return vec4<f32>(pow(c, vec3<f32>(2.2)), in.adjust.z);
 }

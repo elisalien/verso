@@ -21,6 +21,7 @@ struct Vertex {
     uv: [f32; 2],
     /// Brightness, contrast, opacity, source gain.
     adjust: [f32; 4],
+    /// RGB offsets; `w` is 1 on the highlighted slice.
     rgb: [f32; 4],
 }
 
@@ -36,6 +37,9 @@ pub struct ScreenRenderer {
     sampler: wgpu::Sampler,
     vertices: Option<wgpu::Buffer>,
     screens: Vec<ScreenTarget>,
+    /// Slice drawn with a striped tint on its screen, to find it on the
+    /// physical output.
+    highlight: Option<u64>,
 }
 
 impl ScreenRenderer {
@@ -92,7 +96,13 @@ impl ScreenRenderer {
             }),
             vertices: None,
             screens: Vec::new(),
+            highlight: None,
         }
+    }
+
+    /// Slice to highlight on the screens from the next render, or none.
+    pub fn set_highlight(&mut self, slice: Option<u64>) {
+        self.highlight = slice;
     }
 
     /// Renders the enabled video screens of `setup` from `source`, the
@@ -144,8 +154,11 @@ impl ScreenRenderer {
                     InputSource::Layer(i) => comp.layer_level(i),
                     InputSource::Group(g) => comp.group_gain(g),
                 };
-                let (mut adjust, rgb) = combine(&screen.color, &slice.color);
+                let (mut adjust, mut rgb) = combine(&screen.color, &slice.color);
                 adjust[3] = gain;
+                if self.highlight == Some(slice.id) {
+                    rgb[3] = 1.0;
+                }
                 let start = vertices.len() as u32;
                 vertices.extend(slice.mesh(setup.canvas).into_iter().map(|v| Vertex {
                     position: [v.position[0] / w * 2.0 - 1.0, 1.0 - v.position[1] / h * 2.0],

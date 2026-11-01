@@ -69,6 +69,8 @@ pub struct Outputs {
     ndi_failed: Vec<u64>,
     /// Rendered screens, for windows and previews.
     pub(crate) screen_textures: HashMap<u64, TextureId>,
+    /// Slice tinted on the screens (Highlight Selection).
+    pub highlight: Option<u64>,
 }
 
 impl Default for Outputs {
@@ -81,6 +83,7 @@ impl Default for Outputs {
             screen_ndi: Vec::new(),
             ndi_failed: Vec::new(),
             screen_textures: HashMap::new(),
+            highlight: None,
         }
     }
 }
@@ -163,6 +166,7 @@ impl Outputs {
         let screens = self
             .screens
             .get_or_insert_with(|| ScreenRenderer::new(device));
+        screens.set_highlight(self.highlight);
         let created = screens.render(device, queue, encoder, setup, renderer, comp);
 
         let mut errors = Vec::new();

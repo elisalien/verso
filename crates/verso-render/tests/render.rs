@@ -969,6 +969,42 @@ fn screens_draw_their_slices() {
 }
 
 #[test]
+fn highlighted_slice_is_tinted() {
+    use verso_core::output::{OutputSetup, Slice, rect};
+    use verso_render::ScreenRenderer;
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut screens = ScreenRenderer::new(&gpu.device);
+    let mut setup = OutputSetup {
+        canvas: (16, 8),
+        ..Default::default()
+    };
+    let a = setup.add_screen("A", (16, 8));
+    setup.screens[0].slices = vec![
+        Slice::new(a + 10, "Left", rect(16.0, 8.0), rect(8.0, 8.0)),
+        Slice::new(a + 11, "Right", rect(16.0, 8.0), [[8.0, 0.0], [16.0, 0.0], [16.0, 8.0], [8.0, 8.0]]),
+    ];
+    screens.set_highlight(Some(a + 11));
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+    let pixels = read_back(&gpu, encoder, screens.texture(a).unwrap(), (16, 8));
+    let at = |x: usize, y: usize| {
+        let i = (y * 16 + x) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    // The other slice is untouched; the highlighted one turns toward cyan.
+    assert_eq!(at(2, 4), [255, 0, 0]);
+    let tinted = at(12, 4);
+    assert!(tinted[0] < 255 && tinted[2] > 0, "{tinted:?}");
+}
+
+#[test]
 fn slices_show_layers_and_groups() {
     use verso_core::output::OutputSetup;
     use verso_render::ScreenRenderer;

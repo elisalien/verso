@@ -50,12 +50,17 @@ pub(crate) fn progress_strip(painter: &egui::Painter, rect: Rect, progress: f32)
     painter.rect_filled(strip, 0.0, Color32::from_black_alpha(120));
     let done = Rect::from_min_max(
         strip.min,
-        egui::pos2(strip.left() + strip.width() * progress.clamp(0.0, 1.0), strip.bottom()),
+        egui::pos2(
+            strip.left() + strip.width() * progress.clamp(0.0, 1.0),
+            strip.bottom(),
+        ),
     );
     painter.rect_filled(done, 0.0, theme::accent());
 }
 
 fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    // Labels fit the minimum column width; sliders take the rest.
+    widgets::fit_sliders(ui, 90.0, 10.0);
     egui::Grid::new(id)
         .num_columns(2)
         .spacing([10.0, 6.0])
@@ -390,7 +395,7 @@ impl VersoApp {
                     ui.label("Solid Color");
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    widgets::color_edit(ui, color);
                     ui.end_row();
                 }
                 Source::Generator { kind, color, speed } => {
@@ -404,7 +409,7 @@ impl VersoApp {
                         });
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    widgets::color_edit(ui, color);
                     ui.end_row();
                     ui.label("Speed");
                     ui.add(egui::Slider::new(speed, 0.0..=4.0));
@@ -511,6 +516,17 @@ impl VersoApp {
     /// The selected clip, letterboxed, with its launch counter.
     pub(crate) fn preview_panel(&mut self, ui: &mut egui::Ui) {
         let comp_aspect = self.comp.width as f32 / self.comp.height.max(1) as f32;
+        // A hovered layer or column header shows what it would output.
+        if let Some((texture, caption)) = self.hover_preview() {
+            let size = (ui.available_size() - Vec2::new(0.0, 18.0)).max(Vec2::splat(40.0));
+            monitor_image(ui, Some(texture), size, comp_aspect);
+            ui.label(
+                egui::RichText::new(caption)
+                    .small()
+                    .color(theme::text_dim()),
+            );
+            return;
+        }
         // Media clips show their own frame at its own aspect.
         let previewed = self.preview_slot();
         let (clip_texture, clip_aspect) = match previewed {
@@ -518,7 +534,10 @@ impl VersoApp {
                 let procedural = self.comp.layers[layer].clips[column]
                     .as_ref()
                     .is_none_or(|clip| clip.source.is_procedural());
-                let milk = match self.comp.layers[layer].clips[column].as_ref().map(|c| &c.source) {
+                let milk = match self.comp.layers[layer].clips[column]
+                    .as_ref()
+                    .map(|c| &c.source)
+                {
                     Some(Source::Milkdrop { family, .. }) => Some(family.clone()),
                     _ => None,
                 };
@@ -620,9 +639,10 @@ impl VersoApp {
     fn file_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("Open Folder…").clicked() {
-                self.dialogs.open(crate::dialogs::DialogKind::MediaFolder, || {
-                    rfd::FileDialog::new().pick_folder()
-                });
+                self.dialogs
+                    .open(crate::dialogs::DialogKind::MediaFolder, || {
+                        rfd::FileDialog::new().pick_folder()
+                    });
             }
             if self.files.folder.is_some() && ui.button("⟳").on_hover_text("Refresh").clicked() {
                 self.files.refresh();
@@ -653,7 +673,12 @@ impl VersoApp {
     }
 
     /// Browser row with `tip` shown on hover when not empty.
-    pub(crate) fn browser_item_with_tip(&mut self, ui: &mut egui::Ui, template: SourceTemplate, tip: &str) {
+    pub(crate) fn browser_item_with_tip(
+        &mut self,
+        ui: &mut egui::Ui,
+        template: SourceTemplate,
+        tip: &str,
+    ) {
         let key = template
             .source
             .path()
@@ -688,7 +713,11 @@ impl VersoApp {
                 response
             })
             .inner;
-        let response = if tip.is_empty() { response } else { response.on_hover_text(tip) };
+        let response = if tip.is_empty() {
+            response
+        } else {
+            response.on_hover_text(tip)
+        };
         if response.double_clicked()
             && let Some((layer, column)) = self.selected_clip
         {
@@ -706,6 +735,16 @@ impl VersoApp {
     pub(crate) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let (files, pointer) = ctx.input(|i| (i.raw.dropped_files.clone(), i.pointer.latest_pos()));
         if files.is_empty() {
+            return;
+        }
+        // A Resolume Advanced Output preset goes to the Advanced Output window.
+        let preset = files
+            .iter()
+            .map(|f| f.path())
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
+        if let Some(path) = preset {
+            let path = path.to_owned();
+            self.import_advanced_output(&path);
             return;
         }
         let under_pointer = pointer.and_then(|pos| {

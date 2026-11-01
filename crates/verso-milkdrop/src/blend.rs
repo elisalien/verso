@@ -44,7 +44,12 @@ impl BlendPattern {
             2 => {
                 // Plasma.
                 let band = 0.12 + 0.13 * rand(rng);
-                for i in [0, MESH_WIDTH, MESH_HEIGHT * W1, MESH_HEIGHT * W1 + MESH_WIDTH] {
+                for i in [
+                    0,
+                    MESH_WIDTH,
+                    MESH_HEIGHT * W1,
+                    MESH_HEIGHT * W1 + MESH_WIDTH,
+                ] {
                     p.c[i] = rand(rng);
                 }
                 p.plasma(0, MESH_WIDTH, 0, MESH_HEIGHT, 0.25, aspectx, aspecty, rng);
@@ -80,11 +85,26 @@ impl BlendPattern {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn plasma(&mut self, x0: usize, x1: usize, y0: usize, y1: usize, dt: f32, ax: f32, ay: f32, rng: &mut Rng) {
+    fn plasma(
+        &mut self,
+        x0: usize,
+        x1: usize,
+        y0: usize,
+        y1: usize,
+        dt: f32,
+        ax: f32,
+        ay: f32,
+        rng: &mut Rng,
+    ) {
         let mut r = || rng.next_f64() as f32 * 2.0 - 1.0;
         let (midx, midy) = ((x0 + x1) / 2, (y0 + y1) / 2);
         let at = |c: &Vec<f32>, x: usize, y: usize| c[y * W1 + x];
-        let (t00, t01, t10, t11) = (at(&self.c, x0, y0), at(&self.c, x1, y0), at(&self.c, x0, y1), at(&self.c, x1, y1));
+        let (t00, t01, t10, t11) = (
+            at(&self.c, x0, y0),
+            at(&self.c, x1, y0),
+            at(&self.c, x0, y1),
+            at(&self.c, x1, y1),
+        );
         if y1 - y0 >= 2 {
             if x0 == 0 {
                 self.c[midy * W1 + x0] = 0.5 * (t00 + t10) + r() * dt * ay;
@@ -98,7 +118,10 @@ impl BlendPattern {
             self.c[y1 * W1 + midx] = 0.5 * (t10 + t11) + r() * dt * ax;
         }
         if y1 - y0 >= 2 && x1 - x0 >= 2 {
-            let sum = at(&self.c, x0, midy) + at(&self.c, x1, midy) + at(&self.c, midx, y0) + at(&self.c, midx, y1);
+            let sum = at(&self.c, x0, midy)
+                + at(&self.c, x1, midy)
+                + at(&self.c, midx, y0)
+                + at(&self.c, midx, y1);
             self.c[midy * W1 + midx] = 0.25 * sum + r() * dt;
             self.plasma(x0, midx, y0, midy, dt * 0.5, ax, ay, rng);
             self.plasma(midx, x1, y0, midy, dt * 0.5, ax, ay, rng);
@@ -119,8 +142,10 @@ impl BlendPattern {
         let mut out = Vec::with_capacity((COMP_WIDTH + 1) * (COMP_HEIGHT + 1));
         for j in 0..=COMP_HEIGHT {
             for i in 0..=COMP_WIDTH {
-                let x = (i as f32 / COMP_WIDTH as f32 * W1 as f32).clamp(0.0, MESH_WIDTH as f32 - 1.0);
-                let y = (j as f32 / COMP_HEIGHT as f32 * H1 as f32).clamp(0.0, MESH_HEIGHT as f32 - 1.0);
+                let x =
+                    (i as f32 / COMP_WIDTH as f32 * W1 as f32).clamp(0.0, MESH_WIDTH as f32 - 1.0);
+                let y = (j as f32 / COMP_HEIGHT as f32 * H1 as f32)
+                    .clamp(0.0, MESH_HEIGHT as f32 - 1.0);
                 let (nx, ny) = (x.floor() as usize, y.floor() as usize);
                 let (dx, dy) = (x - nx as f32, y - ny as f32);
                 let w = |x: usize, y: usize| self.weight(y * W1 + x, progress);
@@ -146,11 +171,15 @@ mod tests {
             let p = BlendPattern::new(640, 360, &mut Rng::new(seed));
             // Like MilkDrop, corners may lead or lag slightly; on average the
             // blend runs from the old preset to the new one.
-            let mean = |t: f32| (0..W1 * H1).map(|i| p.weight(i, t)).sum::<f32>() / (W1 * H1) as f32;
+            let mean =
+                |t: f32| (0..W1 * H1).map(|i| p.weight(i, t)).sum::<f32>() / (W1 * H1) as f32;
             assert!(mean(0.0) < 0.1, "seed {seed} starts at {}", mean(0.0));
             assert!(mean(1.0) > 0.9, "seed {seed} ends at {}", mean(1.0));
             assert!((0..W1 * H1).all(|i| p.weight(i, 0.6) >= p.weight(i, 0.3)));
-            assert_eq!(p.comp_weights(0.5).len(), (COMP_WIDTH + 1) * (COMP_HEIGHT + 1));
+            assert_eq!(
+                p.comp_weights(0.5).len(),
+                (COMP_WIDTH + 1) * (COMP_HEIGHT + 1)
+            );
         }
     }
 }

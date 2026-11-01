@@ -11,6 +11,7 @@ mod effects;
 mod grab;
 mod media;
 pub mod milkdrop;
+mod slices;
 mod thumbnails;
 
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ use verso_core::{BlendMode, Composition, Effect, Source};
 pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind, ShaderKind};
 pub use grab::{FrameGrabber, GrabbedFrame};
 pub use media::{MediaTexture, MediaView};
+pub use slices::ScreenRenderer;
 pub use thumbnails::Thumbnails;
 
 /// Internal format: HDR so successive blends do not band.
@@ -234,6 +236,15 @@ struct LayerState {
     transition: Option<Transition>,
     /// Column shown last frame.
     shown: Option<usize>,
+    /// Where this frame's image of the layer is, after its effects: `None`
+    /// when the layer drew nothing.
+    image: Option<LayerImage>,
+}
+
+#[derive(Clone, Copy)]
+enum LayerImage {
+    Mixed,
+    Work,
 }
 
 impl LayerState {
@@ -244,6 +255,7 @@ impl LayerState {
             outgoing: Target::new(device, "layer outgoing", size, WORK_FORMAT),
             transition: None,
             shown: None,
+            image: None,
         }
     }
 }
@@ -553,6 +565,10 @@ pub struct Renderer {
     composition: Pair,
     /// One pair per group nesting depth.
     groups: Vec<Pair>,
+    /// A copy of each group's image, kept when [`Self::keep_group_images`]
+    /// is on: group pairs are reused by sibling groups.
+    group_images: Vec<Target>,
+    keep_groups: bool,
     output: Target,
     layers: Vec<LayerState>,
     uniforms: UniformPool,
@@ -643,6 +659,8 @@ impl Renderer {
             blank: Target::new(device, "blank", (1, 1), WORK_FORMAT),
             composition: Pair::new(device, "composition", size),
             groups: Vec::new(),
+            group_images: Vec::new(),
+            keep_groups: false,
             output: Target::new(device, "output", size, OUTPUT_FORMAT),
             layers: Vec::new(),
             uniforms: UniformPool::default(),
@@ -653,6 +671,37 @@ impl Renderer {
     /// Composition size in pixels.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// Keeps a copy of each group's image for [`Self::group_view`], at the
+    /// cost of one texture copy per group and frame.
+    pub fn keep_group_images(&mut self, keep: bool) {
+        self.keep_groups = keep;
+        if !keep {
+            self.group_images.clear();
+        }
+    }
+
+    /// This frame's image of layer `index` after its effects, before its
+    /// opacity: linear, premultiplied, in a float format. `None` when the
+    /// layer drew nothing.
+    pub fn layer_view(&self, index: usize) -> Option<&wgpu::TextureView> {
+        let state = self.layers.get(index)?;
+        Some(match state.image? {
+            LayerImage::Mixed => &state.mixed.view,
+            LayerImage::Work => &state.work.current().view,
+        })
+    }
+
+    /// This frame's image of group `index` after its effects, like
+    /// [`Self::layer_view`]. Needs [`Self::keep_group_images`].
+    pub fn group_view(&self, index: usize) -> Option<&wgpu::TextureView> {
+        self.group_images.get(index).map(|t| &t.view)
+    }
+
+    /// A transparent texture, for sources that drew nothing.
+    pub fn blank_view(&self) -> &wgpu::TextureView {
+        &self.blank.view
     }
 
     /// Final image, in [`OUTPUT_FORMAT`]. Recreated when the size changes.
@@ -692,6 +741,7 @@ impl Renderer {
         self.size = size;
         self.composition = Pair::new(device, "composition", size);
         self.groups.clear();
+        self.group_images.clear();
         self.output = Target::new(device, "output", size, OUTPUT_FORMAT);
         self.layers.clear();
         self.milk.reset();
@@ -819,6 +869,14 @@ impl Renderer {
         let uniforms = &mut self.uniforms;
         let composition = &mut self.composition;
         let group_pairs = &mut self.groups[..];
+        if self.keep_groups {
+            while self.group_images.len() < comp.groups.len() {
+                self.group_images
+                    .push(Target::new(device, "group image", self.size, WORK_FORMAT));
+            }
+            self.group_images.truncate(comp.groups.len());
+        }
+        let group_images = &mut self.group_images[..];
         composition.clear(encoder);
         self.milk.begin_frame();
 
@@ -833,6 +891,7 @@ impl Renderer {
             composition,
             &mut self.layers,
             group_pairs,
+            group_images,
         );
         self.milk.end_frame();
         frame.run_chain(encoder, uniforms, &comp.effects, None, composition);
@@ -872,6 +931,7 @@ fn render_scope(
     dest: &mut Pair,
     states: &mut [LayerState],
     spare: &mut [Pair],
+    group_images: &mut [Target],
 ) {
     let mut done = vec![false; comp.groups.len()];
     for index in 0..comp.layers.len() {
@@ -915,9 +975,17 @@ fn render_scope(
                     pair,
                     states,
                     deeper,
+                    group_images,
                 );
                 let group = &comp.groups[g];
                 frame.run_chain(encoder, uniforms, &group.effects, None, pair);
+                if let Some(image) = group_images.get(g) {
+                    encoder.copy_texture_to_texture(
+                        pair.current().texture.as_image_copy(),
+                        image.texture.as_image_copy(),
+                        image.texture.size(),
+                    );
+                }
                 let gain = comp.group_gain(g);
                 if gain > 0.0 {
                     frame.blend(
@@ -959,6 +1027,7 @@ fn render_layer(
 ) {
     let layer = &comp.layers[index];
     let active = layer.active.filter(|_| layer.active_clip().is_some());
+    state.image = None;
 
     // A clip change starts a transition from the last shown image.
     if active != state.shown {
@@ -1092,6 +1161,11 @@ fn render_layer(
         &mut state.work,
     );
     if level > 0.0 {
+        state.image = Some(if ran {
+            LayerImage::Work
+        } else {
+            LayerImage::Mixed
+        });
         let result = if ran {
             &state.work.current().view
         } else {

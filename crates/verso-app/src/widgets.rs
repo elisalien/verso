@@ -150,3 +150,49 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, items: &[(T, &str
         }
     });
 }
+
+/// The payload dropped on `response`, if it is a `T`.
+///
+/// `Response::dnd_release_payload` takes the payload before checking its
+/// type, so asking for the wrong type first would lose the drop.
+pub fn dropped<T: std::any::Any + Send + Sync>(response: &Response) -> Option<std::sync::Arc<T>> {
+    response.dnd_hover_payload::<T>()?;
+    response.dnd_release_payload::<T>()
+}
+
+/// Color button that only writes `color` back when the user changed it:
+/// egui's unmultiplied editor round-trips through premultiplied alpha and
+/// would otherwise alter the value by float error on every frame.
+pub fn color_edit(ui: &mut Ui, color: &mut [f32; 4]) -> Response {
+    let mut edited = *color;
+    let response = ui.color_edit_button_rgba_unmultiplied(&mut edited);
+    if response.changed() {
+        *color = edited;
+    }
+    response
+}
+
+/// Room a slider keeps for its value field and suffix.
+const SLIDER_VALUE_WIDTH: f32 = 64.0;
+
+/// Sizes the sliders of a two-column grid (labels `label_width` wide, then
+/// the widget) to fill the panel, so the whole range stays visible when the
+/// panel is resized.
+pub fn fit_sliders(ui: &mut Ui, label_width: f32, column_spacing: f32) {
+    let spacing = ui.spacing().item_spacing.x;
+    let width = ui.available_width() - label_width - column_spacing - SLIDER_VALUE_WIDTH - spacing;
+    ui.spacing_mut().slider_width = width.max(24.0);
+}
+
+/// Width of the widest of `labels` in the body font.
+pub fn label_width<'a>(ui: &Ui, labels: impl IntoIterator<Item = &'a str>) -> f32 {
+    labels
+        .into_iter()
+        .map(|text| {
+            eframe::egui::WidgetText::from(text)
+                .into_galley(ui, None, f32::INFINITY, eframe::egui::TextStyle::Body)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max)
+}

@@ -2,8 +2,9 @@
 //!
 //! Still images decode with the `image` crate. Video decodes in an `ffmpeg`
 //! child process that writes raw RGBA frames to a pipe, so every codec FFmpeg
-//! knows (HAP, H.264, H.265, ProRes, …) plays without linking libav. The
-//! binaries are found on `PATH`, or through `VERSO_FFMPEG` and `VERSO_FFPROBE`.
+//! knows (HAP, Resolume DXV3, H.264, H.265, ProRes, …) plays without linking
+//! libav. The binaries are found on `PATH`, or through `VERSO_FFMPEG` and
+//! `VERSO_FFPROBE`.
 
 mod player;
 

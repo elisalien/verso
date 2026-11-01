@@ -189,10 +189,8 @@ impl VideoPlayer {
             Standby::Failed => Decoder::spawn(&self.path, self.size),
         };
         self.decoder = next?;
-        self.standby = Standby::Spawning(Decoder::spawn_in_background(
-            self.path.clone(),
-            self.size,
-        ));
+        self.standby =
+            Standby::Spawning(Decoder::spawn_in_background(self.path.clone(), self.size));
         self.position = 0.0;
         self.received = 0;
         self.ended = false;
@@ -267,6 +265,11 @@ mod tests {
 
     /// Encodes a short test clip with FFmpeg; `None` when FFmpeg is missing.
     fn test_clip(name: &str, frames: u32) -> Option<PathBuf> {
+        encode_clip(name, frames, &["-pix_fmt", "yuv420p"])
+    }
+
+    /// Same as [`test_clip`], with the encoder options in `codec`.
+    fn encode_clip(name: &str, frames: u32, codec: &[&str]) -> Option<PathBuf> {
         let dir = std::env::temp_dir().join("verso-media-test");
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join(name);
@@ -276,7 +279,7 @@ mod tests {
                 "testsrc=size=320x180:rate=25:duration={}",
                 frames as f64 / 25.0
             ))
-            .args(["-pix_fmt", "yuv420p"])
+            .args(codec)
             .arg(&path)
             .status();
         match status {
@@ -323,6 +326,24 @@ mod tests {
         assert_eq!(player.received, 10);
         let frame = player.frame().unwrap();
         assert_eq!(frame.data.len(), 160 * 90 * 4);
+    }
+
+    /// Resolume DXV3 in a QuickTime file, as Alley and Arena write it.
+    #[test]
+    fn plays_dxv3() {
+        let Some(path) = encode_clip("dxv3.mov", 5, &["-c:v", "dxv", "-format", "dxt1"]) else {
+            eprintln!("ffmpeg with the DXV encoder not available, skipping");
+            return;
+        };
+        assert_eq!(crate::MediaKind::of(&path), Some(crate::MediaKind::Video));
+        let info = probe(&path).unwrap();
+        assert_eq!((info.width, info.height), (320, 180));
+
+        let mut player = VideoPlayer::open(&path, (320, 180)).unwrap();
+        play_until(&mut player, false, |p| p.ended());
+        assert_eq!(player.received, 5);
+        let frame = player.frame().unwrap();
+        assert!(frame.data.chunks(4).any(|px| px[0] > 64), "black frame");
     }
 
     #[test]
@@ -424,14 +445,21 @@ mod bench {
             .iter()
             .map(|p| format!("{:.1}", p.transport().frame as f64 / seconds))
             .collect();
-        println!("{label}: {players} × 1080p60, fps per player: {}", rates.join(" "));
+        println!(
+            "{label}: {players} × 1080p60, fps per player: {}",
+            rates.join(" ")
+        );
     }
 
     #[test]
     #[ignore]
     fn bench_four_1080p() {
         let hap = clip("hap.mov", &["-c:v", "hap"]);
-        let h264 = clip("h264.mp4", &["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"]);
+        let dxv = clip("dxv.mov", &["-c:v", "dxv", "-format", "dxt1"]);
+        let h264 = clip(
+            "h264.mp4",
+            &["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p"],
+        );
         let (Some(hap), Some(h264)) = (hap, h264) else {
             eprintln!("ffmpeg with hap and libx264 needed, skipping");
             return;
@@ -439,6 +467,9 @@ mod bench {
         for n in [1, 4] {
             measure("HAP", &hap, n);
             measure("H.264", &h264, n);
+            if let Some(dxv) = &dxv {
+                measure("DXV3", dxv, n);
+            }
         }
     }
 }

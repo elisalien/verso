@@ -16,7 +16,11 @@ fn main() {
         for (stage, text) in [(Stage::Warp, &preset.warp), (Stage::Comp, &preset.comp)] {
             if let Err(e) = translate(stage, text) {
                 good = false;
-                let first = e.lines().find(|l| l.contains("error")).unwrap_or("").to_owned();
+                let first = e
+                    .lines()
+                    .find(|l| l.contains("error"))
+                    .unwrap_or("")
+                    .to_owned();
                 println!("{stage:?} {name}: {first}");
             }
         }

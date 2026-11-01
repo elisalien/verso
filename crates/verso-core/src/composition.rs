@@ -182,9 +182,11 @@ impl Layer {
     }
 
     /// Plays the clip in `column`, counting the launch; an empty slot ejects.
+    /// Relaunching the clip already playing is not counted.
     pub(crate) fn launch(&mut self, column: usize) {
+        let was_active = self.active == Some(column);
         self.active = self.clips[column].as_ref().map(|_| column);
-        if self.active.is_some() {
+        if self.active.is_some() && !was_active {
             if self.launches.len() <= column {
                 self.launches.resize(column + 1, 0);
             }
@@ -435,11 +437,9 @@ impl Composition {
             return Err(Error::LastLayer);
         }
         self.layers.remove(layer);
-        self.prune(
-            |p| p.without_layer(layer),
-            |a| a.without_layer(layer),
-        );
-        while let Some(empty) = (0..self.groups.len()).find(|&g| self.group_layers(g).next().is_none())
+        self.prune(|p| p.without_layer(layer), |a| a.without_layer(layer));
+        while let Some(empty) =
+            (0..self.groups.len()).find(|&g| self.group_layers(g).next().is_none())
         {
             self.ungroup(empty)?;
         }
@@ -467,10 +467,7 @@ impl Composition {
                 other => other,
             };
         }
-        self.prune(
-            |p| p.without_column(column),
-            |a| a.without_column(column),
-        );
+        self.prune(|p| p.without_column(column), |a| a.without_column(column));
         Ok(())
     }
 

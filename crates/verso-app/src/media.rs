@@ -328,6 +328,20 @@ impl Media {
             .map(|t| (t.id, t.texture.size()))
     }
 
+    /// Frame of each layer's clip in `column`, for previewing that column.
+    pub fn column_views<'a>(
+        &'a self,
+        comp: &Composition,
+        column: usize,
+    ) -> Vec<Option<MediaView<'a>>> {
+        (0..comp.layers.len())
+            .map(|layer| {
+                self.texture(comp, layer, column)
+                    .map(|t| t.texture.media_view())
+            })
+            .collect()
+    }
+
     /// Frame to composite for each layer, in layer order.
     pub fn layer_views<'a>(&'a self, comp: &Composition) -> Vec<Option<MediaView<'a>>> {
         comp.layers

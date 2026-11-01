@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use eframe::egui::{self, Color32, TextureId};
 use eframe::{egui_wgpu, wgpu};
+use verso_core::output::InputSource;
 use verso_core::{Command, CommandKind, Composition, Source};
 use verso_render::{Renderer, Thumbnails};
 
@@ -67,6 +68,9 @@ pub struct VersoApp {
     pub(crate) cell_rects: Vec<(egui::Rect, (usize, usize))>,
     /// Clip under the pointer in the grid, shown in the Preview monitor.
     pub(crate) hovered_clip: Option<(usize, usize)>,
+    /// Layer or column header under the pointer, shown in the Preview monitor.
+    pub(crate) hover_target: Option<crate::hover_preview::HoverTarget>,
+    hover_preview: crate::hover_preview::HoverPreview,
     pub(crate) monitor_texture: Option<TextureId>,
     pub(crate) media: Media,
     /// Layers whose clip was launched again since the last media update.
@@ -95,6 +99,7 @@ pub struct VersoApp {
     pub(crate) controls: crate::control_ui::Controls,
     pub(crate) scripts: crate::scripts_ui::ScriptsState,
     pub(crate) outputs: crate::outputs::Outputs,
+    pub(crate) advanced: crate::advanced_output_ui::AdvancedOutput,
     pub(crate) online: crate::online_ui::OnlineState,
     pub(crate) milk: crate::milkdrop_ui::MilkState,
     /// Commands collected while drawing, applied at the end of the frame.
@@ -157,6 +162,8 @@ impl VersoApp {
             cell_textures: HashMap::new(),
             cell_rects: Vec::new(),
             hovered_clip: None,
+            hover_target: None,
+            hover_preview: Default::default(),
             monitor_texture: None,
             media: Media::new(),
             restarted: Vec::new(),
@@ -196,6 +203,7 @@ impl VersoApp {
             controls: Default::default(),
             scripts: Default::default(),
             outputs: Default::default(),
+            advanced: Default::default(),
             online: Default::default(),
             milk: Default::default(),
         };
@@ -252,6 +260,59 @@ impl VersoApp {
             }
             None => self.status = "Nothing to redo.".into(),
         }
+    }
+
+    /// Draws the hovered layer or column for the Preview monitor.
+    fn render_hover_preview(
+        &mut self,
+        encoder: &mut eframe::wgpu::CommandEncoder,
+        rendered: &Composition,
+        time: f32,
+    ) {
+        use crate::hover_preview::HoverTarget;
+        let Some(target) = self.hover_target else {
+            self.hover_preview.idle();
+            return;
+        };
+        let views = match target {
+            HoverTarget::Layer(_) => self.media.layer_views(&self.comp),
+            HoverTarget::Column(column) => self.media.column_views(&self.comp, column),
+        };
+        self.hover_preview.render(
+            &self.render_state,
+            encoder,
+            rendered,
+            target,
+            &views,
+            time,
+            |renderer| {
+                for dir in effect_dirs() {
+                    renderer.library_mut().load_dir(&dir);
+                }
+                for dir in crate::milkdrop_ui::milkdrop_dirs() {
+                    renderer.milkdrop_mut().library_mut().load_dir(&dir);
+                }
+            },
+        );
+    }
+
+    /// Texture and caption of the hover preview, when a header is hovered.
+    pub(crate) fn hover_preview(&self) -> Option<(eframe::egui::TextureId, String)> {
+        use crate::hover_preview::HoverTarget;
+        let target = self.hover_target?;
+        let texture = self.hover_preview.texture(target)?;
+        let caption = match target {
+            HoverTarget::Layer(l) => {
+                let layer = self.comp.layers.get(l)?;
+                if layer.active_clip().is_some() {
+                    layer.name.clone()
+                } else {
+                    format!("{} · nothing playing", layer.name)
+                }
+            }
+            HoverTarget::Column(c) => self.comp.columns.get(c)?.name.clone(),
+        };
+        Some((texture, caption))
     }
 
     pub(crate) fn preview_slot(&self) -> Option<(usize, usize)> {
@@ -334,8 +395,10 @@ impl VersoApp {
     }
 
     fn render(&mut self) {
-        let device = &self.render_state.device;
-        let queue = &self.render_state.queue;
+        // A handle of its own, so `self` stays free for the passes below.
+        let render_state = self.render_state.clone();
+        let device = &render_state.device;
+        let queue = &render_state.queue;
         let mut encoder = device.create_command_encoder(&Default::default());
         let time = self.start.elapsed().as_secs_f32();
         let dt = self.frame_dt;
@@ -361,10 +424,21 @@ impl VersoApp {
             .milkdrop_mut()
             .set_audio(samples, if rate > 0.0 { rate } else { 44100.0 });
         let rendered = self.modulated();
+        // Group images are copied only when a live slice shows a group.
+        let groups_shown = self.advanced.live
+            && self
+                .advanced
+                .setup
+                .screens
+                .iter()
+                .flat_map(|s| &s.slices)
+                .any(|s| matches!(s.input_source(), InputSource::Group(_)));
+        self.renderer.keep_group_images(groups_shown);
         let views = self.media.layer_views(&self.comp);
         self.renderer
             .render(device, queue, &mut encoder, &rendered, &views, time);
         drop(views);
+        self.render_hover_preview(&mut encoder, &rendered, time);
 
         let mut new_cells = Vec::new();
         for (l, layer) in self.comp.layers.iter().enumerate() {
@@ -417,11 +491,24 @@ impl VersoApp {
                 .clip_monitor
                 .render(device, queue, &mut encoder, (), source, time),
         });
+        let (new_screens, screen_errors) = self.outputs.render_screens(
+            device,
+            queue,
+            &mut encoder,
+            self.advanced.live.then_some(&self.advanced.setup),
+            &self.renderer,
+            &rendered,
+        );
+        if let Some(error) = screen_errors.last() {
+            self.status = error.clone();
+        }
         self.outputs.capture(device, &mut encoder, &self.renderer);
         queue.submit([encoder.finish()]);
         self.outputs.deliver(device);
 
         let mut egui_renderer = self.render_state.renderer.write();
+        self.outputs
+            .register_screens(&mut egui_renderer, device, &new_screens);
         for key in new_cells {
             let view = self.cell_thumbs.view(&key).expect("just rendered");
             let id = egui_renderer.register_native_texture(device, view, wgpu::FilterMode::Linear);
@@ -463,14 +550,16 @@ impl VersoApp {
         let (mut commands, mut toggle_output, mut tap, mut learn) =
             (Vec::new(), false, false, false);
         let (mut group, mut ungroup) = (false, false);
-        let shortcut = |key, shift| egui::KeyboardShortcut::new(
-            if shift {
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT
-            } else {
-                egui::Modifiers::COMMAND
-            },
-            key,
-        );
+        let shortcut = |key, shift| {
+            egui::KeyboardShortcut::new(
+                if shift {
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT
+                } else {
+                    egui::Modifiers::COMMAND
+                },
+                key,
+            )
+        };
         let (save, save_as, open, new, undo, redo) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&shortcut(egui::Key::S, false)),
@@ -656,6 +745,9 @@ impl VersoApp {
                 (DialogKind::Save, Some(path)) => self.save_to(&path),
                 (DialogKind::Save, None) => self.after_save = None,
                 (DialogKind::Open, Some(path)) => self.open_file(path),
+                (DialogKind::AdvancedImport, Some(path)) => self.import_advanced_output(&path),
+                (DialogKind::AdvancedExport, Some(path)) => self.export_advanced_output(&path),
+                (DialogKind::AdvancedSvg, Some(path)) => self.import_svg(&path),
                 (DialogKind::MediaFolder, Some(folder)) => self.files.open(folder),
                 (DialogKind::EffectFolder, Some(folder)) => {
                     let errors = self.renderer.library_mut().load_dir(&folder);
@@ -903,6 +995,7 @@ impl VersoApp {
             });
             ui.menu_button("Output", |ui| {
                 ui.checkbox(&mut self.output_open, "Output Window (F2)");
+                ui.checkbox(&mut self.advanced.window_open, "Advanced Output…");
                 self.outputs_menu(ui);
             });
             ui.menu_button("Window", |ui| self.window_menu(ui));
@@ -1033,7 +1126,9 @@ impl eframe::App for VersoApp {
         self.housekeeping(&ctx);
         self.control_window(&ctx);
         self.scripts_window(&ctx);
+        self.advanced_output_window(&ctx);
         theme::settings_window(&ctx, &mut self.colors_open);
         self.output_window(&ctx);
+        self.screen_windows(&ctx);
     }
 }

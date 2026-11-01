@@ -9,6 +9,7 @@ pub mod control;
 mod effect;
 mod groups;
 pub mod modulation;
+pub mod output;
 mod source;
 
 pub use command::{Command, CommandKind};

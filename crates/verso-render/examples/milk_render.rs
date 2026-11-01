@@ -25,7 +25,8 @@ fn music(t0: f32) -> Vec<f32> {
             let t = t0 - (1024 - i) as f32 / rate;
             let b = t.rem_euclid(beat);
             let bar_beat = (t / beat).floor() as i64 % 4;
-            let kick = (b * 2.0 * std::f32::consts::PI * (50.0 + 80.0 * (-b * 30.0).exp())).sin() * (-b * 8.0).exp();
+            let kick = (b * 2.0 * std::f32::consts::PI * (50.0 + 80.0 * (-b * 30.0).exp())).sin()
+                * (-b * 8.0).exp();
             let snare_t = if bar_beat % 2 == 1 { b } else { 10.0 };
             let noise = ((t * 12345.678).sin() * 43758.545).fract() * 2.0 - 1.0;
             let snare = noise * (-snare_t * 18.0).exp() * 0.5;
@@ -76,7 +77,11 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, renderer: &Renderer) ->
 
 fn collect(path: &Path, out: &mut Vec<PathBuf>) {
     if path.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(path).unwrap().flatten().map(|e| e.path()).collect();
+        let mut entries: Vec<_> = std::fs::read_dir(path)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
         entries.sort();
         for p in entries {
             collect(&p, out);
@@ -106,7 +111,8 @@ fn main() {
     }
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
 
@@ -154,7 +160,11 @@ fn main() {
                 if f + 1 == frames - (FPS as usize / 2) || f + 1 == frames {
                     pixels = read_back(&device, &queue, &renderer);
                     if !previous.is_empty() {
-                        let diff: u64 = pixels.iter().zip(&previous).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64).sum();
+                        let diff: u64 = pixels
+                            .iter()
+                            .zip(&previous)
+                            .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64)
+                            .sum();
                         change = diff as f64 / pixels.len() as f64 / 255.0;
                     }
                     previous.clone_from(&pixels);
@@ -162,7 +172,10 @@ fn main() {
             }
             let ms = start.elapsed().as_secs_f64() * 1000.0 / frames as f64;
             if let Some(e) = renderer.milkdrop().error(&info.id, variant) {
-                let first = e.lines().find(|l| l.contains("error")).unwrap_or(e.lines().next().unwrap_or(""));
+                let first = e
+                    .lines()
+                    .find(|l| l.contains("error"))
+                    .unwrap_or(e.lines().next().unwrap_or(""));
                 println!("error {} 0 0 0 {first}", png.display());
                 continue;
             }
@@ -171,7 +184,14 @@ fn main() {
                 .filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 45)
                 .count() as f64
                 / (pixels.len() / 4) as f64;
-            image::save_buffer(&png, &pixels, size.0, size.1, image::ExtendedColorType::Rgba8).unwrap();
+            image::save_buffer(
+                &png,
+                &pixels,
+                size.0,
+                size.1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
             println!("ok {} {lit:.3} {change:.4} {ms:.1}", png.display());
         }
     }

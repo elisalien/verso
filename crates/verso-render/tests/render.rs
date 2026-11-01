@@ -44,8 +44,16 @@ fn render_frame(
 ) -> Vec<u8> {
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, comp, media, time);
+    read_back(gpu, encoder, renderer.output_texture(), renderer.size())
+}
 
-    let (w, h) = renderer.size();
+/// Submits `encoder` with a copy of `texture` (RGBA8) and returns its pixels.
+fn read_back(
+    gpu: &Gpu,
+    mut encoder: wgpu::CommandEncoder,
+    texture: &wgpu::Texture,
+    (w, h): (u32, u32),
+) -> Vec<u8> {
     let row = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
@@ -54,7 +62,7 @@ fn render_frame(
         mapped_at_creation: false,
     });
     encoder.copy_texture_to_buffer(
-        renderer.output_texture().as_image_copy(),
+        texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
@@ -615,10 +623,7 @@ fn milkdrop_preset_animates_with_feedback() {
     let mut comp = Composition::new("t", 1, 1);
     comp.width = 64;
     comp.height = 48;
-    let clip = Clip::new(
-        "Milk",
-        Source::milkdrop("User/milk", 0),
-    );
+    let clip = Clip::new("Milk", Source::milkdrop("User/milk", 0));
     comp.apply(Command::SetClip {
         layer: 0,
         column: 0,
@@ -642,10 +647,20 @@ fn milkdrop_preset_animates_with_feedback() {
     let mut frames = Vec::new();
     for f in 0..30 {
         renderer.milkdrop_mut().set_audio(samples.clone(), 44100.0);
-        frames.push(render_frame(&gpu, &mut renderer, &comp, &[], f as f32 / 30.0));
+        frames.push(render_frame(
+            &gpu,
+            &mut renderer,
+            &comp,
+            &[],
+            f as f32 / 30.0,
+        ));
     }
     assert_eq!(renderer.milkdrop().error("User/milk", 0), None);
-    let lit = |px: &[u8]| px.chunks(4).filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30).count();
+    let lit = |px: &[u8]| {
+        px.chunks(4)
+            .filter(|p| p[0] as u32 + p[1] as u32 + p[2] as u32 > 30)
+            .count()
+    };
     let last = frames.last().unwrap();
     assert!(lit(last) > 64 * 48 / 20, "only {} lit pixels", lit(last));
     assert_ne!(&frames[28], last, "image is static");
@@ -715,7 +730,11 @@ fn milkdrop_variant_change_blends() {
     let mut comp = milk_comp(Source::milkdrop("Test/milk-family", 0), 1);
     comp.apply(Command::TriggerColumn(0)).unwrap();
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
-    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    renderer
+        .milkdrop_mut()
+        .library_mut()
+        .load_file(&path)
+        .unwrap();
     let mut t = 0.0;
     let mut frame = |renderer: &mut Renderer, comp: &Composition| {
         t += 0.1;
@@ -763,7 +782,10 @@ fn milkdrop_reads_input_layer() {
     )
     .unwrap();
     let mut source = Source::milkdrop("User/milk-input", 0);
-    if let Source::Milkdrop { input, input_mix, .. } = &mut source {
+    if let Source::Milkdrop {
+        input, input_mix, ..
+    } = &mut source
+    {
         *input = Some(0);
         *input_mix = 1.0;
     }
@@ -775,13 +797,27 @@ fn milkdrop_reads_input_layer() {
     })
     .unwrap();
     // The input layer is hidden: only the preset shows it.
-    comp.apply(Command::SetLayerOpacity { layer: 0, opacity: 0.0 }).unwrap();
+    comp.apply(Command::SetLayerOpacity {
+        layer: 0,
+        opacity: 0.0,
+    })
+    .unwrap();
     comp.apply(Command::TriggerColumn(0)).unwrap();
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
-    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    renderer
+        .milkdrop_mut()
+        .library_mut()
+        .load_file(&path)
+        .unwrap();
     let mut last = [0.0; 3];
     for f in 0..4 {
-        last = mean_rgb(&render_frame(&gpu, &mut renderer, &comp, &[], f as f32 * 0.1));
+        last = mean_rgb(&render_frame(
+            &gpu,
+            &mut renderer,
+            &comp,
+            &[],
+            f as f32 * 0.1,
+        ));
     }
     assert!(last[1] > 200.0 && last[0] < 30.0, "{last:?}");
 }
@@ -816,7 +852,11 @@ void mainImage(out vec4 c, in vec2 p) { c = vec4(p / iResolution.xy, 0.0, 1.0); 
     plain.width = 64;
     plain.height = 36;
     plain
-        .apply(Command::SetClip { layer: 0, column: 0, clip: Some(Clip::new("g", gradient.clone())) })
+        .apply(Command::SetClip {
+            layer: 0,
+            column: 0,
+            clip: Some(Clip::new("g", gradient.clone())),
+        })
         .unwrap();
     plain.apply(Command::TriggerColumn(0)).unwrap();
     let mut plain_renderer = Renderer::new(&gpu.device, (plain.width, plain.height));
@@ -824,17 +864,32 @@ void mainImage(out vec4 c, in vec2 p) { c = vec4(p / iResolution.xy, 0.0, 1.0); 
     let reference = render_frame(&gpu, &mut plain_renderer, &plain, &[], 0.0);
 
     let mut source = Source::milkdrop("User/milk-input", 0);
-    if let Source::Milkdrop { input, input_mix, .. } = &mut source {
+    if let Source::Milkdrop {
+        input, input_mix, ..
+    } = &mut source
+    {
         *input = Some(0);
         *input_mix = 1.0;
     }
     let mut comp = milk_comp(source, 2);
-    comp.apply(Command::SetClip { layer: 0, column: 0, clip: Some(Clip::new("g", gradient)) })
-        .unwrap();
-    comp.apply(Command::SetLayerOpacity { layer: 0, opacity: 0.0 }).unwrap();
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: Some(Clip::new("g", gradient)),
+    })
+    .unwrap();
+    comp.apply(Command::SetLayerOpacity {
+        layer: 0,
+        opacity: 0.0,
+    })
+    .unwrap();
     comp.apply(Command::TriggerColumn(0)).unwrap();
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
-    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    renderer
+        .milkdrop_mut()
+        .library_mut()
+        .load_file(&path)
+        .unwrap();
     renderer.library_mut().load_file(&shader).unwrap();
     let mut got = Vec::new();
     for f in 0..3 {
@@ -846,10 +901,132 @@ void mainImage(out vec4 c, in vec2 p) { c = vec4(p / iResolution.xy, 0.0, 1.0); 
     };
     // The gradient tells the corners apart, so a flip would show.
     let corners = [(2, 2), (61, 2), (2, 33), (61, 33)];
-    let distinct = corners.iter().map(|&(x, y)| corner(&reference, x, y)).collect::<std::collections::HashSet<_>>();
+    let distinct = corners
+        .iter()
+        .map(|&(x, y)| corner(&reference, x, y))
+        .collect::<std::collections::HashSet<_>>();
     assert_eq!(distinct.len(), 4, "corners must differ: {distinct:?}");
     for (x, y) in corners {
         let (a, b) = (corner(&reference, x, y), corner(&got, x, y));
-        assert!((0..3).all(|c| (a[c] - b[c]).abs() <= 12), "({x},{y}): {a:?} vs {b:?}");
+        assert!(
+            (0..3).all(|c| (a[c] - b[c]).abs() <= 12),
+            "({x},{y}): {a:?} vs {b:?}"
+        );
     }
+}
+
+#[test]
+fn screens_draw_their_slices() {
+    use verso_core::output::{OutputSetup, Slice, rect};
+    use verso_render::ScreenRenderer;
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut screens = ScreenRenderer::new(&gpu.device);
+
+    let mut setup = OutputSetup {
+        canvas: (16, 8),
+        ..Default::default()
+    };
+    // Screen A: the composition on its left half only.
+    let a = setup.add_screen("A", (16, 8));
+    setup.screens[0].slices = vec![Slice::new(a + 10, "Left", rect(16.0, 8.0), rect(8.0, 8.0))];
+    // Screen B: whole, color corrected from red to green.
+    let b = setup.add_screen("B", (4, 4));
+    setup.screens[1].color.rgb = [-1.0, 1.0, 0.0];
+    // A disabled screen is not rendered.
+    let c = setup.add_screen("C", (4, 4));
+    setup.screens[2].enabled = false;
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+    let created = screens.render(
+        &gpu.device,
+        &gpu.queue,
+        &mut encoder,
+        &setup,
+        &renderer,
+        &comp,
+    );
+    assert_eq!(created, [a, b]);
+    assert!(screens.texture(c).is_none());
+    assert_eq!(screens.size(b), Some((4, 4)));
+
+    let pixels = read_back(&gpu, encoder, screens.texture(a).unwrap(), (16, 8));
+    let at = |x: usize, y: usize| {
+        let i = (y * 16 + x) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    assert_eq!(at(2, 4), [255, 0, 0]);
+    assert_eq!(at(12, 4), [0, 0, 0]);
+
+    let encoder = gpu.device.create_command_encoder(&Default::default());
+    let pixels = read_back(&gpu, encoder, screens.texture(b).unwrap(), (4, 4));
+    assert_eq!(first_pixel(&pixels), [0, 255, 0]);
+}
+
+#[test]
+fn slices_show_layers_and_groups() {
+    use verso_core::output::OutputSetup;
+    use verso_render::ScreenRenderer;
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    // Red layer 1, green layer 2 at half opacity in a group, blue layer 3.
+    let mut comp = solids(&[
+        (RED, BlendMode::Alpha, 1.0),
+        (GREEN, BlendMode::Alpha, 0.5),
+        ([0.0, 0.0, 1.0, 1.0], BlendMode::Alpha, 1.0),
+    ]);
+    comp.apply(Command::AddGroup { layers: vec![1] }).unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.keep_group_images(true);
+    let mut screens = ScreenRenderer::new(&gpu.device);
+
+    let mut setup = OutputSetup {
+        canvas: (16, 8),
+        ..Default::default()
+    };
+    let sources = ["0:1", "1:1", "3:1", "1:9"];
+    let ids: Vec<u64> = sources
+        .iter()
+        .map(|source| {
+            let id = setup.add_screen(source, (4, 4));
+            setup.screens.last_mut().unwrap().slices[0].source = (*source).into();
+            id
+        })
+        .collect();
+
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+    screens.render(
+        &gpu.device,
+        &gpu.queue,
+        &mut encoder,
+        &setup,
+        &renderer,
+        &comp,
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let pixel = |id: u64| {
+        let encoder = gpu.device.create_command_encoder(&Default::default());
+        first_pixel(&read_back(
+            &gpu,
+            encoder,
+            screens.texture(id).unwrap(),
+            (4, 4),
+        ))
+    };
+    // The composition is the top layer, blue.
+    assert_eq!(pixel(ids[0]), [0, 0, 255]);
+    assert_eq!(pixel(ids[1]), [255, 0, 0]);
+    // The group holds green at half opacity, over black.
+    let group = pixel(ids[2]);
+    assert!(close(group, [0, 188, 0]), "{group:?}");
+    // A layer that does not exist shows black.
+    assert_eq!(pixel(ids[3]), [0, 0, 0]);
 }

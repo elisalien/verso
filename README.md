@@ -5,10 +5,10 @@ with blend modes, live output window. Written in Rust on wgpu, for Windows, macO
 and Linux.
 
 > Status: v0.3. Generative sources, images and video (any codec FFmpeg reads,
-> including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
-> groups and the composition, clip transitions and layer groups. OSC and MIDI
-> control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
-> Lua scripts.
+> including HAP, Resolume DXV3 and ProRes), effect chains (WGSL and ISF) on
+> clips, layers, groups and the composition, clip transitions and layer groups.
+> OSC and MIDI control with MIDI learn, audio analysis, tap tempo, LFO or audio
+> modulation and Lua scripts.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 ## Requirements
@@ -56,6 +56,7 @@ cargo run --release -p verso-app
 | Right-click a layer header › Delete Layer, a column header › Delete Column | Remove them with their clips (undoable) |
 | Click the status bar, or Window › Messages… | History of status messages and errors |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
+| Output › Advanced Output… | Screens and slices as in Resolume Arena: Input Selection and Output Transformation views (drag slices, corners, polygon points, and warp grid points), polygons drawn by clicking or imported from SVG, a monitor per display screen. Import and export Arena presets (`.xml`), or drop one on Verso. Live renders every screen: full screen on its monitor, or an NDI source |
 | Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
 | Drag a panel tab | Move it to another tab group, or to an edge to split; drag separators to resize |
 | Window menu | Open more Composition, Group, Layer or Clip panels, reopen panels, reset the layout |
@@ -63,6 +64,8 @@ cargo run --release -p verso-app
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Browser › Sources › MilkDrop | Audio-reactive MilkDrop presets by category; a clip's Properties pick among the remixes of its preset (with a MilkDrop blend) and can feed another layer into it |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
+| Hover a layer or column header | The Preview monitor shows that layer alone, or what the column would output |
+| Window › Save Layout as Default | Reset Layout then returns to this layout (Built-in Layout restores the original) |
 
 ## Workspace
 

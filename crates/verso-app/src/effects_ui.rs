@@ -120,6 +120,9 @@ impl VersoApp {
                         );
                         return;
                     };
+                    let labels =
+                        widgets::label_width(ui, def.params.iter().map(|p| p.name.as_str()));
+                    widgets::fit_sliders(ui, labels, 10.0);
                     egui::Grid::new(("effect", target_key(target), index))
                         .num_columns(2)
                         .spacing([10.0, 4.0])
@@ -197,9 +200,10 @@ impl VersoApp {
                 .on_hover_text("Load .wgsl (Verso) and .fs (ISF) effects from a folder")
                 .clicked()
             {
-                self.dialogs.open(crate::dialogs::DialogKind::EffectFolder, || {
-                    rfd::FileDialog::new().pick_folder()
-                });
+                self.dialogs
+                    .open(crate::dialogs::DialogKind::EffectFolder, || {
+                        rfd::FileDialog::new().pick_folder()
+                    });
             }
         });
         ui.label(

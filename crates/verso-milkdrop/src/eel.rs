@@ -116,7 +116,10 @@ enum Target {
 enum Expr {
     Num(f64),
     Var(usize),
-    Mem { global: bool, index: Box<Expr> },
+    Mem {
+        global: bool,
+        index: Box<Expr>,
+    },
     /// `op` is `None` for plain `=`.
     Assign(Target, Option<BinOp>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
@@ -215,7 +218,9 @@ fn mem_index(i: f64) -> Option<usize> {
 }
 
 fn mem_read(buf: &[f64], i: f64) -> f64 {
-    mem_index(i).and_then(|i| buf.get(i).copied()).unwrap_or(0.0)
+    mem_index(i)
+        .and_then(|i| buf.get(i).copied())
+        .unwrap_or(0.0)
 }
 
 fn mem_slot(buf: &mut Vec<f64>, i: f64) -> Option<&mut f64> {
@@ -484,8 +489,12 @@ fn lex(src: &str) -> Result<Vec<Token>, String> {
                 i += 1;
             }
         } else if src[i..].starts_with("/*") {
-            i = src[i + 2..].find("*/").map_or(bytes.len(), |e| i + 2 + e + 2);
-        } else if c.is_ascii_digit() || (c == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)) {
+            i = src[i + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |e| i + 2 + e + 2);
+        } else if c.is_ascii_digit()
+            || (c == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit))
+        {
             let start = i;
             while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
                 i += 1;
@@ -524,7 +533,9 @@ fn lex(src: &str) -> Result<Vec<Token>, String> {
         } else if c == b'$' {
             let start = i + 1;
             i += 1;
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'\'') {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'\'')
+            {
                 i += 1;
             }
             let name = src[start..i].to_ascii_lowercase();
@@ -715,7 +726,10 @@ impl Parser<'_> {
     }
 
     fn additive(&mut self) -> Result<Expr, String> {
-        self.binary_level(&[("+", BinOp::Add), ("-", BinOp::Sub)], Self::multiplicative)
+        self.binary_level(
+            &[("+", BinOp::Add), ("-", BinOp::Sub)],
+            Self::multiplicative,
+        )
     }
 
     fn multiplicative(&mut self) -> Result<Expr, String> {
@@ -948,14 +962,23 @@ mod tests {
 
     #[test]
     fn megabuf() {
-        assert_eq!(value("megabuf(10) = 4; x = megabuf(10) + megabuf(99999);", "x"), 4.0);
-        assert_eq!(value("gmegabuf(3) = 2; gmegabuf(3) += 1; x = gmegabuf(3);", "x"), 3.0);
+        assert_eq!(
+            value("megabuf(10) = 4; x = megabuf(10) + megabuf(99999);", "x"),
+            4.0
+        );
+        assert_eq!(
+            value("gmegabuf(3) = 2; gmegabuf(3) += 1; x = gmegabuf(3);", "x"),
+            3.0
+        );
         assert_eq!(value("megabuf(-1) = 4; x = megabuf(-1);", "x"), 0.0);
     }
 
     #[test]
     fn comments_constants_and_typos() {
-        assert_eq!(value("// c^(-1)\nx = $pi; /* y = 3; */", "x"), std::f64::consts::PI);
+        assert_eq!(
+            value("// c^(-1)\nx = $pi; /* y = 3; */", "x"),
+            std::f64::consts::PI
+        );
         assert_eq!(value("x = $x10 + .5 + 1e1;", "x"), 26.5);
         assert_eq!(value("x = 1.5.2;", "x"), 1.5);
         assert_eq!(value(";;x = 1;;", "x"), 1.0);

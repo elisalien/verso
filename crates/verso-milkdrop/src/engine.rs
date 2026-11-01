@@ -111,8 +111,16 @@ pub fn highest_blur(shader: &str) -> u32 {
 pub fn blur_passes(preset: &Preset) -> u32 {
     let warp = preset.warp.trim();
     let comp = preset.comp.trim();
-    let warp_blur = if warp.is_empty() { 0 } else { highest_blur(warp) };
-    let comp_blur = if comp.is_empty() { 0 } else { highest_blur(comp) };
+    let warp_blur = if warp.is_empty() {
+        0
+    } else {
+        highest_blur(warp)
+    };
+    let comp_blur = if comp.is_empty() {
+        0
+    } else {
+        highest_blur(comp)
+    };
     warp_blur.max(comp_blur)
 }
 
@@ -285,8 +293,27 @@ const WARP_NAMES: [&str; 10] = [
 ];
 
 const SHAPE_INSTANCE_NAMES: [&str; 21] = [
-    "x", "y", "rad", "ang", "r", "g", "b", "a", "r2", "g2", "b2", "a2", "border_r", "border_g",
-    "border_b", "border_a", "thickoutline", "textured", "tex_zoom", "tex_ang", "additive",
+    "x",
+    "y",
+    "rad",
+    "ang",
+    "r",
+    "g",
+    "b",
+    "a",
+    "r2",
+    "g2",
+    "b2",
+    "a2",
+    "border_r",
+    "border_g",
+    "border_b",
+    "border_a",
+    "thickoutline",
+    "textured",
+    "tex_zoom",
+    "tex_ang",
+    "additive",
 ];
 
 impl Engine {
@@ -296,8 +323,16 @@ impl Engine {
         let base = with_defaults(PRESET_DEFAULTS, &preset.base_vals);
         let texsize = [width.max(1) as f64, height.max(1) as f64];
         let aspect = [
-            if texsize[1] > texsize[0] { texsize[0] / texsize[1] } else { 1.0 },
-            if texsize[0] > texsize[1] { texsize[1] / texsize[0] } else { 1.0 },
+            if texsize[1] > texsize[0] {
+                texsize[0] / texsize[1]
+            } else {
+                1.0
+            },
+            if texsize[0] > texsize[1] {
+                texsize[1] / texsize[0]
+            } else {
+                1.0
+            },
         ];
 
         let mut frame_scope = Scope::new(&base);
@@ -605,10 +640,18 @@ impl Engine {
                 u = (u - cx) / sx + cx;
                 v = (v - cy) / sy + cy;
                 if w != 0.0 {
-                    u += w * 0.0035 * (warp_time * 0.333 + warp_scale_inv * (x * warpf0 - y * warpf3)).sin();
-                    v += w * 0.0035 * (warp_time * 0.375 - warp_scale_inv * (x * warpf2 + y * warpf1)).cos();
-                    u += w * 0.0035 * (warp_time * 0.753 - warp_scale_inv * (x * warpf1 - y * warpf2)).cos();
-                    v += w * 0.0035 * (warp_time * 0.825 + warp_scale_inv * (x * warpf0 + y * warpf3)).sin();
+                    u += w
+                        * 0.0035
+                        * (warp_time * 0.333 + warp_scale_inv * (x * warpf0 - y * warpf3)).sin();
+                    v += w
+                        * 0.0035
+                        * (warp_time * 0.375 - warp_scale_inv * (x * warpf2 + y * warpf1)).cos();
+                    u += w
+                        * 0.0035
+                        * (warp_time * 0.753 - warp_scale_inv * (x * warpf1 - y * warpf2)).cos();
+                    v += w
+                        * 0.0035
+                        * (warp_time * 0.825 + warp_scale_inv * (x * warpf0 + y * warpf3)).sin();
                 }
                 let (u2, v2) = (u - cx, v - cy);
                 let (sin_rot, cos_rot) = rot.sin_cos();
@@ -633,9 +676,12 @@ impl Engine {
         let mut hue = [0.0f64; 12];
         for i in 0..4 {
             let fi = i as f64;
-            hue[i * 3] = 0.6 + 0.3 * (time * 30.0 * 0.0143 + 3.0 + fi * 21.0 + self.rand_start[3]).sin();
-            hue[i * 3 + 1] = 0.6 + 0.3 * (time * 30.0 * 0.0107 + 1.0 + fi * 13.0 + self.rand_start[1]).sin();
-            hue[i * 3 + 2] = 0.6 + 0.3 * (time * 30.0 * 0.0129 + 6.0 + fi * 9.0 + self.rand_start[2]).sin();
+            hue[i * 3] =
+                0.6 + 0.3 * (time * 30.0 * 0.0143 + 3.0 + fi * 21.0 + self.rand_start[3]).sin();
+            hue[i * 3 + 1] =
+                0.6 + 0.3 * (time * 30.0 * 0.0107 + 1.0 + fi * 13.0 + self.rand_start[1]).sin();
+            hue[i * 3 + 2] =
+                0.6 + 0.3 * (time * 30.0 * 0.0129 + 6.0 + fi * 9.0 + self.rand_start[2]).sin();
             let max = hue[i * 3].max(hue[i * 3 + 1]).max(hue[i * 3 + 2]);
             for k in 0..3 {
                 hue[i * 3 + k] = 0.5 + 0.5 * hue[i * 3 + k] / max;
@@ -660,7 +706,11 @@ impl Engine {
 
     fn motion_vectors(&self, sprites: &mut Sprites) {
         let f = |name: &str| self.frame_scope.get(name);
-        let mv_a = if f("bmotionvectorson") == 0.0 { 0.0 } else { f("mv_a") };
+        let mv_a = if f("bmotionvectorson") == 0.0 {
+            0.0
+        } else {
+            f("mv_a")
+        };
         let mut nx = f("mv_x").floor();
         let mut ny = f("mv_y").floor();
         if !(mv_a > 0.001 && nx > 0.0 && ny > 0.0) {
@@ -678,7 +728,12 @@ impl Engine {
         }
         let (dx2, dy2, len_mult) = (f("mv_dx"), f("mv_dy"), f("mv_l"));
         let min_len = 1.0 / self.texsize[0];
-        let color = [f("mv_r") as f32, f("mv_g") as f32, f("mv_b") as f32, mv_a as f32];
+        let color = [
+            f("mv_r") as f32,
+            f("mv_g") as f32,
+            f("mv_b") as f32,
+            mv_a as f32,
+        ];
         let mut segments = Vec::new();
         for j in 0..ny as usize {
             let fy = (j as f64 + 0.25) / (ny + dy + 0.25 - 1.0) - dy2;
@@ -703,7 +758,10 @@ impl Engine {
                     dxi = min_len;
                 }
                 let p1 = [(2.0 * fx - 1.0) as f32, (2.0 * fy - 1.0) as f32];
-                let p2 = [(2.0 * (fx + dxi) - 1.0) as f32, (2.0 * (fy + dyi) - 1.0) as f32];
+                let p2 = [
+                    (2.0 * (fx + dxi) - 1.0) as f32,
+                    (2.0 * (fy + dyi) - 1.0) as f32,
+                ];
                 segments.push((p1, p2));
             }
         }
@@ -720,13 +778,22 @@ impl Engine {
         let dx = fx * MESH_WIDTH as f64 - x0;
         let (x0, y0) = (x0 as usize, y0 as usize);
         let at = |x: usize, y: usize| {
-            let i = (y.min(MESH_HEIGHT) * (MESH_WIDTH + 1) + x.min(MESH_WIDTH)).min(self.warp_uvs.len() - 1);
+            let i = (y.min(MESH_HEIGHT) * (MESH_WIDTH + 1) + x.min(MESH_WIDTH))
+                .min(self.warp_uvs.len() - 1);
             let uv = self.warp_uvs[i];
             [uv[0] as f64, uv[1] as f64]
         };
-        let (a, b, c, d) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+        let (a, b, c, d) = (
+            at(x0, y0),
+            at(x0 + 1, y0),
+            at(x0, y0 + 1),
+            at(x0 + 1, y0 + 1),
+        );
         let mix = |k: usize| {
-            a[k] * (1.0 - dx) * (1.0 - dy) + b[k] * dx * (1.0 - dy) + c[k] * (1.0 - dx) * dy + d[k] * dx * dy
+            a[k] * (1.0 - dx) * (1.0 - dy)
+                + b[k] * dx * (1.0 - dy)
+                + c[k] * (1.0 - dx) * dy
+                + d[k] * dx * dy
         };
         [mix(0), 1.0 - mix(1)]
     }
@@ -769,7 +836,12 @@ impl Engine {
                 let x = g("x") * 2.0 - 1.0;
                 let y = g("y") * -2.0 + 1.0;
                 let center = [g("r") as f32, g("g") as f32, g("b") as f32, g("a") as f32];
-                let rim = [g("r2") as f32, g("g2") as f32, g("b2") as f32, g("a2") as f32];
+                let rim = [
+                    g("r2") as f32,
+                    g("g2") as f32,
+                    g("b2") as f32,
+                    g("a2") as f32,
+                ];
                 let border = [
                     g("border_r") as f32,
                     g("border_g") as f32,
@@ -785,7 +857,10 @@ impl Engine {
                     .map(|k| {
                         let p = k as f64 / sides as f64 * std::f64::consts::TAU;
                         let a = p + ang + quarter_pi;
-                        let pos = [(x + rad * a.cos() * aspecty) as f32, (y + rad * a.sin()) as f32];
+                        let pos = [
+                            (x + rad * a.cos() * aspecty) as f32,
+                            (y + rad * a.sin()) as f32,
+                        ];
                         let ta = p + tex_ang + quarter_pi;
                         let uv = [
                             (0.5 + 0.5 * ta.cos() / tex_zoom * aspecty) as f32,
@@ -803,11 +878,23 @@ impl Engine {
                     let (p1, uv1) = rim_points[k];
                     let (p2, uv2) = rim_points[k + 1];
                     sprites.vertices.push(center_v);
-                    sprites.vertices.push(Vertex { pos: p1, color: rim, uv: uv1 });
-                    sprites.vertices.push(Vertex { pos: p2, color: rim, uv: uv2 });
+                    sprites.vertices.push(Vertex {
+                        pos: p1,
+                        color: rim,
+                        uv: uv1,
+                    });
+                    sprites.vertices.push(Vertex {
+                        pos: p2,
+                        color: rim,
+                        uv: uv2,
+                    });
                 }
                 sprites.flush(
-                    if additive { Blend::Additive } else { Blend::Alpha },
+                    if additive {
+                        Blend::Additive
+                    } else {
+                        Blend::Alpha
+                    },
                     textured,
                 );
                 if border[3] > 0.0 {
@@ -861,8 +948,16 @@ impl Engine {
                 (&audio.time_l, &audio.time_r)
             };
             let max = MAX_SAMPLES as f64;
-            let j0 = if spectrum { 0.0 } else { ((max - samples) / 2.0 - sep / 2.0).floor() };
-            let j1 = if spectrum { 0.0 } else { ((max - samples) / 2.0 + sep / 2.0).floor() };
+            let j0 = if spectrum {
+                0.0
+            } else {
+                ((max - samples) / 2.0 - sep / 2.0).floor()
+            };
+            let j1 = if spectrum {
+                0.0
+            } else {
+                ((max - samples) / 2.0 + sep / 2.0).floor()
+            };
             let t = if spectrum { (max - sep) / samples } else { 1.0 };
             let mix1 = (smoothing * 0.98).max(0.0).sqrt();
             let mix2 = 1.0 - mix1;
@@ -894,7 +989,11 @@ impl Engine {
             for j in 0..n {
                 let (v1, v2) = (pl[j] * scale, pr[j] * scale);
                 let vars = &mut scope.vars;
-                vars[s_sample] = if n > 1 { j as f64 / (n - 1) as f64 } else { 0.0 };
+                vars[s_sample] = if n > 1 {
+                    j as f64 / (n - 1) as f64
+                } else {
+                    0.0
+                };
                 vars[s_v1] = v1;
                 vars[s_v2] = v2;
                 vars[s_x] = 0.5 + v1;
@@ -911,7 +1010,12 @@ impl Engine {
                     ((vars[s_x] * 2.0 - 1.0) * inv_aspect[0]) as f32,
                     ((vars[s_y] * -2.0 + 1.0) * inv_aspect[1]) as f32,
                 ]);
-                colors.push([vars[s_r] as f32, vars[s_g] as f32, vars[s_b] as f32, vars[s_a] as f32]);
+                colors.push([
+                    vars[s_r] as f32,
+                    vars[s_g] as f32,
+                    vars[s_b] as f32,
+                    vars[s_a] as f32,
+                ]);
             }
             scope.store_regs(regs);
             let dots = scope.get("usedots") != 0.0;
@@ -1003,7 +1107,10 @@ impl Engine {
                         let rad2 = 0.5 + 0.4 * r(i + num + offset) + param;
                         rad = (1.0 - mix) * rad2 + rad * mix;
                     }
-                    positions.push([rad * ang.cos() * aspecty + pos_x, rad * ang.sin() * aspectx + pos_y]);
+                    positions.push([
+                        rad * ang.cos() * aspecty + pos_x,
+                        rad * ang.sin() * aspectx + pos_y,
+                    ]);
                 }
                 positions.push(positions[0]);
             }
@@ -1012,7 +1119,10 @@ impl Engine {
                 for i in 0..len / 2 {
                     let rad = 0.53 + 0.43 * r(i) + param;
                     let ang = l(i + 32) * 0.5 * std::f64::consts::PI + time * 2.3;
-                    positions.push([rad * ang.cos() * aspecty + pos_x, rad * ang.sin() * aspectx + pos_y]);
+                    positions.push([
+                        rad * ang.cos() * aspecty + pos_x,
+                        rad * ang.sin() * aspectx + pos_y,
+                    ]);
                 }
             }
             2 | 3 => {
@@ -1034,7 +1144,8 @@ impl Engine {
                 let w1 = 0.45 + 0.5 * (param * 0.5 + 0.5);
                 let w2 = 1.0 - w1;
                 for i in 0..num {
-                    let mut x = 2.0 * i as f64 * inv + (pos_x - 1.0) + r((i + 25 + offset) % len) * 0.44;
+                    let mut x =
+                        2.0 * i as f64 * inv + (pos_x - 1.0) + r((i + 25 + offset) % len) * 0.44;
                     let mut y = l(i + offset) * 0.47 + pos_y;
                     if i > 1 {
                         x = x * w2 + w1 * (positions[i - 1][0] * 2.0 - positions[i - 2][0]);
@@ -1143,7 +1254,14 @@ impl Engine {
             if dots {
                 for offset in thick_offsets(thick) {
                     for p in &smoothed {
-                        sprites.dot([p[0] + offset[0] * sprites.px[0], p[1] + offset[1] * sprites.px[1]], color, 1.0);
+                        sprites.dot(
+                            [
+                                p[0] + offset[0] * sprites.px[0],
+                                p[1] + offset[1] * sprites.px[1],
+                            ],
+                            color,
+                            1.0,
+                        );
                     }
                 }
             } else {
@@ -1212,7 +1330,10 @@ fn blur_values(f: &dyn Fn(&str) -> f64) -> ([f32; 3], [f32; 3]) {
 }
 
 /// MilkDrop's waveform smoothing: inserts a cubic midpoint between samples.
-fn smooth_wave(points: &[[f32; 2]], colors: Option<&[[f32; 4]]>) -> (Vec<[f32; 2]>, Option<Vec<[f32; 4]>>) {
+fn smooth_wave(
+    points: &[[f32; 2]],
+    colors: Option<&[[f32; 4]]>,
+) -> (Vec<[f32; 2]>, Option<Vec<[f32; 4]>>) {
     let n = points.len();
     if n < 2 {
         return (points.to_vec(), colors.map(<[_]>::to_vec));
@@ -1228,7 +1349,11 @@ fn smooth_wave(points: &[[f32; 2]], colors: Option<&[[f32; 4]]>) -> (Vec<[f32; 2
         above2 = (i + 2).min(n - 1);
         out.push(points[i]);
         let mid = |k: usize| {
-            (c1 * points[below][k] + c2 * points[i][k] + c3 * points[above][k] + c4 * points[above2][k]) * inv_sum
+            (c1 * points[below][k]
+                + c2 * points[i][k]
+                + c3 * points[above][k]
+                + c4 * points[above2][k])
+                * inv_sum
         };
         out.push([mid(0), mid(1)]);
         if let (Some(oc), Some(c)) = (out_colors.as_mut(), colors) {
@@ -1307,7 +1432,11 @@ impl Sprites {
             // Perpendicular in pixel space.
             let (dx, dy) = ((b[0] - a[0]) / px, (b[1] - a[1]) / py);
             let len = (dx * dx + dy * dy).sqrt();
-            let (nx, ny) = if len > 0.0 { (-dy / len, dx / len) } else { (0.0, 1.0) };
+            let (nx, ny) = if len > 0.0 {
+                (-dy / len, dx / len)
+            } else {
+                (0.0, 1.0)
+            };
             let (ox, oy) = (nx * half * px, ny * half * py);
             let (sx, sy) = (offset[0] * px, offset[1] * py);
             self.quad(
@@ -1346,7 +1475,13 @@ impl Sprites {
 
     fn darken_center(&mut self, aspecty: f32) {
         let h = 0.05;
-        let rim = [[-h * aspecty, 0.0], [0.0, -h], [h * aspecty, 0.0], [0.0, h], [-h * aspecty, 0.0]];
+        let rim = [
+            [-h * aspecty, 0.0],
+            [0.0, -h],
+            [h * aspecty, 0.0],
+            [0.0, h],
+            [-h * aspecty, 0.0],
+        ];
         let center = Vertex {
             pos: [0.0, 0.0],
             color: [0.0, 0.0, 0.0, 3.0 / 32.0],
@@ -1382,16 +1517,36 @@ impl Sprites {
             }
         };
         // Left, right, top and bottom bands, as in Butterchurn.
-        let (p1, p2, p3, p4) = ([-1.0 + prev, -1.0 + edge], [-1.0 + prev, 1.0 - edge], [-1.0 + edge, 1.0 - edge], [-1.0 + edge, -1.0 + edge]);
+        let (p1, p2, p3, p4) = (
+            [-1.0 + prev, -1.0 + edge],
+            [-1.0 + prev, 1.0 - edge],
+            [-1.0 + edge, 1.0 - edge],
+            [-1.0 + edge, -1.0 + edge],
+        );
         tri(p4, p2, p1);
         tri(p4, p3, p2);
-        let (p1, p2, p3, p4) = ([1.0 - prev, -1.0 + edge], [1.0 - prev, 1.0 - edge], [1.0 - edge, 1.0 - edge], [1.0 - edge, -1.0 + edge]);
+        let (p1, p2, p3, p4) = (
+            [1.0 - prev, -1.0 + edge],
+            [1.0 - prev, 1.0 - edge],
+            [1.0 - edge, 1.0 - edge],
+            [1.0 - edge, -1.0 + edge],
+        );
         tri(p1, p2, p4);
         tri(p2, p3, p4);
-        let (p1, p2, p3, p4) = ([-1.0 + prev, -1.0 + prev], [-1.0 + prev, edge - 1.0], [1.0 - prev, edge - 1.0], [1.0 - prev, -1.0 + prev]);
+        let (p1, p2, p3, p4) = (
+            [-1.0 + prev, -1.0 + prev],
+            [-1.0 + prev, edge - 1.0],
+            [1.0 - prev, edge - 1.0],
+            [1.0 - prev, -1.0 + prev],
+        );
         tri(p4, p2, p1);
         tri(p4, p3, p2);
-        let (p1, p2, p3, p4) = ([-1.0 + prev, 1.0 - prev], [-1.0 + prev, 1.0 - edge], [1.0 - prev, 1.0 - edge], [1.0 - prev, 1.0 - prev]);
+        let (p1, p2, p3, p4) = (
+            [-1.0 + prev, 1.0 - prev],
+            [-1.0 + prev, 1.0 - edge],
+            [1.0 - prev, 1.0 - edge],
+            [1.0 - prev, 1.0 - prev],
+        );
         tri(p1, p2, p4);
         tri(p2, p3, p4);
         self.flush(Blend::Alpha, false);
@@ -1416,11 +1571,16 @@ mod tests {
         let mut engine = Engine::new(&p, 64, 64, 1).unwrap();
         let audio = AudioState::new(44100.0);
         let out = engine.frame(&audio, 0.0, 60.0, 1);
-        let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
         // Top-left mesh vertex samples the top of the GL texture (v = 1).
         assert!(close(out.warp_uvs[0], [0.0, 1.0]), "{:?}", out.warp_uvs[0]);
         let last = out.warp_uvs.len() - 1;
-        assert!(close(out.warp_uvs[last], [1.0, 0.0]), "{:?}", out.warp_uvs[last]);
+        assert!(
+            close(out.warp_uvs[last], [1.0, 0.0]),
+            "{:?}",
+            out.warp_uvs[last]
+        );
     }
 
     #[test]
@@ -1436,7 +1596,11 @@ mod tests {
         let out = engine.frame(&audio, 0.5, 60.0, 1);
         assert!(out.warp_uvs[0] != [0.0, 1.0]);
         // Three hexagon fans (6 triangles each) plus their borders.
-        let fans: Vec<_> = out.draws.iter().filter(|d| d.vertices.len() == 18).collect();
+        let fans: Vec<_> = out
+            .draws
+            .iter()
+            .filter(|d| d.vertices.len() == 18)
+            .collect();
         assert_eq!(fans.len(), 3);
     }
 

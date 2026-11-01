@@ -189,7 +189,10 @@ impl VersoApp {
             self.send(Command::RenameLayer { layer, name });
         }
         if ui
-            .add_enabled(self.comp.layers.len() > 1, egui::Button::new("Delete Layer"))
+            .add_enabled(
+                self.comp.layers.len() > 1,
+                egui::Button::new("Delete Layer"),
+            )
             .on_hover_text("Deletes the layer and its clips (Ctrl+Z undoes)")
             .clicked()
         {

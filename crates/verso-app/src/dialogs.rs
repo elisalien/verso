@@ -16,6 +16,9 @@ pub enum DialogKind {
     Save,
     MediaFolder,
     EffectFolder,
+    AdvancedImport,
+    AdvancedExport,
+    AdvancedSvg,
 }
 
 pub struct Dialogs {
@@ -39,7 +42,11 @@ impl Default for Dialogs {
 impl Dialogs {
     /// Shows a dialog built by `show`; its answer comes back from [`Self::poll`].
     /// A second dialog of any kind is refused while one is open.
-    pub fn open(&mut self, kind: DialogKind, show: impl FnOnce() -> Option<PathBuf> + Send + 'static) {
+    pub fn open(
+        &mut self,
+        kind: DialogKind,
+        show: impl FnOnce() -> Option<PathBuf> + Send + 'static,
+    ) {
         if self.pending > 0 {
             return;
         }

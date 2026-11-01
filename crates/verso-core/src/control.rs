@@ -627,7 +627,10 @@ mod tests {
                 "/composition/layers/1/bypassed",
                 Action::Set(Param::LayerBypass(0)),
             ),
-            ("/composition/layers/1/solo", Action::Set(Param::LayerSolo(0))),
+            (
+                "/composition/layers/1/solo",
+                Action::Set(Param::LayerSolo(0)),
+            ),
             ("/composition/master", Action::Set(Param::Master)),
             (
                 "/composition/crossfader/phase",
@@ -666,7 +669,10 @@ mod tests {
             Action::parse_osc("/column/1/launch", None),
             Some((Action::LaunchColumn(0), 1.0))
         );
-        assert_eq!(Action::parse_osc("/composition/layers/0/clear", Some(1.0)), None);
+        assert_eq!(
+            Action::parse_osc("/composition/layers/0/clear", Some(1.0)),
+            None
+        );
         assert_eq!(Action::parse_osc("/composition/nope", Some(1.0)), None);
     }
 

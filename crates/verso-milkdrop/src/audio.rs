@@ -32,8 +32,10 @@ pub struct AudioState {
 impl AudioState {
     pub fn new(sample_rate: f32) -> Self {
         let bucket_hz = sample_rate / FFT_SIZE as f32;
-        let bin = |hz: f32| ((hz / bucket_hz).round() as i64 - 1).clamp(0, NUM_SAMPS as i64 - 1) as usize;
-        let (bass_low, bass_high, mid_high, treb_high) = (bin(20.0), bin(320.0), bin(2800.0), bin(11025.0));
+        let bin =
+            |hz: f32| ((hz / bucket_hz).round() as i64 - 1).clamp(0, NUM_SAMPS as i64 - 1) as usize;
+        let (bass_low, bass_high, mid_high, treb_high) =
+            (bin(20.0), bin(320.0), bin(2800.0), bin(11025.0));
         AudioState {
             time_l: vec![0.0; NUM_SAMPS],
             time_r: vec![0.0; NUM_SAMPS],
@@ -80,7 +82,11 @@ impl AudioState {
     }
 
     fn update_levels(&mut self, fps: f32, frame: u64) {
-        let fps = if fps.is_finite() { fps.clamp(15.0, 144.0) } else { 15.0 };
+        let fps = if fps.is_finite() {
+            fps.clamp(15.0, 144.0)
+        } else {
+            15.0
+        };
         let adjust = |rate: f32| rate.powf(30.0 / fps);
         let mut val = [0.0; 3];
         let mut att = [0.0; 3];
@@ -158,7 +164,11 @@ impl Fft {
         let mut real = vec![0.0f32; n];
         let mut imag = vec![0.0f32; n];
         for (r, &idx) in real.iter_mut().zip(&self.bitrev) {
-            *r = if idx < self.samples_in { input[idx] } else { 0.0 };
+            *r = if idx < self.samples_in {
+                input[idx]
+            } else {
+                0.0
+            };
         }
         let mut dftsize = 2;
         let mut t = 0;
@@ -211,7 +221,9 @@ mod tests {
     #[test]
     fn bass_tone_raises_bass() {
         let mut audio = AudioState::new(44100.0);
-        let quiet: Vec<f32> = (0..FFT_SIZE).map(|i| 0.01 * (i as f32 * 0.3).sin()).collect();
+        let quiet: Vec<f32> = (0..FFT_SIZE)
+            .map(|i| 0.01 * (i as f32 * 0.3).sin())
+            .collect();
         for frame in 0..120 {
             audio.update(&quiet, 60.0, frame);
         }

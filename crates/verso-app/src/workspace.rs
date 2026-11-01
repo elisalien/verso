@@ -72,6 +72,26 @@ fn layout_file() -> Option<PathBuf> {
     crate::online_ui::user_dir().map(|d| d.join("layout.ron"))
 }
 
+/// Layout picked with Window › Save Layout as Default.
+fn default_layout_file() -> Option<PathBuf> {
+    crate::online_ui::user_dir().map(|d| d.join("default-layout.ron"))
+}
+
+fn read_layout(file: Option<PathBuf>) -> Option<Workspace> {
+    file.and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|text| ron::from_str::<Workspace>(&text).ok())
+        .filter(|w| w.is_consistent())
+}
+
+fn write_layout(file: Option<PathBuf>, workspace: &Workspace) -> std::io::Result<()> {
+    let file = file.ok_or_else(|| std::io::Error::other("no user folder"))?;
+    let text = ron::to_string(workspace).map_err(std::io::Error::other)?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(file, text)
+}
+
 impl Default for Workspace {
     /// Grid on top; below, Properties tabs, Preview, Output and Browser.
     fn default() -> Self {
@@ -108,23 +128,23 @@ impl Default for Workspace {
 }
 
 impl Workspace {
-    /// The saved layout, or the default one.
+    /// The layout of the last session, else the user's default.
     pub fn load() -> Self {
-        layout_file()
-            .and_then(|f| std::fs::read_to_string(f).ok())
-            .and_then(|text| ron::from_str::<Workspace>(&text).ok())
-            .filter(|w| w.is_consistent())
-            .unwrap_or_default()
+        read_layout(layout_file()).unwrap_or_else(Self::user_default)
+    }
+
+    /// The layout saved as default, else the built-in one.
+    pub fn user_default() -> Self {
+        read_layout(default_layout_file()).unwrap_or_default()
     }
 
     pub fn save(&self) {
-        let (Some(file), Ok(text)) = (layout_file(), ron::to_string(self)) else {
-            return;
-        };
-        if let Some(dir) = file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(file, text);
+        let _ = write_layout(layout_file(), self);
+    }
+
+    /// Makes this layout the one Reset Layout and new installs start from.
+    pub fn save_as_default(&self) -> std::io::Result<()> {
+        write_layout(default_layout_file(), self)
     }
 
     /// Every docked panel is known and the grid is present.
@@ -253,6 +273,7 @@ impl VersoApp {
     pub(crate) fn workspace(&mut self, ui: &mut egui::Ui) {
         // Set again by the grid while the pointer is over a clip.
         self.hovered_clip = None;
+        self.hover_target = None;
         // Selecting something brings its Properties panel forward.
         if self.props_tab != self.last_props_tab {
             self.last_props_tab = self.props_tab;
@@ -519,7 +540,26 @@ impl VersoApp {
             self.colors_open = true;
             ui.close();
         }
-        if ui.button("Reset Layout").clicked() {
+        if ui.button("Save Layout as Default").clicked() {
+            self.status = match self.workspace.save_as_default() {
+                Ok(()) => "Layout saved as default".into(),
+                Err(e) => format!("Could not save the default layout: {e}"),
+            };
+            ui.close();
+        }
+        if ui
+            .button("Reset Layout")
+            .on_hover_text("Back to the default layout")
+            .clicked()
+        {
+            self.workspace = Workspace::user_default();
+            ui.close();
+        }
+        if ui
+            .button("Built-in Layout")
+            .on_hover_text("Back to Verso's original layout")
+            .clicked()
+        {
             self.workspace = Workspace::default();
             ui.close();
         }

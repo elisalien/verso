@@ -13,7 +13,10 @@ fn main() {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let preset = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| Preset::from_json(&t)) {
+        let preset = match std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| Preset::from_json(&t))
+        {
             Ok(p) => p,
             Err(e) => {
                 println!("PARSE {name}: {e}");
@@ -41,5 +44,8 @@ fn main() {
             }
         }
     }
-    println!("ok {ok}, failed {failed}, slowest {:.2} ms/frame: {}", slowest.0, slowest.1);
+    println!(
+        "ok {ok}, failed {failed}, slowest {:.2} ms/frame: {}",
+        slowest.0, slowest.1
+    );
 }

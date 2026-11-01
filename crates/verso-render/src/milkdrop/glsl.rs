@@ -376,7 +376,8 @@ mod bundled {
                 verso_milkdrop::Engine::new(preset, 320, 180, 1)
                     .unwrap_or_else(|e| panic!("{}: {e}", variant.name));
                 for (stage, text) in [(Stage::Warp, &preset.warp), (Stage::Comp, &preset.comp)] {
-                    translate(stage, text).unwrap_or_else(|e| panic!("{} {stage:?}: {e}", variant.name));
+                    translate(stage, text)
+                        .unwrap_or_else(|e| panic!("{} {stage:?}: {e}", variant.name));
                 }
             }
         }

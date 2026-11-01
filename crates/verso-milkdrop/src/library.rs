@@ -95,7 +95,8 @@ impl MilkLibrary {
     pub fn sorted(&self) -> Vec<&FamilyInfo> {
         let mut all: Vec<_> = self.families.values().map(|(i, _)| i).collect();
         all.sort_by(|a, b| {
-            (a.category.as_str(), a.name.to_lowercase()).cmp(&(b.category.as_str(), b.name.to_lowercase()))
+            (a.category.as_str(), a.name.to_lowercase())
+                .cmp(&(b.category.as_str(), b.name.to_lowercase()))
         });
         all
     }
@@ -117,7 +118,10 @@ fn collect_json(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_json(&path, out);
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        {
             out.push(path);
         }
     }

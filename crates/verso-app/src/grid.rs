@@ -114,7 +114,7 @@ impl VersoApp {
                 StrokeKind::Inside,
             );
         }
-        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+        if let Some(template) = widgets::dropped::<EffectTemplate>(&response) {
             self.add_effect(EffectTarget::Composition, &template);
             self.props_tab = PropsTab::Composition;
         }
@@ -173,6 +173,9 @@ impl VersoApp {
                 theme::text_dim()
             },
         );
+        if response.contains_pointer() {
+            self.hover_target = Some(crate::hover_preview::HoverTarget::Column(column));
+        }
         let response = response.on_hover_text("Click to launch the column");
         let learning = self.learnable(ui, rect, Action::LaunchColumn(column));
         if response.clicked() && !learning {
@@ -185,7 +188,11 @@ impl VersoApp {
                 self.send(Command::RenameColumn { column, name });
             }
             ui.separator();
-            if ui.button("Clear Column").on_hover_text("Eject this column on every layer playing it").clicked() {
+            if ui
+                .button("Clear Column")
+                .on_hover_text("Eject this column on every layer playing it")
+                .clicked()
+            {
                 let playing: Vec<usize> = (0..self.comp.layers.len())
                     .filter(|&l| self.comp.layers[l].active == Some(column))
                     .collect();
@@ -195,7 +202,10 @@ impl VersoApp {
                 ui.close();
             }
             if ui
-                .add_enabled(self.comp.columns.len() > 1, egui::Button::new("Delete Column"))
+                .add_enabled(
+                    self.comp.columns.len() > 1,
+                    egui::Button::new("Delete Column"),
+                )
                 .on_hover_text("Deletes the column and its clips on every layer (Ctrl+Z undoes)")
                 .clicked()
             {
@@ -325,7 +335,7 @@ impl VersoApp {
                 });
             });
         });
-        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+        if let Some(template) = widgets::dropped::<EffectTemplate>(&response) {
             self.add_effect(EffectTarget::Layer(index), &template);
             self.selected_layer = index;
             self.props_tab = PropsTab::Layer;
@@ -333,12 +343,19 @@ impl VersoApp {
             let modifiers = ui.input(|i| i.modifiers);
             self.click_layer(index, modifiers);
         }
+        // Over the header or its buttons: the Preview monitor shows the layer.
+        if response.contains_pointer() {
+            self.hover_target = Some(crate::hover_preview::HoverTarget::Layer(index));
+        }
         response.context_menu(|ui| self.layer_group_menu(ui, index));
     }
 
     fn cell(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
         let (rect, response) = ui.allocate_exact_size(CELL, Sense::click());
-        let milk_family = match self.comp.layers[layer].clips[column].as_ref().map(|c| &c.source) {
+        let milk_family = match self.comp.layers[layer].clips[column]
+            .as_ref()
+            .map(|c| &c.source)
+        {
             Some(Source::Milkdrop { family, .. }) => Some(family.clone()),
             _ => None,
         };
@@ -464,13 +481,13 @@ impl VersoApp {
             ));
         }
 
-        if let Some(template) = response.dnd_release_payload::<EffectTemplate>() {
+        if let Some(template) = widgets::dropped::<EffectTemplate>(&response) {
             if self.comp.layers[layer].clips[column].is_some() {
                 self.add_effect(EffectTarget::Clip { layer, column }, &template);
                 self.selected_clip = Some((layer, column));
                 self.props_tab = PropsTab::Clip;
             }
-        } else if let Some(template) = response.dnd_release_payload::<SourceTemplate>() {
+        } else if let Some(template) = widgets::dropped::<SourceTemplate>(&response) {
             self.send(Command::SetClip {
                 layer,
                 column,

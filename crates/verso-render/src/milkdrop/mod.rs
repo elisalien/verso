@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use verso_milkdrop::eel::Rng;
 use verso_milkdrop::preset::BUILTIN_SAMPLERS;
 use verso_milkdrop::{
-    AudioState, Blend, BlendPattern, COMP_HEIGHT, COMP_WIDTH, Engine, Family, FrameOutput, MESH_HEIGHT,
-    MESH_WIDTH, MilkLibrary, Vertex, blur_passes,
+    AudioState, Blend, BlendPattern, COMP_HEIGHT, COMP_WIDTH, Engine, Family, FrameOutput,
+    MESH_HEIGHT, MESH_WIDTH, MilkLibrary, Vertex, blur_passes,
 };
 
 use glsl::{MilkUniforms, Stage};
@@ -108,9 +108,13 @@ fn noise_2d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
                 if x % zoom != 0 {
                     let base_x = x / zoom * zoom + n;
                     let base_y = y * n;
-                    let at = |off: usize, c: usize| tex[base_y * 4 + ((base_x + off - zoom) % n) * 4 + c];
+                    let at = |off: usize, c: usize| {
+                        tex[base_y * 4 + ((base_x + off - zoom) % n) * 4 + c]
+                    };
                     let t = (x % zoom) as f32 / zoom as f32;
-                    let v: [u8; 4] = std::array::from_fn(|c| cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t));
+                    let v: [u8; 4] = std::array::from_fn(|c| {
+                        cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t)
+                    });
                     tex[(y * n + x) * 4..(y * n + x) * 4 + 4].copy_from_slice(&v);
                 }
             }
@@ -119,9 +123,12 @@ fn noise_2d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
             for y in 0..n {
                 if y % zoom != 0 {
                     let base_y = y / zoom * zoom + n;
-                    let at = |off: usize, c: usize| tex[((base_y + off - zoom) % n) * n * 4 + x * 4 + c];
+                    let at =
+                        |off: usize, c: usize| tex[((base_y + off - zoom) % n) * n * 4 + x * 4 + c];
                     let t = (y % zoom) as f32 / zoom as f32;
-                    let v: [u8; 4] = std::array::from_fn(|c| cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t));
+                    let v: [u8; 4] = std::array::from_fn(|c| {
+                        cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t)
+                    });
                     tex[(y * n + x) * 4..(y * n + x) * 4 + 4].copy_from_slice(&v);
                 }
             }
@@ -144,9 +151,13 @@ fn noise_3d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
                     if x % zoom != 0 {
                         let base_x = x / zoom * zoom + n;
                         let base = z * slice + y * n;
-                        let at = |off: usize, c: usize| tex[base * 4 + ((base_x + off - zoom) % n) * 4 + c];
+                        let at = |off: usize, c: usize| {
+                            tex[base * 4 + ((base_x + off - zoom) % n) * 4 + c]
+                        };
                         let t = (x % zoom) as f32 / zoom as f32;
-                        let v: [u8; 4] = std::array::from_fn(|c| cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t));
+                        let v: [u8; 4] = std::array::from_fn(|c| {
+                            cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t)
+                        });
                         let i = (base + x) * 4;
                         tex[i..i + 4].copy_from_slice(&v);
                     }
@@ -158,9 +169,13 @@ fn noise_3d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
                 for y in 0..n {
                     if y % zoom != 0 {
                         let base_y = y / zoom * zoom + n;
-                        let at = |off: usize, c: usize| tex[((base_y + off - zoom) % n) * n * 4 + x * 4 + z * slice * 4 + c];
+                        let at = |off: usize, c: usize| {
+                            tex[((base_y + off - zoom) % n) * n * 4 + x * 4 + z * slice * 4 + c]
+                        };
                         let t = (y % zoom) as f32 / zoom as f32;
-                        let v: [u8; 4] = std::array::from_fn(|c| cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t));
+                        let v: [u8; 4] = std::array::from_fn(|c| {
+                            cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t)
+                        });
                         // Butterchurn writes this slice without the z offset.
                         let i = y * n * 4 + x * 4 + z * slice * 4;
                         tex[i..i + 4].copy_from_slice(&v);
@@ -173,10 +188,14 @@ fn noise_3d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
                 for z in 0..n {
                     if z % zoom != 0 {
                         let base_z = z / zoom * zoom + n;
-                        let at = |off: usize, c: usize| tex[((base_z + off - zoom) % n) * slice * 4 + x * 4 + y * n * 4 + c];
+                        let at = |off: usize, c: usize| {
+                            tex[((base_z + off - zoom) % n) * slice * 4 + x * 4 + y * n * 4 + c]
+                        };
                         // Butterchurn interpolates with the y fraction here.
                         let t = (y % zoom) as f32 / zoom as f32;
-                        let v: [u8; 4] = std::array::from_fn(|c| cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t));
+                        let v: [u8; 4] = std::array::from_fn(|c| {
+                            cubic(at(0, c), at(zoom, c), at(2 * zoom, c), at(3 * zoom, c), t)
+                        });
                         let i = z * slice * 4 + x * 4 + y * n * 4;
                         tex[i..i + 4].copy_from_slice(&v);
                     }
@@ -188,7 +207,12 @@ fn noise_3d(size: usize, zoom: usize, rng: &mut Rng) -> Vec<u8> {
 }
 
 fn cubic(y0: u8, y1: u8, y2: u8, y3: u8, t: f32) -> u8 {
-    let (y0, y1, y2, y3) = (y0 as f32 / 255.0, y1 as f32 / 255.0, y2 as f32 / 255.0, y3 as f32 / 255.0);
+    let (y0, y1, y2, y3) = (
+        y0 as f32 / 255.0,
+        y1 as f32 / 255.0,
+        y2 as f32 / 255.0,
+        y3 as f32 / 255.0,
+    );
     let t2 = t * t;
     let t3 = t * t2;
     let a0 = y3 - y2 - y0 + y1;
@@ -237,7 +261,10 @@ fn upload_noise(
     texture.create_view(&Default::default())
 }
 
-fn layout_texture(binding: u32, dimension: wgpu::TextureViewDimension) -> wgpu::BindGroupLayoutEntry {
+fn layout_texture(
+    binding: u32,
+    dimension: wgpu::TextureViewDimension,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -272,7 +299,11 @@ fn layout_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn sampler(device: &wgpu::Device, filter: wgpu::FilterMode, address: wgpu::AddressMode) -> wgpu::Sampler {
+fn sampler(
+    device: &wgpu::Device,
+    filter: wgpu::FilterMode,
+    address: wgpu::AddressMode,
+) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("milkdrop"),
         address_mode_u: address,
@@ -383,7 +414,10 @@ fn grid_indices(w: usize, h: usize) -> Vec<u32> {
 
 /// Grid vertex positions in OpenGL clip space, row 0 at the top.
 fn grid_position(ix: usize, iy: usize, w: usize, h: usize) -> [f32; 2] {
-    [ix as f32 / w as f32 * 2.0 - 1.0, -(iy as f32 / h as f32 * 2.0 - 1.0)]
+    [
+        ix as f32 / w as f32 * 2.0 - 1.0,
+        -(iy as f32 / h as f32 * 2.0 - 1.0),
+    ]
 }
 
 fn index_buffer(device: &wgpu::Device, queue: &wgpu::Queue, indices: &[u32]) -> wgpu::Buffer {
@@ -397,7 +431,12 @@ fn index_buffer(device: &wgpu::Device, queue: &wgpu::Queue, indices: &[u32]) -> 
     buffer
 }
 
-fn buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+fn buffer(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: size.max(16),
@@ -479,7 +518,14 @@ impl Shared {
                     "milkdrop sprite",
                     &sprite_layout,
                     (&fixed, "sprite_vs"),
-                    (&fixed, if textured { "sprite_textured" } else { "sprite_flat" }),
+                    (
+                        &fixed,
+                        if textured {
+                            "sprite_textured"
+                        } else {
+                            "sprite_flat"
+                        },
+                    ),
                     &sprite_buffers,
                     FEEDBACK_FORMAT,
                     Some(blend_state(blend)),
@@ -607,7 +653,10 @@ impl Shared {
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
-        for (i, sampler) in [main_sampler, &s[0], &s[1], &s[2], &s[3]].into_iter().enumerate() {
+        for (i, sampler) in [main_sampler, &s[0], &s[1], &s[2], &s[3]]
+            .into_iter()
+            .enumerate()
+        {
             entries.push(wgpu::BindGroupEntry {
                 binding: i as u32 + 11,
                 resource: wgpu::BindingResource::Sampler(sampler),
@@ -675,7 +724,12 @@ impl Run {
                 ((COMP_WIDTH + 1) * (COMP_HEIGHT + 1) * size_of::<CompVertex>()) as u64,
                 vertex,
             ),
-            sprite_vertices: buffer(device, "milkdrop sprites", 4096 * size_of::<Vertex>() as u64, vertex),
+            sprite_vertices: buffer(
+                device,
+                "milkdrop sprites",
+                4096 * size_of::<Vertex>() as u64,
+                vertex,
+            ),
         })
     }
 
@@ -701,7 +755,13 @@ impl Run {
     }
 
     /// Uploads the sprites with their alpha scaled by `alpha`.
-    fn write_sprites(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, out: &FrameOutput, alpha: f32) {
+    fn write_sprites(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        out: &FrameOutput,
+        alpha: f32,
+    ) {
         let vertices: Vec<Vertex> = out
             .vertices
             .iter()
@@ -753,7 +813,13 @@ struct Instance {
 }
 
 impl Instance {
-    fn new(device: &wgpu::Device, run: Run, size: (u32, u32), time: f32, sample_rate: f32) -> Instance {
+    fn new(
+        device: &wgpu::Device,
+        run: Run,
+        size: (u32, u32),
+        time: f32,
+        sample_rate: f32,
+    ) -> Instance {
         let blur = BLUR_RATIOS
             .iter()
             .map(|ratios| {
@@ -831,7 +897,12 @@ fn uniforms(out: &FrameOutput, size: (u32, u32), input_size: (u32, u32)) -> Milk
         blur_min: [s.blur_min[0], s.blur_min[1], s.blur_min[2], s.fshader],
         blur_max: [s.blur_max[0], s.blur_max[1], s.blur_max[2], s.gamma_adj],
         echo: [s.echo_zoom, s.echo_alpha, s.echo_orient, 0.0],
-        flags: [bool_f(s.invert), bool_f(s.brighten), bool_f(s.darken), bool_f(s.solarize)],
+        flags: [
+            bool_f(s.invert),
+            bool_f(s.brighten),
+            bool_f(s.darken),
+            bool_f(s.solarize),
+        ],
         input_size: [iw, ih, 1.0 / iw, 1.0 / ih],
     }
 }
@@ -913,7 +984,9 @@ impl MilkRenderer {
 
     /// Why a variant cannot run, if it failed.
     pub fn error(&self, family: &str, variant: usize) -> Option<&str> {
-        self.errors.get(&(family.to_owned(), variant)).map(String::as_str)
+        self.errors
+            .get(&(family.to_owned(), variant))
+            .map(String::as_str)
     }
 
     pub(crate) fn begin_frame(&mut self) {
@@ -1049,7 +1122,18 @@ impl MilkRenderer {
         };
         self.drawn.insert(key);
         let shared = self.shared.as_ref().unwrap();
-        render_instance(device, queue, encoder, shared, &self.compiled, instance, &self.samples, options, output, time);
+        render_instance(
+            device,
+            queue,
+            encoder,
+            shared,
+            &self.compiled,
+            instance,
+            &self.samples,
+            options,
+            output,
+            time,
+        );
         true
     }
 }
@@ -1127,9 +1211,14 @@ fn render_instance(
     }
     let progress = progress.filter(|p| *p < 1.0);
     let run = &mut instance.run;
-    let out = run.engine.frame(&instance.audio, (time - run.start) as f64, fps, frame);
+    let out = run
+        .engine
+        .frame(&instance.audio, (time - run.start) as f64, fps, frame);
     let faded = instance.fading.as_mut().map(|f| {
-        let out = f.run.engine.frame(&instance.audio, (time - f.run.start) as f64, fps, frame);
+        let out = f
+            .run
+            .engine
+            .frame(&instance.audio, (time - f.run.start) as f64, fps, frame);
         (f, out)
     });
     let Some(current) = compiled.get(&run.key()) else {
@@ -1138,7 +1227,11 @@ fn render_instance(
 
     // Inputs of the passes.
     let input_size = instance.input.as_ref().map_or((256, 256), |t| t.size);
-    queue.write_buffer(&run.uniforms, 0, bytemuck::bytes_of(&uniforms(&out, size, input_size)));
+    queue.write_buffer(
+        &run.uniforms,
+        0,
+        bytemuck::bytes_of(&uniforms(&out, size, input_size)),
+    );
     let mut warp = Vec::with_capacity(out.warp_uvs.len());
     for iy in 0..=MESH_HEIGHT {
         for ix in 0..=MESH_WIDTH {
@@ -1158,14 +1251,20 @@ fn render_instance(
         }
     }
     queue.write_buffer(&instance.warp_vertices, 0, bytemuck::cast_slice(&warp));
-    let weights = progress.zip(faded.as_ref()).map(|(p, (f, _))| f.pattern.comp_weights(p));
+    let weights = progress
+        .zip(faded.as_ref())
+        .map(|(p, (f, _))| f.pattern.comp_weights(p));
     run.write_comp(queue, &out, weights.as_deref());
     run.write_sprites(device, queue, &out, progress.unwrap_or(1.0));
     let mut old = None;
     if let (Some((fading, old_out)), Some(p)) = (faded, progress) {
         let old_run = &mut fading.run;
         if let Some(old_compiled) = compiled.get(&old_run.key()) {
-            queue.write_buffer(&old_run.uniforms, 0, bytemuck::bytes_of(&uniforms(&old_out, size, input_size)));
+            queue.write_buffer(
+                &old_run.uniforms,
+                0,
+                bytemuck::bytes_of(&uniforms(&old_out, size, input_size)),
+            );
             old_run.write_comp(queue, &old_out, None);
             old_run.write_sprites(device, queue, &old_out, 1.0 - p);
             old = Some((&*old_run, old_compiled, old_out));
@@ -1203,13 +1302,31 @@ fn render_instance(
         rp.set_vertex_buffer(0, instance.warp_vertices.slice(..));
         rp.set_index_buffer(shared.warp_indices.slice(..), wgpu::IndexFormat::Uint32);
         if let Some((old_run, old_compiled, old_out)) = &old {
-            let group = shared.shader_group(device, &old_run.uniforms, &instance.feedback[prev].view, blur_views, old_out.shader.wrap, input_view);
+            let group = shared.shader_group(
+                device,
+                &old_run.uniforms,
+                &instance.feedback[prev].view,
+                blur_views,
+                old_out.shader.wrap,
+                input_view,
+            );
             rp.set_pipeline(&old_compiled.warp);
             rp.set_bind_group(0, &group, &[]);
             rp.draw_indexed(0..shared.warp_index_count, 0, 0..1);
         }
-        let group = shared.shader_group(device, &run.uniforms, &instance.feedback[prev].view, blur_views, wrap, input_view);
-        rp.set_pipeline(if old.is_some() { &current.warp_fade } else { &current.warp });
+        let group = shared.shader_group(
+            device,
+            &run.uniforms,
+            &instance.feedback[prev].view,
+            blur_views,
+            wrap,
+            input_view,
+        );
+        rp.set_pipeline(if old.is_some() {
+            &current.warp_fade
+        } else {
+            &current.warp
+        });
         rp.set_bind_group(0, &group, &[]);
         rp.draw_indexed(0..shared.warp_index_count, 0, 0..1);
     }
@@ -1223,7 +1340,12 @@ fn render_instance(
         rp.set_pipeline(&shared.input_feed);
         rp.set_bind_group(0, &group, &[]);
         let mix = options.input_mix.clamp(0.0, 1.0) as f64;
-        rp.set_blend_constant(wgpu::Color { r: mix, g: mix, b: mix, a: mix });
+        rp.set_blend_constant(wgpu::Color {
+            r: mix,
+            g: mix,
+            b: mix,
+            a: mix,
+        });
         rp.draw(0..3, 0..1);
     }
 
@@ -1238,7 +1360,12 @@ fn render_instance(
     ];
     let w1v = ws[0] + ws[1] + ws[2] + ws[3];
     let w2v = ws[4] + ws[5] + ws[6] + ws[7];
-    let wds = [w1v, w2v, 2.0 * (ws[2] + ws[3]) / w1v, 2.0 + 2.0 * (ws[6] + ws[7]) / w2v];
+    let wds = [
+        w1v,
+        w2v,
+        2.0 * (ws[2] + ws[3]) / w1v,
+        2.0 + 2.0 * (ws[6] + ws[7]) / w2v,
+    ];
     let blur_passes = old
         .as_ref()
         .map_or(0, |(_, c, _)| c.blur_passes)
@@ -1313,8 +1440,17 @@ fn render_instance(
     }
 
     // Sprites over the warped image: the new preset's, then the old one's.
-    let sprite_sampler = if wrap { &shared.samplers[0] } else { &shared.samplers[1] };
-    let group = texture_group(device, &shared.sprite_layout, &instance.feedback[prev].view, sprite_sampler);
+    let sprite_sampler = if wrap {
+        &shared.samplers[0]
+    } else {
+        &shared.samplers[1]
+    };
+    let group = texture_group(
+        device,
+        &shared.sprite_layout,
+        &instance.feedback[prev].view,
+        sprite_sampler,
+    );
     {
         let mut rp = crate::pass(encoder, &instance.feedback[target].view, false);
         rp.set_bind_group(0, &group, &[]);
@@ -1336,14 +1472,32 @@ fn render_instance(
         let mut rp = crate::pass(encoder, output, true);
         rp.set_index_buffer(shared.comp_indices.slice(..), wgpu::IndexFormat::Uint32);
         if let Some((old_run, old_compiled, old_out)) = &old {
-            let group = shared.shader_group(device, &old_run.uniforms, &instance.feedback[target].view, blur_views, old_out.shader.wrap, input_view);
+            let group = shared.shader_group(
+                device,
+                &old_run.uniforms,
+                &instance.feedback[target].view,
+                blur_views,
+                old_out.shader.wrap,
+                input_view,
+            );
             rp.set_pipeline(&old_compiled.comp);
             rp.set_bind_group(0, &group, &[]);
             rp.set_vertex_buffer(0, old_run.comp_vertices.slice(..));
             rp.draw_indexed(0..shared.comp_index_count, 0, 0..1);
         }
-        let group = shared.shader_group(device, &run.uniforms, &instance.feedback[target].view, blur_views, wrap, input_view);
-        rp.set_pipeline(if old.is_some() { &current.comp_fade } else { &current.comp });
+        let group = shared.shader_group(
+            device,
+            &run.uniforms,
+            &instance.feedback[target].view,
+            blur_views,
+            wrap,
+            input_view,
+        );
+        rp.set_pipeline(if old.is_some() {
+            &current.comp_fade
+        } else {
+            &current.comp
+        });
         rp.set_bind_group(0, &group, &[]);
         rp.set_vertex_buffer(0, run.comp_vertices.slice(..));
         rp.draw_indexed(0..shared.comp_index_count, 0, 0..1);

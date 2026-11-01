@@ -622,10 +622,28 @@ mod tests {
         })
         .unwrap();
         comp.apply(Command::TriggerColumn(2)).unwrap();
+        // Relaunching the playing clip is not counted.
+        assert_eq!(comp.layers[0].launch_count(2), 1);
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 1,
+        })
+        .unwrap();
+        comp.apply(Command::TriggerColumn(2)).unwrap();
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 1,
+        })
+        .unwrap();
+        comp.apply(Command::TriggerClip {
+            layer: 0,
+            column: 2,
+        })
+        .unwrap();
         assert_eq!(comp.layers[0].launch_count(2), 3);
+        assert_eq!(comp.layers[0].launch_count(1), 2);
         // Same column, other layer: its own count.
         assert_eq!(comp.layers[1].launch_count(2), 1);
-        assert_eq!(comp.layers[0].launch_count(1), 0);
 
         // Empty slots eject without counting.
         comp.apply(Command::SetClip {
@@ -693,7 +711,8 @@ mod tests {
             action: Action::EjectLayer(1),
         }))
         .unwrap();
-        comp.apply(Command::AddGroup { layers: vec![1, 2] }).unwrap();
+        comp.apply(Command::AddGroup { layers: vec![1, 2] })
+            .unwrap();
 
         comp.apply(Command::RemoveLayer(1)).unwrap();
         assert_eq!(comp.layers.len(), 2);

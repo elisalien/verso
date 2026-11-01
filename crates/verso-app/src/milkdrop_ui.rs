@@ -38,16 +38,28 @@ pub struct MilkState {
     search: String,
 }
 
-fn load_preview(ctx: &egui::Context, id: &str, path: &std::path::Path) -> Option<egui::TextureHandle> {
+fn load_preview(
+    ctx: &egui::Context,
+    id: &str,
+    path: &std::path::Path,
+) -> Option<egui::TextureHandle> {
     let image = image::open(path).ok()?.to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-    Some(ctx.load_texture(format!("milkdrop {id}"), color, egui::TextureOptions::LINEAR))
+    Some(ctx.load_texture(
+        format!("milkdrop {id}"),
+        color,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 impl VersoApp {
     /// Preview image of a family, loaded on first use.
-    pub(crate) fn milk_preview(&mut self, ctx: &egui::Context, family: &str) -> Option<egui::TextureId> {
+    pub(crate) fn milk_preview(
+        &mut self,
+        ctx: &egui::Context,
+        family: &str,
+    ) -> Option<egui::TextureId> {
         if !self.milk.previews.contains_key(family) {
             let texture = self
                 .renderer
@@ -76,7 +88,11 @@ impl VersoApp {
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("MilkDrop").small().color(theme::text_dim()));
+            ui.label(
+                egui::RichText::new("MilkDrop")
+                    .small()
+                    .color(theme::text_dim()),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.milk.search)
                     .hint_text("Search presets")
@@ -87,8 +103,14 @@ impl VersoApp {
         let matches = |info: &verso_milkdrop::FamilyInfo| {
             search.is_empty()
                 || info.name.to_lowercase().contains(&search)
-                || info.authors.iter().any(|a| a.to_lowercase().contains(&search))
-                || info.variants.iter().any(|v| v.to_lowercase().contains(&search))
+                || info
+                    .authors
+                    .iter()
+                    .any(|a| a.to_lowercase().contains(&search))
+                || info
+                    .variants
+                    .iter()
+                    .any(|v| v.to_lowercase().contains(&search))
         };
         let mut categories: Vec<&str> = families.iter().map(|f| f.category.as_str()).collect();
         categories.dedup();
@@ -164,7 +186,12 @@ impl VersoApp {
 
     /// Clip properties of a MilkDrop source. Returns the new variant when the
     /// user picked another preset of the family.
-    pub(crate) fn milkdrop_props(&mut self, ui: &mut egui::Ui, family: &str, variant: usize) -> Option<usize> {
+    pub(crate) fn milkdrop_props(
+        &mut self,
+        ui: &mut egui::Ui,
+        family: &str,
+        variant: usize,
+    ) -> Option<usize> {
         let info = self.renderer.milkdrop().library().info(family).cloned();
         let Some(info) = info else {
             ui.label("Source");
@@ -175,7 +202,8 @@ impl VersoApp {
         };
         let mut picked = None;
         ui.label("Source");
-        ui.label(format!("MilkDrop · {}", info.name)).on_hover_text(&info.id);
+        ui.label(format!("MilkDrop · {}", info.name))
+            .on_hover_text(&info.id);
         ui.end_row();
         if !info.authors.is_empty() {
             ui.label("Credit");
@@ -191,7 +219,11 @@ impl VersoApp {
         ui.label("Preset");
         ui.horizontal(|ui| {
             if count > 1 {
-                if ui.small_button("◀").on_hover_text("Previous preset").clicked() {
+                if ui
+                    .small_button("◀")
+                    .on_hover_text("Previous preset")
+                    .clicked()
+                {
                     picked = Some((current + count - 1) % count);
                 }
                 if ui.small_button("▶").on_hover_text("Next preset").clicked() {
@@ -211,7 +243,11 @@ impl VersoApp {
         });
         ui.end_row();
         ui.label("");
-        ui.label(egui::RichText::new(&info.variants[current]).small().color(theme::text_dim()));
+        ui.label(
+            egui::RichText::new(&info.variants[current])
+                .small()
+                .color(theme::text_dim()),
+        );
         ui.end_row();
         if let Some(error) = self.renderer.milkdrop().error(family, current) {
             let first = error.lines().find(|l| l.contains("error")).unwrap_or(error);

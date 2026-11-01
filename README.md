@@ -65,7 +65,8 @@ cargo run --release -p verso-app
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Browser › Sources › MilkDrop | Audio-reactive MilkDrop presets by category; a clip's Properties pick among the remixes of its preset (with a MilkDrop blend) and can feed another layer into it |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
-| Hover a layer or column header | The Preview monitor shows that layer alone, or what the column would output |
+| Hover a layer or column header, or a MilkDrop clip | The Preview monitor shows that layer alone, what the column would output, or the clip playing live |
+| Hover a source in Browser › Sources | The Preview monitor plays it; List / Thumbnails switches the browser to a grid of live thumbnails |
 | Window › Save Layout as Default | Reset Layout then returns to this layout (Built-in Layout restores the original) |
 
 ## Workspace

@@ -56,15 +56,25 @@ impl VersoApp {
             }
             return;
         }
-        let available = ui.available_width();
+        // The visible width: the panel may lay out wider than it shows.
+        let available = ui
+            .available_width()
+            .min(ui.clip_rect().right() - ui.cursor().left())
+            - 2.0;
         let spacing = ui.spacing().item_spacing.x;
         let columns = ((available + spacing) / (TILE_MIN_WIDTH + spacing)).floor().max(1.0);
         let width = ((available + spacing) / columns - spacing).floor();
-        ui.horizontal_wrapped(|ui| {
-            for (template, tip) in items {
-                self.browser_tile(ui, template, &tip, width);
-            }
-        });
+        // Rows built by hand: `horizontal_wrapped` wraps at the layout
+        // width, which can exceed what the panel shows.
+        let mut items = items.into_iter().peekable();
+        while items.peek().is_some() {
+            let row: Vec<_> = items.by_ref().take(columns as usize).collect();
+            ui.horizontal(|ui| {
+                for (template, tip) in row {
+                    self.browser_tile(ui, template, &tip, width);
+                }
+            });
+        }
     }
 
     /// Texture showing `source` in a tile, if there is one yet.
@@ -98,7 +108,9 @@ impl VersoApp {
                     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                     painter.image(texture, image, uv, Color32::WHITE);
                 }
-                if response.hovered() {
+                // The drag source sits over the tile, so the tile is never
+                // "hovered" itself: test the pointer position instead.
+                if response.contains_pointer() {
                     painter.rect_stroke(image, 2.0, Stroke::new(2.0, theme::accent()), StrokeKind::Inside);
                 }
                 let label = egui::Rect::from_min_max(egui::pos2(rect.left(), image.bottom()), rect.max);
@@ -132,7 +144,7 @@ impl VersoApp {
             response.on_hover_text(tip)
         };
         // Files have no live preview; the other sources play in the monitor.
-        if response.hovered() && template.source.is_procedural() {
+        if response.contains_pointer() && template.source.is_procedural() {
             self.hover_target = Some(HoverTarget::Source);
             self.hover_source = Some((template.name.clone(), template.source.clone()));
         }

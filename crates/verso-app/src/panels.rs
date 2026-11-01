@@ -602,21 +602,14 @@ impl VersoApp {
         ui.separator();
         match self.files.tab {
             BrowserTab::Sources => {
+                hint(
+                    ui,
+                    "Drag onto a clip slot, or double-click to load into the selected slot. Hover to preview.",
+                );
                 ui.horizontal(|ui| {
-                    hint(
-                        ui,
-                        "Drag onto a clip slot, or double-click to load into the selected slot. Hover to preview.",
-                    );
+                    ui.selectable_value(&mut self.files.thumbnails, false, "List");
+                    ui.selectable_value(&mut self.files.thumbnails, true, "Thumbnails");
                 });
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.files.thumbnails, false, "☰ List");
-                    ui.selectable_value(&mut self.files.thumbnails, true, "▦ Thumbnails");
-                });
-                let builtin = SourceTemplate::all()
-                    .into_iter()
-                    .map(|t| (t, String::new()))
-                    .collect();
-                self.browser_items(ui, builtin);
                 let shaders: Vec<SourceTemplate> = self
                     .renderer
                     .library()
@@ -628,6 +621,11 @@ impl VersoApp {
                     })
                     .collect();
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let builtin = SourceTemplate::all()
+                        .into_iter()
+                        .map(|t| (t, String::new()))
+                        .collect();
+                    self.browser_items(ui, builtin);
                     if !shaders.is_empty() {
                         ui.add_space(6.0);
                         hint(ui, "Shaders");
@@ -697,7 +695,7 @@ impl VersoApp {
             .dnd_drag_source(id, template.clone(), |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
-                let fill = if response.hovered() {
+                let fill = if response.contains_pointer() {
                     theme::bg_raised()
                 } else {
                     theme::bg_panel()

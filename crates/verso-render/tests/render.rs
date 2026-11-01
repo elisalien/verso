@@ -1053,6 +1053,83 @@ fn soft_edges_blend_overlapping_slices() {
 }
 
 #[test]
+fn test_patterns_replace_the_slices() {
+    use verso_core::output::{OutputSetup, Slice, rect};
+    use verso_render::{Pattern, ScreenRenderer};
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let comp = solids(&[(RED, BlendMode::Alpha, 1.0)]);
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    let mut screens = ScreenRenderer::new(&gpu.device);
+    let (w, h) = (240usize, 120usize);
+    let mut setup = OutputSetup {
+        canvas: (w as u32, h as u32),
+        ..Default::default()
+    };
+    let size = (w as f32, h as f32);
+    let ids: Vec<u64> = (0..4)
+        .map(|i| {
+            let id = setup.add_screen(&format!("S{i}"), (w as u32, h as u32));
+            setup.screens[i].slices =
+                vec![Slice::new(id + 10, "All", rect(size.0, size.1), rect(size.0, size.1))];
+            id
+        })
+        .collect();
+    let mut render = |pattern: Pattern| {
+        screens.set_patterns(ids.iter().map(|&id| (id, pattern)).collect());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+        screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+        read_back(&gpu, encoder, screens.texture(ids[0]).unwrap(), (w as u32, h as u32))
+    };
+    let at = |pixels: &[u8], x: usize, y: usize| {
+        let i = (y * w + x) * 4;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+
+    // Grid: red border, white centre axes, dark cells; no red composition.
+    let grid = render(Pattern::Grid);
+    let border = at(&grid, 1, 60);
+    assert!(border[0] > 240 && border[1] < 140, "{border:?}");
+    assert_eq!(at(&grid, 120, 30), [255, 255, 255]);
+    assert!(at(&grid, 60, 80)[0] < 30, "{:?}", at(&grid, 60, 80));
+
+    // Colors: white first bar, black last bar, grey bottom.
+    let colors = render(Pattern::Colors);
+    assert_eq!(at(&colors, 5, 20), [255, 255, 255]);
+    assert_eq!(at(&colors, w - 5, 20), [0, 0, 0]);
+    let grey = at(&colors, 120, h - 5);
+    assert!(grey.iter().all(|&v| (120..136).contains(&v)), "{grey:?}");
+
+    // Gradient: dark on the left, bright on the right.
+    let gradient = render(Pattern::Gradient);
+    assert!(at(&gradient, 2, 20)[0] < 20 && at(&gradient, w - 2, 20)[0] > 235);
+
+    // Slices: the slice is filled with its color, not with the composition.
+    let slices = render(Pattern::Slices);
+    assert_ne!(at(&slices, 10, 10), [0, 0, 0]);
+    assert_ne!(at(&slices, 10, 10), [255, 0, 0]);
+
+    // Identify: a colored border and a white digit in the middle.
+    let identify = render(Pattern::Identify { number: 1 });
+    let border = at(&identify, 5, 60);
+    assert!(border.iter().any(|&v| v > 200), "{border:?}");
+    // "1" lights only its right segments, so look over the middle third.
+    let lit = (w / 3..2 * w / 3).any(|x| (0..h).any(|y| at(&identify, x, y) == [255, 255, 255]));
+    assert!(lit, "no digit drawn");
+
+    // Without patterns, the slices are back.
+    screens.set_patterns(Vec::new());
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
+    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+    let plain = read_back(&gpu, encoder, screens.texture(ids[0]).unwrap(), (w as u32, h as u32));
+    assert_eq!(at(&plain, 10, 10), [255, 0, 0]);
+}
+
+#[test]
 fn slices_show_layers_and_groups() {
     use verso_core::output::OutputSetup;
     use verso_render::ScreenRenderer;

@@ -13,8 +13,8 @@ maintenant.
 |---|---|---|---|
 | 1 | Highlight Selection dans l'AO | S | — (fait le 2026-11-01) |
 | 2 | Rendu du soft edge, recouvrements calculés automatiquement | M | — (fait le 2026-11-01) |
-| 3 | Mires de test par écran | S | — |
-| 4 | Identification des projecteurs | S | 3 |
+| 3 | Mires de test par écran | S | — (fait le 2026-11-01) |
+| 4 | Identification des projecteurs | S | 3 (fait le 2026-11-01) |
 | 5 | Cue list : modèle et commandes (`verso-core`) | M | — |
 | 6 | Cue list : panneau, Go, fondus | M | 5 |
 | 7 | Cue list : OSC, MIDI, raccourci clavier | S | 6 |
@@ -66,31 +66,36 @@ compatible à l'export.
 À vérifier sur de vrais projecteurs : le réglage `gamma` qui compense le
 gamma réel des projecteurs.
 
-### 1.3 Mires de test
+### 1.3 Mires de test (fait)
 
-Un réglage par écran, `test_pattern: Option<Pattern>`, qui remplace le
-contenu à la sortie. Elles sont dessinées par un shader procédural, sans
-texture ni police :
+Menu « Pattern » dans la barre de l'AO (tous les écrans) et réglage « Test
+Pattern » par écran. La mire remplace les slices de l'écran en sortie ; un
+avertissement « Test pattern on n screen(s) » reste affiché dans la barre
+tant qu'une mire est active, pour ne pas l'oublier pendant un spectacle. Les
+mires ne sont pas enregistrées : elles disparaissent à la fermeture.
 
-- **Grille** : lignes tous les 100 px de l'écran, axes centraux, cercle
-  inscrit, numéros de cases en chiffres 7 segments (SDF dans le shader).
-  Sert à régler la géométrie et la mise au point.
-- **Couleurs** : barres R, V, B, blanc, gris 50 %. Sert à égaliser les
-  projecteurs (avec `ColorAdjust`).
-- **Dégradé** : rampe horizontale noir → blanc. Sert à vérifier le soft edge.
-- **Slices** : chaque slice remplie de sa couleur avec son numéro au centre.
-  Montre ce que la composition envoie où.
+Dessinées par `pattern.wgsl`, sans texture ni police (chiffres 7 segments) :
 
-Deux portées : un écran, ou tous les écrans (bouton dans la barre AO). La
-mire reste active quand l'AO est en Live ; un bandeau rouge dans l'éditeur
-le rappelle, pour ne pas rester en mire pendant un spectacle.
+- **Grid** : lignes tous les 100 px, cases numérotées, axes centraux blancs,
+  bord rouge, cercle inscrit jaune. Géométrie, mise au point, keystone.
+- **Colors** : barres blanc, jaune, cyan, vert, magenta, rouge, bleu, noir,
+  et gris 50 % en bas. Égaliser les projecteurs (avec `ColorAdjust`).
+- **Gradient** : rampe noir → blanc en haut, paliers de 10 % en bas.
+  Vérifier le soft edge et le gamma.
+- **Slices** : chaque slice dans sa couleur avec son numéro (rang dans
+  l'écran) au centre. Ce que la composition envoie où.
 
-### 1.4 Identification
+Code : `verso_render::Pattern`, `ScreenRenderer::set_patterns`. Test GPU
+`test_patterns_replace_the_slices`. L'exemple `ao_screens` prend un 3e
+argument (`grid`, `colors`, `gradient`, `slices`, `identify`) pour sortir
+les mires d'un preset en PNG.
 
-Bouton « Identify » : pendant 5 secondes, chaque écran affiche un grand
-numéro (son rang dans la liste), un cadre de 20 px de sa couleur et sa
-résolution. C'est la mire « Slices » plus un minuteur. On s'en sert au
-branchement pour savoir quelle sortie va sur quel projecteur.
+### 1.4 Identification (fait)
+
+Bouton « Identify » (actif quand l'AO est en Live) : pendant 5 secondes,
+chaque écran affiche sa couleur, un cadre de 20 px, son numéro (rang dans la
+liste des écrans) et sa résolution. Au branchement, on voit quelle sortie va
+sur quel projecteur.
 
 ## 2. Cue list
 

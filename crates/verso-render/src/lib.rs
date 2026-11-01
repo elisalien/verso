@@ -22,7 +22,7 @@ use verso_core::{BlendMode, Composition, Effect, Source};
 pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind, ShaderKind};
 pub use grab::{FrameGrabber, GrabbedFrame};
 pub use media::{MediaTexture, MediaView};
-pub use slices::ScreenRenderer;
+pub use slices::{Pattern, ScreenRenderer};
 pub use thumbnails::Thumbnails;
 
 /// Internal format: HDR so successive blends do not band.

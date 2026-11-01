@@ -66,6 +66,67 @@ impl SoftUniform {
     }
 }
 
+/// A test pattern shown on a screen instead of its slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pattern {
+    /// 100 px grid with numbered cells, centre axes, border and circle.
+    Grid,
+    /// Color bars over mid grey.
+    Colors,
+    /// Black to white ramp, and 10 % steps.
+    Gradient,
+    /// Each slice in its own color, with its number.
+    Slices,
+    /// The screen's color, border, number (from 1) and resolution.
+    Identify { number: u32 },
+}
+
+impl Pattern {
+    /// Patterns offered in the interface (Identify has its own button).
+    pub const CHOICES: [Pattern; 4] = [
+        Pattern::Grid,
+        Pattern::Colors,
+        Pattern::Gradient,
+        Pattern::Slices,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Pattern::Grid => "Grid",
+            Pattern::Colors => "Colors",
+            Pattern::Gradient => "Gradient",
+            Pattern::Slices => "Slices",
+            Pattern::Identify { .. } => "Identify",
+        }
+    }
+
+    fn mode(self) -> f32 {
+        match self {
+            Pattern::Grid => 0.0,
+            Pattern::Colors => 1.0,
+            Pattern::Gradient => 2.0,
+            Pattern::Slices => 3.0,
+            Pattern::Identify { .. } => 4.0,
+        }
+    }
+}
+
+/// Distinct hue for item `index`, 0–1.
+fn hue_of(index: usize) -> f32 {
+    (index as f32 * 0.618_034).fract()
+}
+
+/// Vertex of `pattern.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PatternVertex {
+    position: [f32; 2],
+    /// Mode, number, center x, center y.
+    info: [f32; 4],
+    /// Screen width, height, hue.
+    extra: [f32; 4],
+}
+
 struct ScreenTarget {
     id: u64,
     size: (u32, u32),
@@ -78,6 +139,10 @@ pub struct ScreenRenderer {
     sampler: wgpu::Sampler,
     vertices: Option<wgpu::Buffer>,
     soft: wgpu::Buffer,
+    pattern_pipeline: wgpu::RenderPipeline,
+    pattern_vertices: Option<wgpu::Buffer>,
+    /// Screens showing a test pattern instead of their slices.
+    patterns: Vec<(u64, Pattern)>,
     screens: Vec<ScreenTarget>,
     /// Slice drawn with a striped tint on its screen, to find it on the
     /// physical output.
@@ -132,6 +197,43 @@ impl ScreenRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let pattern_module = shader(device, "pattern", include_str!("shaders/pattern.wgsl"));
+        let pattern_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pattern"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        let pattern_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("pattern"),
+            layout: Some(&pattern_layout),
+            vertex: wgpu::VertexState {
+                module: &pattern_module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<PatternVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x2, 1 => Float32x4, 2 => Float32x4
+                    ],
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &pattern_module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OUTPUT_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             pipeline,
             layout,
@@ -148,9 +250,18 @@ impl ScreenRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            pattern_pipeline,
+            pattern_vertices: None,
+            patterns: Vec::new(),
             screens: Vec::new(),
             highlight: None,
         }
+    }
+
+    /// Test patterns to show from the next render, by screen id. Other
+    /// screens show their slices.
+    pub fn set_patterns(&mut self, patterns: Vec<(u64, Pattern)>) {
+        self.patterns = patterns;
     }
 
     /// Slice to highlight on the screens from the next render, or none.
@@ -249,6 +360,72 @@ impl ScreenRenderer {
             queue.write_buffer(buffer, 0, bytes);
         }
 
+        // Test patterns: one buffer for every screen showing one.
+        let mut pattern_vertices: Vec<PatternVertex> = Vec::new();
+        let mut pattern_draws: Vec<Option<Range<u32>>> = Vec::with_capacity(screens.len());
+        for screen in &screens {
+            let Some(&(_, pattern)) = self.patterns.iter().find(|(id, _)| *id == screen.id) else {
+                pattern_draws.push(None);
+                continue;
+            };
+            let size = self.target(screen.id).expect("created above").size;
+            let (w, h) = (size.0 as f32, size.1 as f32);
+            let clip = |p: [f32; 2]| [p[0] / w * 2.0 - 1.0, 1.0 - p[1] / h * 2.0];
+            let start = pattern_vertices.len() as u32;
+            if pattern == Pattern::Slices {
+                for (i, slice) in screen.slices.iter().enumerate().rev() {
+                    if !slice.enabled {
+                        continue;
+                    }
+                    let outline = slice.screen_outline();
+                    let n = outline.len().max(1) as f32;
+                    let center = outline
+                        .iter()
+                        .fold([0.0, 0.0], |c, p| [c[0] + p[0] / n, c[1] + p[1] / n]);
+                    pattern_vertices.extend(slice.mesh(setup.canvas).into_iter().map(|v| {
+                        PatternVertex {
+                            position: clip(v.position),
+                            info: [pattern.mode(), (i + 1) as f32, center[0], center[1]],
+                            extra: [w, h, hue_of(i), 0.0],
+                        }
+                    }));
+                }
+            } else {
+                let (number, hue) = match pattern {
+                    Pattern::Identify { number } => {
+                        (number, hue_of(number.saturating_sub(1) as usize))
+                    }
+                    _ => (0, 0.0),
+                };
+                let corners = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]];
+                for k in [0, 1, 2, 0, 2, 3] {
+                    pattern_vertices.push(PatternVertex {
+                        position: clip(corners[k]),
+                        info: [pattern.mode(), number as f32, w * 0.5, h * 0.5],
+                        extra: [w, h, hue, 0.0],
+                    });
+                }
+            }
+            pattern_draws.push(Some(start..pattern_vertices.len() as u32));
+        }
+        let pattern_bytes: &[u8] = bytemuck::cast_slice(&pattern_vertices);
+        if !pattern_bytes.is_empty() {
+            if self
+                .pattern_vertices
+                .as_ref()
+                .is_none_or(|b| b.size() < pattern_bytes.len() as u64)
+            {
+                self.pattern_vertices = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("patterns"),
+                    size: (pattern_bytes.len() as u64).next_power_of_two().max(4096),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            let buffer = self.pattern_vertices.as_ref().expect("just created");
+            queue.write_buffer(buffer, 0, pattern_bytes);
+        }
+
         // A bind group per source in use this frame.
         let mut bind_groups: Vec<(InputSource, wgpu::BindGroup)> = Vec::new();
         for &(_, source) in draws.iter().flatten() {
@@ -281,7 +458,7 @@ impl ScreenRenderer {
             });
             bind_groups.push((source, group));
         }
-        for (screen, ranges) in screens.iter().zip(draws) {
+        for ((screen, ranges), pattern) in screens.iter().zip(draws).zip(pattern_draws) {
             let target = &self.target(screen.id).expect("created above").target;
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("screen"),
@@ -299,6 +476,17 @@ impl ScreenRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some(range) = pattern {
+                // The pattern replaces the slices.
+                if let Some(vertices) = &self.pattern_vertices
+                    && !range.is_empty()
+                {
+                    rp.set_pipeline(&self.pattern_pipeline);
+                    rp.set_vertex_buffer(0, vertices.slice(..));
+                    rp.draw(range, 0..1);
+                }
+                continue;
+            }
             rp.set_pipeline(&self.pipeline);
             rp.set_vertex_buffer(0, buffer.slice(..));
             for (range, source) in ranges {

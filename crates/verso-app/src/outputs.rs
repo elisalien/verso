@@ -71,6 +71,8 @@ pub struct Outputs {
     pub(crate) screen_textures: HashMap<u64, TextureId>,
     /// Slice tinted on the screens (Highlight Selection).
     pub highlight: Option<u64>,
+    /// Test patterns shown instead of the slices, by screen id.
+    pub patterns: Vec<(u64, verso_render::Pattern)>,
 }
 
 impl Default for Outputs {
@@ -84,6 +86,7 @@ impl Default for Outputs {
             ndi_failed: Vec::new(),
             screen_textures: HashMap::new(),
             highlight: None,
+            patterns: Vec::new(),
         }
     }
 }
@@ -167,6 +170,7 @@ impl Outputs {
             .screens
             .get_or_insert_with(|| ScreenRenderer::new(device));
         screens.set_highlight(self.highlight);
+        screens.set_patterns(std::mem::take(&mut self.patterns));
         let created = screens.render(device, queue, encoder, setup, renderer, comp);
 
         let mut errors = Vec::new();

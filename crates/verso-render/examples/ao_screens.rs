@@ -1,7 +1,7 @@
 //! Renders the screens of a Resolume Advanced Output preset from the demo
 //! composition, to check slices and warps against Arena:
 //!
-//! `cargo run -p verso-render --example ao_screens -- <preset.xml> [out dir]`
+//! `cargo run -p verso-render --example ao_screens -- <preset.xml> [out dir] [pattern]`
 //!
 //! Writes `<out>/<screen name>.png` per rendered screen (default out dir
 //! `ao-out`), and the composition itself as `<out>/composition.png`.
@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use verso_core::{Command, Composition};
-use verso_render::{Renderer, ScreenRenderer};
+use verso_render::{Pattern, Renderer, ScreenRenderer};
 
 fn read_back(
     device: &wgpu::Device,
@@ -67,6 +67,16 @@ fn main() {
     );
     let out = PathBuf::from(args.next().unwrap_or_else(|| "ao-out".into()));
     std::fs::create_dir_all(&out).unwrap();
+    // Optional test pattern on every screen: grid, colors, gradient,
+    // slices or identify.
+    let pattern = args.next().map(|name| match name.as_str() {
+        "grid" => Pattern::Grid,
+        "colors" => Pattern::Colors,
+        "gradient" => Pattern::Gradient,
+        "slices" => Pattern::Slices,
+        "identify" => Pattern::Identify { number: 0 },
+        other => panic!("unknown pattern {other}"),
+    });
 
     let text = std::fs::read_to_string(&preset).unwrap();
     let import = verso_io::resolume_ao::import(&text).unwrap();
@@ -87,6 +97,15 @@ fn main() {
     comp.apply(Command::TriggerColumn(0)).unwrap();
     let mut renderer = Renderer::new(&device, setup.canvas);
     let mut screens = ScreenRenderer::new(&device);
+    if let Some(pattern) = pattern {
+        let patterns = (setup.screens.iter().enumerate())
+            .map(|(i, s)| match pattern {
+                Pattern::Identify { .. } => (s.id, Pattern::Identify { number: i as u32 + 1 }),
+                _ => (s.id, pattern),
+            })
+            .collect();
+        screens.set_patterns(patterns);
+    }
 
     let mut encoder = device.create_command_encoder(&Default::default());
     renderer.render(&device, &queue, &mut encoder, &comp, &[], 1.0);

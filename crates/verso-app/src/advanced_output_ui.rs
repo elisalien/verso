@@ -6,11 +6,14 @@
 //! When live, every screen is rendered (see `crate::outputs`): display
 //! screens go full screen on their monitor, NDI screens publish a source.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use verso_core::output::{DeviceKind, InputSource, OutputSetup, Screen, Slice, rect};
 use verso_io::resolume_ao;
+use verso_render::Pattern;
 
 use crate::app::VersoApp;
 use crate::dialogs::DialogKind;
@@ -46,6 +49,10 @@ pub struct AdvancedOutput {
     /// Tint the selected slice on the live screens, to find it on the
     /// projectors.
     pub(crate) highlight: bool,
+    /// Test pattern shown instead of the slices, by screen id.
+    pub(crate) patterns: HashMap<u64, Pattern>,
+    /// Every screen shows its number until then.
+    identify_until: Option<Instant>,
     pub(crate) drag: Option<crate::ao_editor::Drag>,
     /// Points of a polygon being drawn, in the space of the current view.
     pub(crate) drawing: Option<Vec<[f32; 2]>>,
@@ -53,7 +60,25 @@ pub struct AdvancedOutput {
     pub(crate) monitors: Option<Vec<Monitor>>,
 }
 
+/// How long Identify shows the screen numbers.
+const IDENTIFY: Duration = Duration::from_secs(5);
+
 impl AdvancedOutput {
+    /// Patterns the screens show this frame: Identify on every screen while
+    /// it lasts, otherwise the chosen test patterns.
+    pub(crate) fn active_patterns(&self) -> Vec<(u64, Pattern)> {
+        if self.identify_until.is_some_and(|t| Instant::now() < t) {
+            return (self.setup.screens.iter().enumerate())
+                .map(|(i, s)| (s.id, Pattern::Identify { number: i as u32 + 1 }))
+                .collect();
+        }
+        self.setup
+            .screens
+            .iter()
+            .filter_map(|s| Some((s.id, *self.patterns.get(&s.id)?)))
+            .collect()
+    }
+
     /// Slice to tint on the live screens, when Highlight Selection is on.
     pub(crate) fn highlighted_slice(&self) -> Option<u64> {
         self.slice.filter(|_| self.highlight && self.window_open)
@@ -198,6 +223,7 @@ impl VersoApp {
                 "Render the screens: a display screen goes full screen on its monitor, \
                  an NDI screen publishes a source",
             );
+            self.pattern_controls(ui);
             ui.checkbox(&mut self.advanced.highlight, "Highlight Selection")
                 .on_hover_text(
                     "Tints the selected slice with stripes on the live screens,                      to find it on the projectors. Off when this window is closed.",
@@ -217,6 +243,65 @@ impl VersoApp {
             ui.separator();
             self.soft_edge_menu(ui);
         });
+    }
+
+    /// Test pattern for every screen, Identify, and a warning while a
+    /// pattern is on, so it is not left on during a show.
+    fn pattern_controls(&mut self, ui: &mut egui::Ui) {
+        let ao = &mut self.advanced;
+        let live = ao.live;
+        let all = ao.setup.screens.iter().map(|s| ao.patterns.get(&s.id)).collect::<Vec<_>>();
+        let shown = match all.first() {
+            Some(first) if all.iter().all(|p| p == first) => first.map_or("Off", |p| p.label()),
+            None => "Off",
+            _ => "Mixed",
+        };
+        egui::ComboBox::from_id_salt("ao pattern all")
+            .selected_text(format!("Pattern: {shown}"))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(shown == "Off", "Off").clicked() {
+                    ao.patterns.clear();
+                }
+                for pattern in Pattern::CHOICES {
+                    if ui
+                        .selectable_label(shown == pattern.label(), pattern.label())
+                        .clicked()
+                    {
+                        for screen in &ao.setup.screens {
+                            ao.patterns.insert(screen.id, pattern);
+                        }
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Test pattern on every screen, instead of the slices: grid for \
+                 geometry and focus, colors and gradient to match projectors, \
+                 slices to see what goes where. Each screen can have its own.",
+            );
+        let identifying = ao.identify_until.is_some_and(|t| Instant::now() < t);
+        if ui
+            .add_enabled(live && !identifying, egui::Button::new("Identify"))
+            .on_hover_text("Each screen shows its number, color and resolution for 5 seconds")
+            .on_disabled_hover_text("Turn Live on to send the numbers to the screens")
+            .clicked()
+        {
+            ao.identify_until = Some(Instant::now() + IDENTIFY);
+        }
+        let on = ao
+            .setup
+            .screens
+            .iter()
+            .filter(|s| ao.patterns.contains_key(&s.id))
+            .count();
+        if on > 0 {
+            ui.label(
+                egui::RichText::new(format!("Test pattern on {on} screen(s)"))
+                    .small()
+                    .color(theme::warn()),
+            );
+        }
     }
 
     /// Curve shared by every soft-edged slice, and how many there are.
@@ -350,12 +435,33 @@ impl VersoApp {
             ui.label(egui::RichText::new("No screen").color(theme::text_dim()));
             return;
         };
+        let patterns = &mut ao.patterns;
         egui::Grid::new("ao screen")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
                 ui.label("Screen");
                 ui.add(egui::TextEdit::singleline(&mut screen.name).desired_width(150.0));
+                ui.end_row();
+
+                ui.label("Test Pattern");
+                let current = patterns.get(&screen.id).copied();
+                egui::ComboBox::from_id_salt(("ao pattern", screen.id))
+                    .selected_text(current.map_or("Off", |p| p.label()))
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "Off").clicked() {
+                            patterns.remove(&screen.id);
+                        }
+                        for pattern in Pattern::CHOICES {
+                            if ui
+                                .selectable_label(current == Some(pattern), pattern.label())
+                                .clicked()
+                            {
+                                patterns.insert(screen.id, pattern);
+                            }
+                        }
+                    });
                 ui.end_row();
 
                 ui.label("Device");

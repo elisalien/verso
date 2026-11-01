@@ -657,11 +657,15 @@ impl VersoApp {
         }
     }
 
+    /// The composition file text, with the current window layout in it.
+    fn document_text(&mut self) -> Result<String, String> {
+        self.comp.layout = self.workspace.to_text();
+        self.comp.to_ron().map_err(|e| e.to_string())
+    }
+
     fn save_to(&mut self, path: &std::path::Path) {
         let result = self
-            .comp
-            .to_ron()
-            .map_err(|e| e.to_string())
+            .document_text()
             .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
@@ -717,6 +721,15 @@ impl VersoApp {
             Some(path) => format!("Opened {}", path.display()),
             None => String::new(),
         };
+        // A file brings back the panel layout it was saved with; a new
+        // composition keeps the current one.
+        if let Some(layout) = comp
+            .layout
+            .as_deref()
+            .and_then(crate::workspace::Workspace::from_text)
+        {
+            self.workspace = layout;
+        }
         self.comp = comp;
         self.path = path;
         self.selected_clip = None;
@@ -748,9 +761,7 @@ impl VersoApp {
             return;
         };
         let result = self
-            .comp
-            .to_ron()
-            .map_err(|e| e.to_string())
+            .document_text()
             .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
         match result {
             Ok(()) => log::info!("autosaved to {}", path.display()),

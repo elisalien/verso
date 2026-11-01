@@ -147,6 +147,18 @@ impl Workspace {
         write_layout(default_layout_file(), self)
     }
 
+    /// The layout as stored in a composition file.
+    pub fn to_text(&self) -> Option<String> {
+        ron::to_string(self).ok()
+    }
+
+    /// A layout stored in a composition file, if it is usable.
+    pub fn from_text(text: &str) -> Option<Self> {
+        ron::from_str::<Workspace>(text)
+            .ok()
+            .filter(|w| w.is_consistent())
+    }
+
     /// Every docked panel is known and the grid is present.
     fn is_consistent(&self) -> bool {
         let mut shown = self.dock.panels();
@@ -577,6 +589,27 @@ mod tests {
         assert!(workspace.is_consistent());
         let text = ron::to_string(&workspace).unwrap();
         assert_eq!(ron::from_str::<Workspace>(&text).unwrap(), workspace);
+    }
+
+    #[test]
+    fn layout_travels_in_the_composition_file() {
+        let mut workspace = Workspace::default();
+        let locked = workspace.open_properties(PropKind::Clip, Some(Lock::Clip(1, 2)));
+        workspace.floating.push(locked);
+        let mut comp = verso_core::Composition::new("t", 2, 3);
+        comp.layout = workspace.to_text();
+        let opened = verso_core::Composition::from_ron(&comp.to_ron().unwrap()).unwrap();
+        let restored = opened.layout.as_deref().and_then(Workspace::from_text);
+        assert_eq!(restored, Some(workspace));
+
+        // Files saved before layouts were stored still open, without one.
+        let old = verso_core::Composition::new("old", 1, 1).to_ron().unwrap();
+        assert!(!old.contains("layout"));
+        assert_eq!(
+            verso_core::Composition::from_ron(&old).unwrap().layout,
+            None
+        );
+        assert_eq!(Workspace::from_text("not a layout"), None);
     }
 
     #[test]

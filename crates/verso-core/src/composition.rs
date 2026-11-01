@@ -252,6 +252,10 @@ pub struct Composition {
     pub midi: Vec<MidiMapping>,
     #[serde(default)]
     pub scripts: Vec<Script>,
+    /// Window layout of the app that saved the file (panels, docking),
+    /// opaque to the core. Files without one open with the current layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
 }
 
 impl Composition {
@@ -275,6 +279,7 @@ impl Composition {
             modulators: Vec::new(),
             midi: Vec::new(),
             scripts: Vec::new(),
+            layout: None,
         }
     }
 

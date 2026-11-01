@@ -88,6 +88,9 @@ pub struct VersoApp {
     path: Option<PathBuf>,
     /// Last autosave, or last save / open, after which a backup is pointless.
     last_autosave: Instant,
+    /// MCP port of a test instance, which backs up to its own files so it
+    /// never replaces the backup of the instance in use.
+    mcp_port: Option<u16>,
     pub(crate) selected_clip: Option<(usize, usize)>,
     pub(crate) selected_layer: usize,
     /// Layers picked with Ctrl/Shift-click, for grouping.
@@ -185,6 +188,7 @@ impl VersoApp {
             frame_dt: 0.0,
             path: None,
             last_autosave: Instant::now(),
+            mcp_port: mcp::requested_port(),
             selected_clip: None,
             selected_layer: 0,
             selected_layers: Default::default(),
@@ -706,7 +710,9 @@ impl VersoApp {
                 self.path = Some(path.to_owned());
                 self.dirty = false;
                 self.last_autosave = Instant::now();
-                let _ = std::fs::remove_file(path.with_extension("verso.bak"));
+                if let Some(backup) = backup_path(Some(path), None, self.mcp_port) {
+                    let _ = std::fs::remove_file(backup);
+                }
                 if let Some(after) = self.after_save.take() {
                     self.proceed(after);
                 }
@@ -780,10 +786,11 @@ impl VersoApp {
     /// Where unsaved changes are backed up: next to the composition file, or
     /// in the user directory for a composition that has no file yet.
     fn autosave_path(&self) -> Option<PathBuf> {
-        match &self.path {
-            Some(path) => Some(path.with_extension("verso.bak")),
-            None => crate::online_ui::user_dir().map(|d| d.join("Untitled.verso.bak")),
-        }
+        backup_path(
+            self.path.as_deref(),
+            crate::online_ui::user_dir(),
+            self.mcp_port,
+        )
     }
 
     /// Writes the backup of a modified composition. Failures only go to the
@@ -1214,5 +1221,52 @@ impl eframe::App for VersoApp {
         if self.window.custom_title_bar {
             crate::title_bar::resize_edges(&ctx);
         }
+    }
+}
+
+/// Backup file of a composition: `name.verso.bak` next to its file, or
+/// `Untitled.verso.bak` in `user_dir` without one. An instance started with
+/// an MCP server adds `mcp-<port>` to the name, as for its log.
+fn backup_path(
+    file: Option<&std::path::Path>,
+    user_dir: Option<PathBuf>,
+    mcp_port: Option<u16>,
+) -> Option<PathBuf> {
+    let tag = mcp_port.map(|port| format!("mcp-{port}"));
+    match (file, tag) {
+        (Some(file), None) => Some(file.with_extension("verso.bak")),
+        (Some(file), Some(tag)) => Some(file.with_extension(format!("{tag}.verso.bak"))),
+        (None, None) => user_dir.map(|d| d.join("Untitled.verso.bak")),
+        (None, Some(tag)) => user_dir.map(|d| d.join(format!("Untitled-{tag}.verso.bak"))),
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::backup_path;
+
+    #[test]
+    fn test_instances_back_up_to_their_own_files() {
+        let file = Path::new("shows/set.verso");
+        let dir = Some(PathBuf::from("user"));
+        assert_eq!(
+            backup_path(Some(file), dir.clone(), None),
+            Some(PathBuf::from("shows/set.verso.bak"))
+        );
+        assert_eq!(
+            backup_path(Some(file), dir.clone(), Some(7400)),
+            Some(PathBuf::from("shows/set.mcp-7400.verso.bak"))
+        );
+        assert_eq!(
+            backup_path(None, dir.clone(), None),
+            Some(PathBuf::from("user/Untitled.verso.bak"))
+        );
+        assert_eq!(
+            backup_path(None, dir, Some(7400)),
+            Some(PathBuf::from("user/Untitled-mcp-7400.verso.bak"))
+        );
+        assert_eq!(backup_path(None, None, None), None);
     }
 }

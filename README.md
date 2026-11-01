@@ -91,7 +91,7 @@ Verso keeps its own files in a user folder: `%APPDATA%\Verso` on Windows,
 |---|---|
 | `layout.ron` | Panel layout of the last session |
 | `verso.log`, `verso.log.old` | Log of this run and the previous one: status messages, GPU and window warnings, crashes. Open Window › Messages to see the path. |
-| `Untitled.verso.bak` | Autosave of a composition that has no file yet |
+| `Untitled.verso.bak` | Autosave of a composition that has no file yet (`Untitled-mcp-<port>.verso.bak` for an instance started with `--mcp`, which also backs up a saved composition to `name.mcp-<port>.verso.bak`) |
 | `shaders/`, `milkdrop/` | Imported shaders and your own MilkDrop presets |
 
 A modified composition is also copied every two minutes to `name.verso.bak`

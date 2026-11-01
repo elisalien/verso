@@ -129,7 +129,7 @@ const DRAG_STEPS: usize = 8;
 
 /// Port asked for on the command line or in `VERSO_MCP_PORT`; `None` keeps
 /// the server off.
-fn requested_port() -> Option<u16> {
+pub(super) fn requested_port() -> Option<u16> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     verso_mcp::requested_port(&args, std::env::var("VERSO_MCP_PORT").ok().as_deref())
 }

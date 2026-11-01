@@ -135,6 +135,35 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    /// Records the current state as a cue after the current one, with a
+    /// default name when `None`.
+    RecordCue {
+        name: Option<String>,
+    },
+    /// Records the current state into an existing cue.
+    UpdateCue(usize),
+    RemoveCue(usize),
+    MoveCue {
+        from: usize,
+        to: usize,
+    },
+    RenameCue {
+        index: usize,
+        name: String,
+    },
+    SetCueFade {
+        index: usize,
+        seconds: f32,
+    },
+    SetCueFollow {
+        index: usize,
+        follow: crate::cue::Follow,
+    },
+    /// Starts a cue: launches its clips and fades to its levels.
+    GoCue(usize),
+    /// The cue after the current one (the first when none is current).
+    GoNextCue,
+    GoPreviousCue,
 }
 
 /// What a command means for the document: whether it needs saving and
@@ -159,7 +188,10 @@ impl Command {
             | TriggerColumn(_)
             | EjectLayer(_)
             | ClearAll
-            | LaunchGroupColumn { .. } => CommandKind::Play,
+            | LaunchGroupColumn { .. }
+            | GoCue(_)
+            | GoNextCue
+            | GoPreviousCue => CommandKind::Play,
             SetLayerOpacity { .. }
             | SetLayerBypass { .. }
             | SetLayerSolo { .. }
@@ -177,7 +209,10 @@ impl Command {
             | SetScript { .. }
             | SetMasterOpacity(_)
             | SetCrossfader(_)
-            | SetBpm(_) => CommandKind::Tweak,
+            | SetBpm(_)
+            | RenameCue { .. }
+            | SetCueFade { .. }
+            | SetCueFollow { .. } => CommandKind::Tweak,
             EditEffects { edit, .. } => match edit {
                 EffectEdit::SetParam { .. } | EffectEdit::SetBypass { .. } => CommandKind::Tweak,
                 EffectEdit::Add(_) | EffectEdit::Remove(_) | EffectEdit::Move { .. } => {
@@ -201,7 +236,11 @@ impl Command {
             | AddColumn
             | RemoveLayer(_)
             | RemoveColumn(_)
-            | SetResolution { .. } => CommandKind::Edit,
+            | SetResolution { .. }
+            | RecordCue { .. }
+            | UpdateCue(_)
+            | RemoveCue(_)
+            | MoveCue { .. } => CommandKind::Edit,
         }
     }
 }
@@ -211,8 +250,15 @@ impl Composition {
         match command {
             Command::TriggerClip { layer, column } => self.trigger_clip(layer, column)?,
             Command::TriggerColumn(column) => self.trigger_column(column)?,
-            Command::EjectLayer(layer) => self.layer_mut(layer)?.active = None,
-            Command::ClearAll => self.layers.iter_mut().for_each(|l| l.active = None),
+            Command::EjectLayer(layer) => {
+                let layer = self.layer_mut(layer)?;
+                layer.active = None;
+                layer.cue_transition = None;
+            }
+            Command::ClearAll => self.layers.iter_mut().for_each(|l| {
+                l.active = None;
+                l.cue_transition = None;
+            }),
             Command::SetClip {
                 layer,
                 column,
@@ -229,7 +275,8 @@ impl Composition {
                 *cell = clip;
             }
             Command::SetLayerOpacity { layer, opacity } => {
-                self.layer_mut(layer)?.opacity = opacity.clamp(0.0, 1.0)
+                self.layer_mut(layer)?.opacity = opacity.clamp(0.0, 1.0);
+                self.stop_cue_fade();
             }
             Command::SetLayerBlend { layer, blend } => self.layer_mut(layer)?.blend = blend,
             Command::SetLayerBypass { layer, bypass } => self.layer_mut(layer)?.bypass = bypass,
@@ -307,9 +354,15 @@ impl Composition {
                 self.midi.push(mapping);
             }
             Command::UnmapMidi(key) => self.midi.retain(|m| m.key != key),
-            Command::SetCrossfader(value) => self.master.crossfader = value.clamp(0.0, 1.0),
+            Command::SetCrossfader(value) => {
+                self.master.crossfader = value.clamp(0.0, 1.0);
+                self.stop_cue_fade();
+            }
             Command::SetBpm(bpm) => self.bpm = bpm.clamp(20.0, 500.0),
-            Command::SetMasterOpacity(opacity) => self.master.opacity = opacity.clamp(0.0, 1.0),
+            Command::SetMasterOpacity(opacity) => {
+                self.master.opacity = opacity.clamp(0.0, 1.0);
+                self.stop_cue_fade();
+            }
             Command::ResetLaunchCount { layer, column } => {
                 if let Some(count) = self.layer_mut(layer)?.launches.get_mut(column) {
                     *count = 0;
@@ -324,6 +377,21 @@ impl Composition {
                 self.width = width.clamp(16, 8192);
                 self.height = height.clamp(16, 8192);
             }
+            Command::RecordCue { name } => self.record_cue(name),
+            Command::UpdateCue(index) => {
+                let state = self.cue_state();
+                self.cue_mut(index)?.state = state;
+            }
+            Command::RemoveCue(index) => self.remove_cue(index)?,
+            Command::MoveCue { from, to } => self.move_cue(from, to)?,
+            Command::RenameCue { index, name } => self.cue_mut(index)?.name = name,
+            Command::SetCueFade { index, seconds } => {
+                self.cue_mut(index)?.fade = seconds.clamp(0.0, 600.0)
+            }
+            Command::SetCueFollow { index, follow } => self.cue_mut(index)?.follow = follow,
+            Command::GoCue(index) => self.go_cue(index)?,
+            Command::GoNextCue => self.go_next_cue()?,
+            Command::GoPreviousCue => self.go_previous_cue()?,
         }
         Ok(())
     }

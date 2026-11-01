@@ -41,6 +41,11 @@ pub enum Action {
     LaunchGroupColumn { group: usize, column: usize },
     EjectLayer(usize),
     ClearAll,
+    /// Go: the next cue.
+    CueGo,
+    CuePrevious,
+    /// A given cue.
+    GoCue(usize),
 }
 
 /// Value range of a parameter. A toggle is on above the middle of its range.
@@ -322,6 +327,9 @@ impl Action {
             }
             Action::EjectLayer(l) => format!("/layer/{}/eject", l + 1),
             Action::ClearAll => "/clear".into(),
+            Action::CueGo => "/cue/go".into(),
+            Action::CuePrevious => "/cue/previous".into(),
+            Action::GoCue(i) => format!("/cue/{}/go", i + 1),
         }
     }
 
@@ -349,6 +357,9 @@ impl Action {
             ["crossfader"] => Action::Set(Param::Crossfader),
             ["bpm"] => Action::Set(Param::Bpm),
             ["clear"] => Action::ClearAll,
+            ["cue", "go"] => Action::CueGo,
+            ["cue", "previous"] => Action::CuePrevious,
+            ["cue", i, "go"] => Action::GoCue(index(i)?),
             ["column", c, "launch"] => Action::LaunchColumn(index(c)?),
             ["layer", l, "opacity"] => Action::Set(Param::LayerOpacity(index(l)?)),
             ["layer", l, "bypass"] => Action::Set(Param::LayerBypass(index(l)?)),
@@ -473,6 +484,9 @@ impl Action {
             }
             Action::EjectLayer(l) => pressed.then_some(Command::EjectLayer(*l)),
             Action::ClearAll => pressed.then_some(Command::ClearAll),
+            Action::CueGo => pressed.then_some(Command::GoNextCue),
+            Action::CuePrevious => pressed.then_some(Command::GoPreviousCue),
+            Action::GoCue(i) => pressed.then_some(Command::GoCue(*i)),
         }
     }
 
@@ -589,6 +603,9 @@ mod tests {
             },
             Action::EjectLayer(2),
             Action::ClearAll,
+            Action::CueGo,
+            Action::CuePrevious,
+            Action::GoCue(4),
         ];
         for action in actions {
             let address = action.address();

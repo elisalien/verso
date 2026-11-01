@@ -4,6 +4,7 @@ mod advanced_output_ui;
 mod ao_editor;
 mod app;
 mod control_ui;
+mod cues_ui;
 mod dialogs;
 mod dock;
 mod effects_ui;

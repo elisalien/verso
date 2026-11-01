@@ -55,6 +55,7 @@ pub enum PanelKind {
     Preview,
     Output,
     Browser,
+    Cues,
     Properties { kind: PropKind, lock: Option<Lock> },
 }
 
@@ -274,6 +275,7 @@ impl VersoApp {
             PanelKind::Preview => "Preview".into(),
             PanelKind::Output => "Output".into(),
             PanelKind::Browser => "Browser".into(),
+            PanelKind::Cues => "Cues".into(),
             PanelKind::Properties { kind, lock: None } => kind.name().into(),
             PanelKind::Properties { kind, lock } => {
                 format!("{} 🔒 {}", kind.name(), self.target_label(*lock))
@@ -370,6 +372,7 @@ impl VersoApp {
             PanelKind::Preview => self.preview_panel(ui),
             PanelKind::Output => self.output_panel(ui),
             PanelKind::Browser => self.browser(ui),
+            PanelKind::Cues => self.cues_panel(ui),
             PanelKind::Properties { kind, lock } => {
                 let mut lock = lock;
                 self.properties_header(ui, kind, &mut lock);
@@ -538,6 +541,7 @@ impl VersoApp {
             (PanelKind::Preview, "Preview"),
             (PanelKind::Output, "Output"),
             (PanelKind::Browser, "Browser"),
+            (PanelKind::Cues, "Cues"),
         ] {
             if ui.button(name).clicked() {
                 self.workspace.show_panel(kind);

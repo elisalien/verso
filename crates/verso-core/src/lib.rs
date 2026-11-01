@@ -6,6 +6,7 @@
 mod command;
 mod composition;
 pub mod control;
+pub mod cue;
 mod effect;
 mod groups;
 pub mod modulation;
@@ -41,6 +42,8 @@ pub enum Error {
     LastLayer,
     #[error("a composition keeps at least one column")]
     LastColumn,
+    #[error("cue {0} does not exist")]
+    NoCue(usize),
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

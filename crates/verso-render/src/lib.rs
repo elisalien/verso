@@ -1032,7 +1032,7 @@ fn render_layer(
     // A clip change starts a transition from the last shown image.
     if active != state.shown {
         let had_content = state.shown.is_some() || state.transition.is_some();
-        state.transition = (layer.transition > 0.0 && had_content).then(|| {
+        state.transition = (layer.transition_time() > 0.0 && had_content).then(|| {
             encoder.copy_texture_to_texture(
                 state.mixed.texture.as_image_copy(),
                 state.outgoing.texture.as_image_copy(),
@@ -1040,7 +1040,7 @@ fn render_layer(
             );
             Transition {
                 start: frame.time,
-                duration: layer.transition,
+                duration: layer.transition_time(),
             }
         });
         state.shown = active;

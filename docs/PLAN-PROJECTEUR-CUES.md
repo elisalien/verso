@@ -15,9 +15,9 @@ maintenant.
 | 2 | Rendu du soft edge, recouvrements calculés automatiquement | M | — (fait le 2026-11-01) |
 | 3 | Mires de test par écran | S | — (fait le 2026-11-01) |
 | 4 | Identification des projecteurs | S | 3 (fait le 2026-11-01) |
-| 5 | Cue list : modèle et commandes (`verso-core`) | M | — |
-| 6 | Cue list : panneau, Go, fondus | M | 5 |
-| 7 | Cue list : OSC, MIDI, raccourci clavier | S | 6 |
+| 5 | Cue list : modèle et commandes (`verso-core`) | M | — (fait le 2026-11-01) |
+| 6 | Cue list : panneau, Go, fondus | M | 5 (fait le 2026-11-01) |
+| 7 | Cue list : OSC, MIDI, raccourci clavier | S | 6 (fait le 2026-11-01) |
 
 Les étapes 2–4 touchent `verso-core::output`, `verso-render::slices` et
 l'éditeur AO. Les étapes 5–7 touchent la composition et une nouvelle crate
@@ -97,74 +97,64 @@ chaque écran affiche sa couleur, un cadre de 20 px, son numéro (rang dans la
 liste des écrans) et sa résolution. Au branchement, on voit quelle sortie va
 sur quel projecteur.
 
-## 2. Cue list
+## 2. Cue list (fait le 2026-11-01)
 
-But : une liste ordonnée d'états, que l'on rejoue avec un bouton Go, avec
-fondu. Pour un spectacle rejoué chaque soir, et pour la formation (« cue 3 :
-le refrain »). Resolume n'a que les colonnes.
+But : une liste ordonnée d'états, rejouée avec un bouton Go et un fondu. Pour
+un spectacle rejoué chaque soir, et pour la formation (« cue 3 : le
+refrain »). Resolume n'a que les colonnes.
 
-### 2.1 Modèle (`verso-core`, sans GPU)
+### 2.1 Modèle (`verso-core::cue`)
 
-```rust
-pub struct Cue {
-    pub id: u64,
-    pub name: String,
-    pub state: CueState,
-    pub fade: f32,            // secondes
-    pub follow: Follow,       // Manual, After(secondes), Beats(n)
-}
-pub struct CueState {
-    pub clips: Vec<Option<usize>>,   // colonne active par couche, None = éjectée
-    pub opacity: Vec<f32>,           // par couche
-    pub master: f32,
-    pub crossfader: f32,
-}
-pub struct CueList { pub cues: Vec<Cue>, pub current: Option<usize> }
-```
-
-- `CueList` est enregistrée dans le `.verso` (`#[serde(default)]`).
-- Les cues utilisent des **indices de couches**. Comme pour les modulateurs,
-  `RemoveLayer` les renumérote. À reprendre quand `LayerId` existera
-  (revue § 3, point 9).
-- Plus tard : un look StageFlow et une séquence Chaser par cue, quand les
-  phases B et C existeront.
+- Une cue stocke, par couche, la colonne qui joue et l'opacité, plus le
+  master et le crossfader ; un nom, un fondu en secondes et une suite
+  (`Follow` : attendre Go, après n secondes, après n temps au tempo).
+- `CueList` est enregistrée dans le `.verso` ; un fichier sans cues reste
+  identique (champ omis quand la liste est vide).
+- Le fondu en cours (`Composition::cue_run`) n'est pas enregistré.
+- Les cues utilisent des indices : `RemoveLayer` et `RemoveColumn` les
+  mettent à jour. À reprendre avec `LayerId` (revue § 3, point 9).
 
 ### 2.2 Commandes
 
-- Structure (dans l'annulation) : `RecordCue` (capture l'état courant),
-  `UpdateCue`, `RemoveCue`, `MoveCue`, `SetCueFade`, `SetCueFollow`.
-- Jeu (hors annulation, comme un fader) : `GoCue(index)`, `GoNext`,
-  `GoPrevious`.
-- Go déclenche les clips avec la transition de couche existante, réglée sur
-  le fondu de la cue, et interpole opacités, master et crossfader. Le fondu
-  avance dans la boucle de la composition (état d'exécution, non enregistré).
-- `Follow::After` / `Beats` enchaîne seul la cue suivante, sur l'horloge de
-  tempo existante.
+- Structure, annulable : `RecordCue` (après la cue courante), `UpdateCue`,
+  `RemoveCue`, `MoveCue`.
+- Réglages : `RenameCue`, `SetCueFade`, `SetCueFollow`.
+- Jeu : `GoCue`, `GoNextCue`, `GoPreviousCue`.
+
+Go lance les clips de la cue avec le fondu comme transition (champ
+d'exécution `Layer::cue_transition`, lu par le rendu via
+`Layer::transition_time`, effacé au prochain lancement à la main), puis
+`Composition::advance_cues`, appelé à chaque image, déplace opacités,
+master et crossfader et enchaîne la cue suivante si elle suit seule.
+Bouger un fader à la main (opacité de couche, master, crossfader) arrête le
+fondu.
+
+Limites assumées : d'une couche vide vers un clip, la transition coupe
+(comme pour tout lancement) ; seule l'opacité monte en fondu. Les groupes,
+effets et paramètres ne sont pas dans les cues.
 
 ### 2.3 Interface
 
-Panneau dockable « Cues » :
-
-- liste numérotée (nom, fondu, suite), cue courante en surbrillance, barre
-  de progression du fondu ;
-- gros bouton **Go**, plus Précédent et Record ;
-- double-clic sur une cue = Go directement ;
-- glisser pour réordonner.
+Panneau dockable « Cues » (Window › Cues) : **GO**, Back, Record, Update,
+nom de la cue suivante, barre de progression du fondu ; liste avec numéro
+(clic = aller à la cue), nom, fondu, suite, monter/descendre, supprimer.
+`Espace` = Go partout dans la fenêtre (hors saisie de texte).
 
 ### 2.4 Contrôle
 
-- OSC : `/verso/cue/go`, `/verso/cue/next`, `/verso/cue/previous`,
-  `/verso/cue/N`.
-- MIDI learn sur Go, Précédent et chaque cue.
-- Clavier : `Espace` = Go (convention théâtre). À vérifier : aucun raccourci
-  actuel n'utilise Espace.
-- MCP : outils `cue_record` et `cue_go`, pour tester sans souris.
+- OSC : `/cue/go`, `/cue/previous`, `/cue/N/go`.
+- MIDI learn sur GO, Back et le numéro de chaque cue.
+- MCP : `apply_commands` accepte les nouvelles commandes ; `get_composition`
+  montre la liste, la cue courante et le fondu.
 
 ### 2.5 Tests
 
-Capture puis rejeu d'un état ; interpolation à mi-fondu ; renumérotation
-après suppression d'une couche ; `Follow::After` qui enchaîne ; ancien
-fichier sans cues qui s'ouvre.
+7 tests dans `verso-core::cue` : enregistrer puis rejouer ; fondu à
+mi-parcours et transition des clips ; fader à la main qui arrête le fondu ;
+suite en secondes et en temps ; suivante, précédente, insertion,
+déplacement, suppression, mise à jour ; suppression de couches et de
+colonnes ; ancien fichier sans cues. Les adresses OSC sont dans le test
+d'aller-retour de `control`. Essai réel par MCP : Record, Go, Espace.
 
 ## 3. Plus tard : fonctions 3D (pas de code maintenant)
 

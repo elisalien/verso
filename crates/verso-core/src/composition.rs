@@ -156,6 +156,10 @@ pub struct Layer {
     /// to the media: replacing the clip keeps the count.
     #[serde(default)]
     pub launches: Vec<u32>,
+    /// Transition of the last clip change when a cue made it (the cue's
+    /// fade); cleared by the next launch or eject. Not saved.
+    #[serde(skip)]
+    pub cue_transition: Option<f32>,
 }
 
 impl Layer {
@@ -173,7 +177,14 @@ impl Layer {
             transition: 0.0,
             group: None,
             launches: vec![0; columns],
+            cue_transition: None,
         }
+    }
+
+    /// Crossfade time of the latest clip change: the cue's fade when a cue
+    /// made it, the layer's transition otherwise.
+    pub fn transition_time(&self) -> f32 {
+        self.cue_transition.unwrap_or(self.transition)
     }
 
     /// Times the slot in `column` was launched.
@@ -184,6 +195,7 @@ impl Layer {
     /// Plays the clip in `column`, counting the launch; an empty slot ejects.
     /// Relaunching the clip already playing is not counted.
     pub(crate) fn launch(&mut self, column: usize) {
+        self.cue_transition = None;
         let was_active = self.active == Some(column);
         self.active = self.clips[column].as_ref().map(|_| column);
         if self.active.is_some() && !was_active {
@@ -256,6 +268,11 @@ pub struct Composition {
     /// opaque to the core. Files without one open with the current layout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::cue::CueList::is_empty")]
+    pub cues: crate::cue::CueList,
+    /// Cue fading or waiting to follow on. Not saved.
+    #[serde(skip)]
+    pub cue_run: Option<crate::cue::CueRun>,
 }
 
 impl Composition {
@@ -280,6 +297,8 @@ impl Composition {
             midi: Vec::new(),
             scripts: Vec::new(),
             layout: None,
+            cues: Default::default(),
+            cue_run: None,
         }
     }
 
@@ -443,6 +462,7 @@ impl Composition {
         }
         self.layers.remove(layer);
         self.prune(|p| p.without_layer(layer), |a| a.without_layer(layer));
+        self.cues_without_layer(layer);
         while let Some(empty) =
             (0..self.groups.len()).find(|&g| self.group_layers(g).next().is_none())
         {
@@ -473,6 +493,7 @@ impl Composition {
             };
         }
         self.prune(|p| p.without_column(column), |a| a.without_column(column));
+        self.cues_without_column(column);
         Ok(())
     }
 

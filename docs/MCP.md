@@ -75,7 +75,7 @@ Les commandes brutes (`apply_commands`) restent en base 0, comme `Command`.
 | Outil | Rôle |
 |---|---|
 | `status` | PID, version, FPS, nom, fichier, modifié, taille, port, journal, FFmpeg |
-| `get_composition` | Couches, colonnes, clips (source résumée), clip actif, effets, groupes, master. `full: true` → la composition sérialisée complète |
+| `get_composition` | Couches, colonnes, clips (source résumée), clip actif, effets, groupes, master, cues (liste, cue courante, fondu en cours). `full: true` → la composition sérialisée complète |
 | `get_layer` | Propriétés d'une couche et ses effets avec définitions de paramètres et valeurs courantes, adresses OSC |
 | `get_clip` | Le clip complet (source, effets, paramètres, adresses OSC) |
 | `list_sources` | Générateurs intégrés, shaders générateurs, familles MilkDrop (filtre, limite) |

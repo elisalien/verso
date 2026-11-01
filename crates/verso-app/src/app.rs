@@ -645,6 +645,9 @@ impl VersoApp {
             if i.key_pressed(egui::Key::Escape) {
                 commands.push(Command::ClearAll);
             }
+            if i.key_pressed(egui::Key::Space) {
+                commands.push(Command::GoNextCue);
+            }
             toggle_output = i.key_pressed(egui::Key::F2);
             tap = i.key_pressed(egui::Key::T) && !i.modifiers.command;
             learn = i.key_pressed(egui::Key::L) && !i.modifiers.command;
@@ -1144,6 +1147,7 @@ impl eframe::App for VersoApp {
         self.poll_mcp();
         self.run_scripts(self.frame_dt);
         self.apply_pending();
+        self.comp.advance_cues(self.frame_dt as f32);
         self.render();
         self.finish_mcp_captures();
         ctx.request_repaint();
@@ -1182,7 +1186,7 @@ impl eframe::App for VersoApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(
-                            "1–9 column · Esc clear · F2 output · drag sources onto slots · right-click slot",
+                            "1–9 column · Esc clear · Space next cue · F2 output · drag sources onto slots · right-click slot",
                         )
                         .color(theme::text_dim()),
                     );

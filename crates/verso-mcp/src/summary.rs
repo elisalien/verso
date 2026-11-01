@@ -120,6 +120,18 @@ pub fn composition(comp: &Composition) -> Value {
         "modulators": comp.modulators.len(),
         "midi_mappings": comp.midi.len(),
         "scripts": comp.scripts.iter().map(|s| json!({"name": s.name, "enabled": s.enabled})).collect::<Vec<_>>(),
+        "cues": {
+            "current": comp.cues.current.map(one),
+            "fading": comp.cue_run.as_ref().map(|r| r.progress() < 1.0).unwrap_or(false),
+            "list": comp.cues.cues.iter().enumerate()
+                .map(|(i, c)| json!({
+                    "cue": one(i),
+                    "name": c.name,
+                    "fade": c.fade,
+                    "follow": format!("{:?}", c.follow),
+                }))
+                .collect::<Vec<_>>(),
+        },
     })
 }
 

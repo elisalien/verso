@@ -51,6 +51,7 @@ cargo run --release -p verso-app
 | **Control…** | OSC port, MIDI inputs and mappings, audio input, modulators |
 | **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
 | `Esc` | Clear all layers |
+| Window › Cues | Cue list: **Record** stores the clip playing and the opacity of every layer, the master and the crossfader; **GO** or `Space` plays the next cue with its fade (clips crossfade, levels move); each cue waits for Go or follows on after some seconds or beats. Moving a fader by hand stops a fade |
 | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | New, open, save, save as. Verso asks before losing unsaved changes (`*` in the title) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo structure edits: clips, layers, columns, groups, effect chains, mappings (fader moves are not undone) |
 | Right-click a layer header › Delete Layer, a column header › Delete Column | Remove them with their clips (undoable) |
@@ -111,7 +112,8 @@ and [effects/scanlines.fs](effects/scanlines.fs) for one example of each.
 
 Listen from the Control window (default port 7000). Values are 0–1; indices
 start at 1. Examples: `/layer/2/opacity 0.5`, `/column/3/launch`,
-`/layer/1/effect/1/radius 0.8`. The full list is in [docs/SPEC.md](docs/SPEC.md).
+`/layer/1/effect/1/radius 0.8`, `/cue/go`, `/cue/previous`, `/cue/2/go`. The
+full list is in [docs/SPEC.md](docs/SPEC.md).
 
 Verso also answers the `/composition/…` address scheme that common clip-grid
 VJ software and the OSC presets made for it use, so a TouchOSC layout, a

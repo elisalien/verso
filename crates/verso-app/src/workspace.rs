@@ -553,6 +553,14 @@ impl VersoApp {
             self.colors_open = true;
             ui.close();
         }
+        let mut custom = self.window.custom_title_bar;
+        if ui
+            .checkbox(&mut custom, "Verso Title Bar")
+            .on_hover_text("Hides the system title bar; minimize, maximize and close move to the menu bar, which also drags the window")
+            .changed()
+        {
+            self.window.set_custom(ui.ctx(), custom);
+        }
         if ui.button("Save Layout as Default").clicked() {
             self.status = match self.workspace.save_as_default() {
                 Ok(()) => "Layout saved as default".into(),

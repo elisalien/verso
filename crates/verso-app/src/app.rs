@@ -99,6 +99,8 @@ pub struct VersoApp {
     pub(crate) last_props_tab: PropsTab,
     pub(crate) workspace: crate::workspace::Workspace,
     pub(crate) colors_open: bool,
+    /// Title bar drawn by Verso or by the system.
+    pub(crate) window: crate::title_bar::WindowSettings,
     pub(crate) output_open: bool,
     pub(crate) status: String,
     pub(crate) controls: crate::control_ui::Controls,
@@ -191,6 +193,7 @@ impl VersoApp {
             last_props_tab: PropsTab::Composition,
             workspace: crate::workspace::Workspace::load(),
             colors_open: false,
+            window: crate::title_bar::WindowSettings::load(),
             output_open: false,
             status: effect_errors
                 .first()
@@ -935,6 +938,10 @@ impl VersoApp {
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let custom_title_bar = self.window.custom_title_bar;
+        if custom_title_bar {
+            crate::title_bar::drag_area(ui);
+        }
         egui::MenuBar::new().ui(ui, |ui| {
             ui.label(egui::RichText::new("VERSO").strong().color(theme::accent()));
             ui.add_space(6.0);
@@ -1057,6 +1064,10 @@ impl VersoApp {
             ui.menu_button("Window", |ui| self.window_menu(ui));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if custom_title_bar {
+                    crate::title_bar::buttons(ui);
+                    ui.separator();
+                }
                 let fps = 1.0 / ui.input(|i| i.stable_dt).max(1e-3);
                 if self.dialogs.busy() {
                     ui.spinner().on_hover_text("A file dialog is open");
@@ -1193,5 +1204,9 @@ impl eframe::App for VersoApp {
         self.output_window(&ctx);
         self.screen_windows(&ctx);
         self.mcp_after_ui(&ctx);
+        // Last, so the resize cursor wins over the widget under the edge.
+        if self.window.custom_title_bar {
+            crate::title_bar::resize_edges(&ctx);
+        }
     }
 }

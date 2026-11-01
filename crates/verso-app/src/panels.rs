@@ -602,13 +602,21 @@ impl VersoApp {
         ui.separator();
         match self.files.tab {
             BrowserTab::Sources => {
-                hint(
-                    ui,
-                    "Drag onto a clip slot, or double-click to load into the selected slot.",
-                );
-                for template in SourceTemplate::all() {
-                    self.browser_item(ui, template);
-                }
+                ui.horizontal(|ui| {
+                    hint(
+                        ui,
+                        "Drag onto a clip slot, or double-click to load into the selected slot. Hover to preview.",
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.files.thumbnails, false, "☰ List");
+                    ui.selectable_value(&mut self.files.thumbnails, true, "▦ Thumbnails");
+                });
+                let builtin = SourceTemplate::all()
+                    .into_iter()
+                    .map(|t| (t, String::new()))
+                    .collect();
+                self.browser_items(ui, builtin);
                 let shaders: Vec<SourceTemplate> = self
                     .renderer
                     .library()
@@ -623,9 +631,8 @@ impl VersoApp {
                     if !shaders.is_empty() {
                         ui.add_space(6.0);
                         hint(ui, "Shaders");
-                        for template in shaders {
-                            self.browser_item(ui, template);
-                        }
+                        let shaders = shaders.into_iter().map(|t| (t, String::new())).collect();
+                        self.browser_items(ui, shaders);
                     }
                     self.milkdrop_browser(ui);
                 });
@@ -713,21 +720,7 @@ impl VersoApp {
                 response
             })
             .inner;
-        let response = if tip.is_empty() {
-            response
-        } else {
-            response.on_hover_text(tip)
-        };
-        if response.double_clicked()
-            && let Some((layer, column)) = self.selected_clip
-        {
-            self.send(Command::SetClip {
-                layer,
-                column,
-                clip: Some(template.clip()),
-            });
-            self.props_tab = PropsTab::Clip;
-        }
+        self.browser_item_events(response, template, tip);
     }
 
     /// Loads files dropped from the OS file manager into the slot under the
@@ -824,6 +817,8 @@ pub enum BrowserTab {
 #[derive(Default)]
 pub struct FileBrowser {
     pub tab: BrowserTab,
+    /// Sources shown as a grid of thumbnails instead of a list.
+    pub thumbnails: bool,
     pub folder: Option<std::path::PathBuf>,
     pub entries: Vec<SourceTemplate>,
 }

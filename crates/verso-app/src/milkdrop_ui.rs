@@ -126,17 +126,21 @@ impl VersoApp {
                 .id_salt(("milkdrop category", category))
                 .default_open(!search.is_empty())
                 .show(ui, |ui| {
-                    for info in in_category {
-                        let template = SourceTemplate {
-                            name: info.name.clone(),
-                            source: Source::milkdrop(&info.id, 0),
-                        };
-                        let mut tip = info.authors.join(", ");
-                        if info.variants.len() > 1 {
-                            tip.push_str(&format!("\n{} presets", info.variants.len()));
-                        }
-                        self.browser_item_with_tip(ui, template, &tip);
-                    }
+                    let items = in_category
+                        .into_iter()
+                        .map(|info| {
+                            let template = SourceTemplate {
+                                name: info.name.clone(),
+                                source: Source::milkdrop(&info.id, 0),
+                            };
+                            let mut tip = info.authors.join(", ");
+                            if info.variants.len() > 1 {
+                                tip.push_str(&format!("\n{} presets", info.variants.len()));
+                            }
+                            (template, tip)
+                        })
+                        .collect();
+                    self.browser_items(ui, items);
                 });
         }
     }

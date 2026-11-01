@@ -58,8 +58,9 @@ pub struct VersoApp {
     pub(crate) comp: Composition,
     pub(crate) renderer: Renderer,
     cell_thumbs: Thumbnails<(usize, usize)>,
+    pub(crate) browser_thumbs: crate::source_browser::BrowserThumbs,
     clip_monitor: Thumbnails<()>,
-    render_state: egui_wgpu::RenderState,
+    pub(crate) render_state: egui_wgpu::RenderState,
     pub(crate) output_texture: TextureId,
     /// Output size the egui texture was registered with.
     output_texture_size: (u32, u32),
@@ -71,6 +72,8 @@ pub struct VersoApp {
     /// Layer or column header under the pointer, shown in the Preview monitor.
     pub(crate) hover_target: Option<crate::hover_preview::HoverTarget>,
     hover_preview: crate::hover_preview::HoverPreview,
+    /// Browser source under the pointer (name, source), with `HoverTarget::Source`.
+    pub(crate) hover_source: Option<(String, Source)>,
     pub(crate) monitor_texture: Option<TextureId>,
     pub(crate) media: Media,
     /// Layers whose clip was launched again since the last media update.
@@ -154,6 +157,7 @@ impl VersoApp {
         let mut app = Self {
             output_texture_size: renderer.size(),
             cell_thumbs: Thumbnails::new(device, CELL_THUMB),
+            browser_thumbs: crate::source_browser::BrowserThumbs::new(device),
             clip_monitor: Thumbnails::new(device, MONITOR),
             comp,
             renderer,
@@ -164,6 +168,7 @@ impl VersoApp {
             hovered_clip: None,
             hover_target: None,
             hover_preview: Default::default(),
+            hover_source: None,
             monitor_texture: None,
             media: Media::new(),
             restarted: Vec::new(),
@@ -274,14 +279,26 @@ impl VersoApp {
             self.hover_preview.idle();
             return;
         };
-        let views = match target {
-            HoverTarget::Layer(_) => self.media.layer_views(&self.comp),
-            HoverTarget::Column(column) => self.media.column_views(&self.comp, column),
+        let source_comp;
+        let (comp, views) = match target {
+            HoverTarget::Layer(_) => (rendered, self.media.layer_views(&self.comp)),
+            HoverTarget::Column(column) | HoverTarget::Clip(_, column) => {
+                (rendered, self.media.column_views(&self.comp, column))
+            }
+            HoverTarget::Source => {
+                let Some((name, source)) = &self.hover_source else {
+                    return;
+                };
+                let mut comp = crate::hover_preview::source_composition(source, name);
+                (comp.width, comp.height) = (self.comp.width, self.comp.height);
+                source_comp = comp;
+                (&source_comp, Vec::new())
+            }
         };
         self.hover_preview.render(
             &self.render_state,
             encoder,
-            rendered,
+            comp,
             target,
             &views,
             time,
@@ -311,6 +328,8 @@ impl VersoApp {
                 }
             }
             HoverTarget::Column(c) => self.comp.columns.get(c)?.name.clone(),
+            HoverTarget::Clip(l, c) => self.comp.layers.get(l)?.clips.get(c)?.as_ref()?.name.clone(),
+            HoverTarget::Source => self.hover_source.as_ref()?.0.clone(),
         };
         Some((texture, caption))
     }
@@ -439,6 +458,7 @@ impl VersoApp {
             .render(device, queue, &mut encoder, &rendered, &views, time);
         drop(views);
         self.render_hover_preview(&mut encoder, &rendered, time);
+        self.render_browser_thumbs(&mut encoder, time);
 
         let mut new_cells = Vec::new();
         for (l, layer) in self.comp.layers.iter().enumerate() {

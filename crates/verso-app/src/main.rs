@@ -17,6 +17,7 @@ mod online_ui;
 mod outputs;
 mod panels;
 mod scripts_ui;
+mod source_browser;
 mod theme;
 mod widgets;
 mod workspace;

@@ -274,6 +274,7 @@ impl VersoApp {
         // Set again by the grid while the pointer is over a clip.
         self.hovered_clip = None;
         self.hover_target = None;
+        self.hover_source = None;
         // Selecting something brings its Properties panel forward.
         if self.props_tab != self.last_props_tab {
             self.last_props_tab = self.props_tab;

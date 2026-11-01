@@ -369,6 +369,10 @@ impl VersoApp {
         self.cell_rects.push((rect, (layer, column)));
         if response.hovered() && clip.is_some() {
             self.hovered_clip = Some((layer, column));
+            // MilkDrop clips preview live (see `VersoApp::hover_clip`).
+            if clip.is_some_and(|c| matches!(c.source, Source::Milkdrop { .. })) {
+                self.hover_target = Some(crate::hover_preview::HoverTarget::Clip(layer, column));
+            }
         }
 
         let texture = clip.and_then(|clip| {

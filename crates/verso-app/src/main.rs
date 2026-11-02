@@ -13,6 +13,7 @@ mod groups_ui;
 mod hover_preview;
 mod logging;
 mod media;
+mod milkdrop_settings;
 mod milkdrop_ui;
 mod online_ui;
 mod outputs;

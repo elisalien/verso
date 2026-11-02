@@ -10,7 +10,7 @@ mod library;
 pub mod preset;
 
 pub use audio::AudioState;
-pub use blend::BlendPattern;
+pub use blend::{BlendPattern, PatternKind};
 pub use engine::{
     Blend, COMP_HEIGHT, COMP_WIDTH, Draw, Engine, FrameOutput, MESH_HEIGHT, MESH_WIDTH,
     ShaderValues, Vertex, blur_passes,

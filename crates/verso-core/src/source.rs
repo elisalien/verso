@@ -41,6 +41,35 @@ impl Generator {
     }
 }
 
+/// Shape of a MilkDrop preset blend.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MilkPattern {
+    /// Wipe, plasma or radial, picked at each blend as MilkDrop does.
+    #[default]
+    Random,
+    Wipe,
+    Plasma,
+    Radial,
+}
+
+impl MilkPattern {
+    pub const ALL: [MilkPattern; 4] = [
+        MilkPattern::Random,
+        MilkPattern::Wipe,
+        MilkPattern::Plasma,
+        MilkPattern::Radial,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MilkPattern::Random => "Random",
+            MilkPattern::Wipe => "Wipe",
+            MilkPattern::Plasma => "Plasma",
+            MilkPattern::Radial => "Radial",
+        }
+    }
+}
+
 /// What produces the pixels of a clip.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Source {
@@ -65,6 +94,9 @@ pub enum Source {
         /// Seconds of MilkDrop blend when the variant changes; 0 cuts.
         #[serde(default = "default_milk_blend")]
         blend: f32,
+        /// Shape of the blend.
+        #[serde(default)]
+        pattern: MilkPattern,
         /// Layer whose image the preset reads as its image textures.
         #[serde(default)]
         input: Option<usize>,
@@ -94,6 +126,7 @@ impl Source {
             family: family.to_owned(),
             variant,
             blend: Source::MILK_BLEND,
+            pattern: MilkPattern::Random,
             input: None,
             input_mix: 0.0,
         }

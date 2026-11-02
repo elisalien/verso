@@ -340,6 +340,20 @@ fn pipeline(
     })
 }
 
+/// Runs `create` inside wgpu error scopes, so a shader or pipeline the driver
+/// rejects becomes an error instead of a panic of the uncaptured handler.
+pub(crate) fn checked<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let value = create();
+    let internal = pollster::block_on(internal.pop());
+    let validation = pollster::block_on(validation.pop());
+    match internal.or(validation) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(value),
+    }
+}
+
 fn shader(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -560,6 +574,10 @@ pub struct Renderer {
     library: EffectLibrary,
     /// Compiled effect pipelines by effect id and target format.
     effects: HashMap<(String, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// Effects the GPU driver refused, by id, with its message.
+    broken: HashMap<String, String>,
+    /// Driver errors not yet reported, see [`Self::take_errors`].
+    new_errors: Vec<String>,
     /// 1×1 transparent texture: the input of generator shaders.
     blank: Target,
     composition: Pair,
@@ -656,6 +674,8 @@ impl Renderer {
             pipelines,
             library: EffectLibrary::builtin(),
             effects: HashMap::new(),
+            broken: HashMap::new(),
+            new_errors: Vec::new(),
             blank: Target::new(device, "blank", (1, 1), WORK_FORMAT),
             composition: Pair::new(device, "composition", size),
             groups: Vec::new(),
@@ -720,6 +740,7 @@ impl Renderer {
     /// Changing the library drops compiled pipelines; they rebuild on demand.
     pub fn library_mut(&mut self) -> &mut EffectLibrary {
         self.effects.clear();
+        self.broken.clear();
         &mut self.library
     }
 
@@ -777,19 +798,44 @@ impl Renderer {
         if self.effects.contains_key(&key) {
             return;
         }
+        if self.broken.contains_key(id) {
+            return;
+        }
         let Some(def) = self.library.get(id) else {
             return;
         };
-        let fragment = shader(device, &def.name, &def.fragment);
-        let pipeline = pipeline(
-            device,
-            &def.name,
-            (&self.pipelines.effect_vs, "vs_main"),
-            (&fragment, def.entry),
-            &self.pipelines.effect_layout,
-            format,
-        );
-        self.effects.insert(key, pipeline);
+        let compiled = checked(device, || {
+            let fragment = shader(device, &def.name, &def.fragment);
+            pipeline(
+                device,
+                &def.name,
+                (&self.pipelines.effect_vs, "vs_main"),
+                (&fragment, def.entry),
+                &self.pipelines.effect_layout,
+                format,
+            )
+        });
+        match compiled {
+            Ok(pipeline) => {
+                self.effects.insert(key, pipeline);
+            }
+            Err(error) => {
+                self.new_errors
+                    .push(format!("Effect {} refused by the GPU: {error}", def.name));
+                self.broken.insert(id.to_owned(), error);
+            }
+        }
+    }
+
+    /// Why the GPU driver refused effect `id`, if it did. The effect then
+    /// draws nothing.
+    pub fn effect_error(&self, id: &str) -> Option<&str> {
+        self.broken.get(id).map(String::as_str)
+    }
+
+    /// Driver errors since the last call, for the status bar.
+    pub fn take_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.new_errors)
     }
 
     /// Renders a generator shader into `output`, a [`OUTPUT_FORMAT`] texture of
@@ -1030,7 +1076,8 @@ fn render_layer(
     state.image = None;
 
     // A clip change starts a transition from the last shown image.
-    if active != state.shown {
+    let clip_changed = active != state.shown;
+    if clip_changed {
         let had_content = state.shown.is_some() || state.transition.is_some();
         // Between two MilkDrop clips, the preset blend does the transition on
         // the layer's shared feedback buffer instead of a crossfade.
@@ -1040,18 +1087,19 @@ fn render_layer(
                 .and_then(Option::as_ref)
                 .is_some_and(|clip| matches!(clip.source, Source::Milkdrop { .. }))
         };
-        let milk_blend = is_milk(state.shown) && is_milk(active);
-        state.transition = (layer.transition_time() > 0.0 && had_content && !milk_blend).then(|| {
-            encoder.copy_texture_to_texture(
-                state.mixed.texture.as_image_copy(),
-                state.outgoing.texture.as_image_copy(),
-                state.mixed.texture.size(),
-            );
-            Transition {
-                start: frame.time,
-                duration: layer.transition_time(),
-            }
-        });
+        let milk_blend = milk.settings.layer_blend && is_milk(state.shown) && is_milk(active);
+        state.transition =
+            (layer.transition_time() > 0.0 && had_content && !milk_blend).then(|| {
+                encoder.copy_texture_to_texture(
+                    state.mixed.texture.as_image_copy(),
+                    state.outgoing.texture.as_image_copy(),
+                    state.mixed.texture.size(),
+                );
+                Transition {
+                    start: frame.time,
+                    duration: layer.transition_time(),
+                }
+            });
         state.shown = active;
     }
     let progress = state
@@ -1085,14 +1133,23 @@ fn render_layer(
                 family,
                 variant,
                 blend,
+                pattern,
                 input_mix,
                 ..
             },
             Some(_),
         ) = (&clip.source, active)
         {
+            // Without layer blends, the layer transition replaces the preset
+            // blend when another clip is launched.
+            let blend = if clip_changed && !milk.settings.layer_blend {
+                0.0
+            } else {
+                *blend
+            };
             let options = milkdrop::PlayOptions {
-                blend: *blend,
+                blend,
+                pattern: *pattern,
                 input: input.as_ref(),
                 input_mix: *input_mix,
             };

@@ -76,6 +76,9 @@ pub struct VersoApp {
     hover_preview: crate::hover_preview::HoverPreview,
     /// Browser source under the pointer (name, source), with `HoverTarget::Source`.
     pub(crate) hover_source: Option<(String, Source)>,
+    /// Name of the browser source hovered last frame: panels drawn before the
+    /// browser caption the preview with it.
+    pub(crate) last_hover_name: Option<String>,
     pub(crate) monitor_texture: Option<TextureId>,
     pub(crate) media: Media,
     /// Layers whose clip was launched again since the last media update.
@@ -112,6 +115,8 @@ pub struct VersoApp {
     pub(crate) advanced: crate::advanced_output_ui::AdvancedOutput,
     pub(crate) online: crate::online_ui::OnlineState,
     pub(crate) milk: crate::milkdrop_ui::MilkState,
+    /// MilkDrop Settings: values for all clips and shared options.
+    pub(crate) milk_prefs: crate::milkdrop_settings::MilkPrefs,
     /// MCP server, when started with `--mcp`.
     mcp: mcp::McpState,
     /// Commands collected while drawing, applied at the end of the frame.
@@ -146,6 +151,7 @@ impl VersoApp {
             .clone()
             .ok_or("Verso needs the wgpu renderer")?;
         let device = &render_state.device;
+        crate::logging::watch_gpu(device);
         let comp = Composition::demo();
         let mut renderer = Renderer::new(device, (comp.width, comp.height));
         let effect_errors: Vec<String> = effect_dirs()
@@ -179,6 +185,7 @@ impl VersoApp {
             hover_target: None,
             hover_preview: Default::default(),
             hover_source: None,
+            last_hover_name: None,
             monitor_texture: None,
             media: Media::new(),
             restarted: Vec::new(),
@@ -223,6 +230,7 @@ impl VersoApp {
             advanced: Default::default(),
             online: Default::default(),
             milk: Default::default(),
+            milk_prefs: crate::milkdrop_settings::MilkPrefs::load(),
             mcp,
         };
         if let Some(message) = mcp_message {
@@ -332,7 +340,9 @@ impl VersoApp {
     /// Texture and caption of the hover preview, when a header is hovered.
     pub(crate) fn hover_preview(&self) -> Option<(eframe::egui::TextureId, String)> {
         use crate::hover_preview::HoverTarget;
-        let target = self.hover_target?;
+        // Panels drawn before the one under the pointer see last frame's
+        // hover, which is what the preview renderer drew.
+        let target = self.hover_target.or(self.hover_preview.shown())?;
         let texture = self.hover_preview.texture(target)?;
         let caption = match target {
             HoverTarget::Layer(l) => {
@@ -344,8 +354,20 @@ impl VersoApp {
                 }
             }
             HoverTarget::Column(c) => self.comp.columns.get(c)?.name.clone(),
-            HoverTarget::Clip(l, c) => self.comp.layers.get(l)?.clips.get(c)?.as_ref()?.name.clone(),
-            HoverTarget::Source => self.hover_source.as_ref()?.0.clone(),
+            HoverTarget::Clip(l, c) => self
+                .comp
+                .layers
+                .get(l)?
+                .clips
+                .get(c)?
+                .as_ref()?
+                .name
+                .clone(),
+            HoverTarget::Source => self
+                .hover_source
+                .as_ref()
+                .map(|(name, _)| name.clone())
+                .or_else(|| self.last_hover_name.clone())?,
         };
         Some((texture, caption))
     }
@@ -471,9 +493,9 @@ impl VersoApp {
             .as_ref()
             .map(|audio| audio.waveform())
             .unwrap_or_default();
-        self.renderer
-            .milkdrop_mut()
-            .set_audio(samples, if rate > 0.0 { rate } else { 44100.0 });
+        let milk = self.renderer.milkdrop_mut();
+        milk.settings = self.milk_prefs.render_settings();
+        milk.set_audio(samples, if rate > 0.0 { rate } else { 44100.0 });
         let rendered = self.modulated();
         // Group images are copied only when a live slice shows a group.
         let groups_shown = self.advanced.live
@@ -489,6 +511,10 @@ impl VersoApp {
         self.renderer
             .render(device, queue, &mut encoder, &rendered, &views, time);
         drop(views);
+        for error in self.renderer.take_errors() {
+            log::warn!("{error}");
+            self.status = error;
+        }
         self.render_hover_preview(&mut encoder, &rendered, time);
         self.render_browser_thumbs(&mut encoder, time);
 

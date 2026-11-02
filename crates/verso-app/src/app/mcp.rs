@@ -1037,6 +1037,7 @@ impl VersoApp {
             family,
             variant,
             blend,
+            pattern,
             input,
             input_mix,
         } = &mut clip.source
@@ -1058,6 +1059,12 @@ impl VersoApp {
         }
         if let Some(b) = args["blend"].as_f64() {
             *blend = b as f32;
+        }
+        if let Some(name) = args["pattern"].as_str() {
+            *pattern = verso_core::MilkPattern::ALL
+                .into_iter()
+                .find(|p| p.name().eq_ignore_ascii_case(name))
+                .ok_or("pattern is Random, Wipe, Plasma or Radial")?;
         }
         if let Some(i) = args["input_layer"].as_u64() {
             *input = (i as usize).checked_sub(1);

@@ -24,6 +24,7 @@ pub fn source(source: &Source) -> Value {
             family,
             variant,
             blend,
+            pattern,
             input,
             input_mix,
         } => json!({
@@ -31,6 +32,7 @@ pub fn source(source: &Source) -> Value {
             "family": family,
             "variant": one(*variant),
             "blend": blend,
+            "pattern": pattern.name(),
             "input_layer": input.map(one),
             "input_mix": input_mix,
         }),

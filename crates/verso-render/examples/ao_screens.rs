@@ -100,7 +100,12 @@ fn main() {
     if let Some(pattern) = pattern {
         let patterns = (setup.screens.iter().enumerate())
             .map(|(i, s)| match pattern {
-                Pattern::Identify { .. } => (s.id, Pattern::Identify { number: i as u32 + 1 }),
+                Pattern::Identify { .. } => (
+                    s.id,
+                    Pattern::Identify {
+                        number: i as u32 + 1,
+                    },
+                ),
                 _ => (s.id, pattern),
             })
             .collect();

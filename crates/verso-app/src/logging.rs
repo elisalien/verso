@@ -109,3 +109,30 @@ pub fn init() {
         default_hook(info);
     }));
 }
+
+/// GPU errors logged before the rest are dropped, so a broken resource used
+/// every frame does not fill the log.
+const GPU_ERRORS_LOGGED: usize = 20;
+
+/// Logs GPU errors nothing else caught, and a lost device. In release builds
+/// an uncaptured error is logged instead of panicking, so one bad resource
+/// does not stop a show; debug builds keep the wgpu panic.
+pub fn watch_gpu(device: &eframe::wgpu::Device) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    device.set_device_lost_callback(|reason, message| {
+        log::error!("GPU device lost ({reason:?}): {message}");
+    });
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let count = AtomicUsize::new(0);
+    device.on_uncaptured_error(Arc::new(move |error| {
+        match count.fetch_add(1, Ordering::Relaxed) {
+            n if n < GPU_ERRORS_LOGGED => log::error!("GPU error: {error}"),
+            GPU_ERRORS_LOGGED => log::error!("further GPU errors are not logged"),
+            _ => {}
+        }
+    }));
+}

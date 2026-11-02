@@ -18,7 +18,7 @@ pub use composition::{
     BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master, Script,
 };
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
-pub use source::{Generator, Source};
+pub use source::{Generator, MilkPattern, Source};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

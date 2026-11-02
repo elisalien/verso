@@ -9,11 +9,12 @@ pub mod glsl;
 
 use std::collections::{HashMap, HashSet};
 
+use verso_core::MilkPattern;
 use verso_milkdrop::eel::Rng;
 use verso_milkdrop::preset::BUILTIN_SAMPLERS;
 use verso_milkdrop::{
     AudioState, Blend, BlendPattern, COMP_HEIGHT, COMP_WIDTH, Engine, Family, FrameOutput,
-    MESH_HEIGHT, MESH_WIDTH, MilkLibrary, Vertex, blur_passes,
+    MESH_HEIGHT, MESH_WIDTH, MilkLibrary, PatternKind, Vertex, blur_passes,
 };
 
 use glsl::{MilkUniforms, Stage};
@@ -610,21 +611,24 @@ impl Shared {
         blend: Option<wgpu::BlendState>,
     ) -> Result<wgpu::RenderPipeline, String> {
         let wgsl = glsl::translate(stage, text)?;
-        let module = crate::shader(device, "milkdrop preset", &wgsl);
         let (vertex, buffers) = match stage {
             Stage::Warp => ("warp_vs", warp_buffers()),
             Stage::Comp => ("comp_vs", comp_buffers()),
         };
-        Ok(mesh_pipeline(
-            device,
-            "milkdrop preset",
-            &self.shader_layout,
-            (&self.fixed, vertex),
-            (&module, "main"),
-            &buffers,
-            format,
-            blend,
-        ))
+        crate::checked(device, || {
+            let module = crate::shader(device, "milkdrop preset", &wgsl);
+            mesh_pipeline(
+                device,
+                "milkdrop preset",
+                &self.shader_layout,
+                (&self.fixed, vertex),
+                (&module, "main"),
+                &buffers,
+                format,
+                blend,
+            )
+        })
+        .map_err(|e| format!("refused by the GPU: {e}"))
     }
 
     /// Bind group of a warp or comp pass reading `main`; image textures of
@@ -929,14 +933,37 @@ fn blur_scale_bias(level: usize, min: [f32; 3], max: [f32; 3]) -> (f32, f32) {
 pub(crate) struct PlayOptions<'a> {
     /// Seconds of MilkDrop blend when the preset changes; 0 cuts.
     pub blend: f32,
+    /// Shape of that blend.
+    pub pattern: MilkPattern,
     /// Image of another layer, in the work format, fed to the preset.
     pub input: Option<&'a wgpu::TextureView>,
     /// How much of the input is mixed into the feedback each frame.
     pub input_mix: f32,
 }
 
+/// How MilkDrop clips play and blend, for every clip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MilkSettings {
+    /// Launching a MilkDrop clip over another on the same layer blends the
+    /// presets on the shared feedback buffer; else the layer's transition
+    /// crossfades the two images.
+    pub layer_blend: bool,
+    /// Gain applied to the audio the presets react to.
+    pub audio_gain: f32,
+}
+
+impl Default for MilkSettings {
+    fn default() -> Self {
+        MilkSettings {
+            layer_blend: true,
+            audio_gain: 1.0,
+        }
+    }
+}
+
 /// Runs MilkDrop presets as clip sources.
 pub struct MilkRenderer {
+    pub settings: MilkSettings,
     library: MilkLibrary,
     shared: Option<Shared>,
     compiled: HashMap<(String, usize), Compiled>,
@@ -951,6 +978,7 @@ pub struct MilkRenderer {
 impl Default for MilkRenderer {
     fn default() -> Self {
         MilkRenderer {
+            settings: MilkSettings::default(),
             library: MilkLibrary::default(),
             shared: None,
             compiled: HashMap::new(),
@@ -977,7 +1005,13 @@ impl MilkRenderer {
     }
 
     /// Latest mono audio samples (about 1024) in -1..1.
-    pub fn set_audio(&mut self, samples: Vec<f32>, sample_rate: f32) {
+    pub fn set_audio(&mut self, mut samples: Vec<f32>, sample_rate: f32) {
+        let gain = self.settings.audio_gain;
+        if gain != 1.0 {
+            samples
+                .iter_mut()
+                .for_each(|s| *s = (*s * gain).clamp(-1.0, 1.0));
+        }
         self.samples = samples;
         self.sample_rate = sample_rate;
     }
@@ -1098,11 +1132,25 @@ impl MilkRenderer {
                     Ok(run) => match self.instances.get_mut(&key) {
                         Some(instance) => {
                             let old = std::mem::replace(&mut instance.run, run);
+                            let kind = match options.pattern {
+                                MilkPattern::Random => None,
+                                MilkPattern::Wipe => Some(PatternKind::Wipe),
+                                MilkPattern::Plasma => Some(PatternKind::Plasma),
+                                MilkPattern::Radial => Some(PatternKind::Radial),
+                            };
                             instance.fading = (options.blend > 0.0).then(|| Fading {
                                 run: old,
                                 start: time,
                                 duration: options.blend,
-                                pattern: BlendPattern::new(size.0, size.1, &mut instance.rng),
+                                pattern: match kind {
+                                    Some(kind) => BlendPattern::of_kind(
+                                        kind,
+                                        size.0,
+                                        size.1,
+                                        &mut instance.rng,
+                                    ),
+                                    None => BlendPattern::new(size.0, size.1, &mut instance.rng),
+                                },
                             });
                         }
                         None => {

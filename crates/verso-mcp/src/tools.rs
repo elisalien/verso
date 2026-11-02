@@ -120,11 +120,13 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set_milkdrop",
-        description: "Changes a MilkDrop clip: variant (from 1), blend seconds, input layer (from 1, 0 for none) and input mix 0..1.",
+        description: "Changes a MilkDrop clip: variant (from 1), blend seconds, blend pattern, input layer (from 1, 0 for none) and input mix 0..1.",
         properties: || {
             let mut p = layer_column();
             p["variant"] = json!({"type": "integer", "minimum": 1});
             p["blend"] = json!({"type": "number", "minimum": 0});
+            p["pattern"] =
+                json!({"type": "string", "enum": ["Random", "Wipe", "Plasma", "Radial"]});
             p["input_layer"] = json!({"type": "integer", "minimum": 0});
             p["input_mix"] = json!({"type": "number", "minimum": 0, "maximum": 1});
             p

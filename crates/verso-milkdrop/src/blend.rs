@@ -8,6 +8,29 @@ use crate::engine::{COMP_HEIGHT, COMP_WIDTH, MESH_HEIGHT, MESH_WIDTH};
 const W1: usize = MESH_WIDTH + 1;
 const H1: usize = MESH_HEIGHT + 1;
 
+/// Shape of a preset blend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternKind {
+    /// Straight wipe in a random direction.
+    Wipe,
+    /// Plasma clouds.
+    Plasma,
+    /// Radial sweep, inward or outward.
+    Radial,
+}
+
+impl PatternKind {
+    pub const ALL: [PatternKind; 3] = [PatternKind::Wipe, PatternKind::Plasma, PatternKind::Radial];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PatternKind::Wipe => "Wipe",
+            PatternKind::Plasma => "Plasma",
+            PatternKind::Radial => "Radial",
+        }
+    }
+}
+
 /// Per-vertex blend weights over the warp mesh.
 #[derive(Debug, Clone)]
 pub struct BlendPattern {
@@ -18,6 +41,12 @@ pub struct BlendPattern {
 impl BlendPattern {
     /// A random pattern for a `width` × `height` buffer.
     pub fn new(width: u32, height: u32, rng: &mut Rng) -> Self {
+        let kind = PatternKind::ALL[((rng.next_f64() * 3.0) as usize).min(2)];
+        Self::of_kind(kind, width, height, rng)
+    }
+
+    /// A pattern of `kind`, its direction and band width picked at random.
+    pub fn of_kind(kind: PatternKind, width: u32, height: u32, rng: &mut Rng) -> Self {
         let (w, h) = (width.max(1) as f32, height.max(1) as f32);
         let aspectx = if h > w { w / h } else { 1.0 };
         let aspecty = if w > h { h / w } else { 1.0 };
@@ -26,9 +55,8 @@ impl BlendPattern {
             c: vec![0.0; W1 * H1],
         };
         let rand = |rng: &mut Rng| rng.next_f64() as f32;
-        match 1 + (rand(rng) * 3.0) as u32 {
-            1 => {
-                // Straight wipe in a random direction.
+        match kind {
+            PatternKind::Wipe => {
                 let ang = rand(rng) * std::f32::consts::TAU;
                 let (vx, vy) = (ang.cos(), ang.sin());
                 let band = 0.1 + 0.2 * rand(rng);
@@ -41,8 +69,7 @@ impl BlendPattern {
                     }
                 }
             }
-            2 => {
-                // Plasma.
+            PatternKind::Plasma => {
                 let band = 0.12 + 0.13 * rand(rng);
                 for i in [
                     0,
@@ -61,8 +88,7 @@ impl BlendPattern {
                     p.set(i, band, t);
                 }
             }
-            _ => {
-                // Radial, inward or outward.
+            PatternKind::Radial => {
                 let band = 0.02 + 0.14 * rand(rng) + 0.34 * rand(rng);
                 let inward = rand(rng) < 0.5;
                 for y in 0..H1 {
@@ -180,6 +206,19 @@ mod tests {
                 p.comp_weights(0.5).len(),
                 (COMP_WIDTH + 1) * (COMP_HEIGHT + 1)
             );
+        }
+    }
+
+    #[test]
+    fn every_kind_blends_from_old_to_new() {
+        for kind in PatternKind::ALL {
+            for seed in 1..10 {
+                let p = BlendPattern::of_kind(kind, 640, 360, &mut Rng::new(seed));
+                let mean =
+                    |t: f32| (0..W1 * H1).map(|i| p.weight(i, t)).sum::<f32>() / (W1 * H1) as f32;
+                assert!(mean(0.0) < 0.1, "{kind:?} seed {seed}");
+                assert!(mean(1.0) > 0.9, "{kind:?} seed {seed}");
+            }
         }
     }
 }

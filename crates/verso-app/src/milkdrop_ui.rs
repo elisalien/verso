@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui;
-use verso_core::Source;
+use verso_core::Command;
 
-use crate::app::VersoApp;
+use crate::app::{PropsTab, VersoApp};
 use crate::grid::SourceTemplate;
 use crate::theme;
 
@@ -84,21 +84,68 @@ impl VersoApp {
             .cloned()
             .collect();
         if families.is_empty() {
-            return;
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("MilkDrop")
+                egui::RichText::new("No MilkDrop presets found.")
                     .small()
                     .color(theme::text_dim()),
             );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.milk.search)
-                    .hint_text("Search presets")
-                    .desired_width(ui.available_width()),
-            );
+            return;
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.milk.search)
+                .hint_text("Search presets")
+                .desired_width(ui.available_width()),
+        );
+        egui::ScrollArea::vertical().show(ui, |ui| self.milkdrop_families(ui, &families));
+    }
+
+    /// Clip slot context menu: the MilkDrop families by category, apart from
+    /// the other sources.
+    pub(crate) fn milkdrop_menu(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
+        let families: Vec<_> = self
+            .renderer
+            .milkdrop()
+            .library()
+            .sorted()
+            .into_iter()
+            .cloned()
+            .collect();
+        if families.is_empty() {
+            return;
+        }
+        ui.separator();
+        let title = egui::RichText::new("MilkDrop").color(theme::milkdrop());
+        ui.menu_button(title, |ui| {
+            let mut categories: Vec<&str> = families.iter().map(|f| f.category.as_str()).collect();
+            categories.dedup();
+            for category in categories {
+                ui.menu_button(category, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(400.0)
+                        .show(ui, |ui| {
+                            for info in families.iter().filter(|f| f.category == category) {
+                                if ui.button(&info.name).clicked() {
+                                    let template = SourceTemplate {
+                                        name: info.name.clone(),
+                                        source: self.milk_prefs.source(&info.id, 0),
+                                    };
+                                    self.send(Command::SetClip {
+                                        layer,
+                                        column,
+                                        clip: Some(template.clip()),
+                                    });
+                                    self.selected_clip = Some((layer, column));
+                                    self.props_tab = PropsTab::Clip;
+                                }
+                            }
+                        });
+                });
+            }
         });
+    }
+
+    /// The MilkDrop families matching the search, grouped by category.
+    fn milkdrop_families(&mut self, ui: &mut egui::Ui, families: &[verso_milkdrop::FamilyInfo]) {
         let search = self.milk.search.to_lowercase();
         let matches = |info: &verso_milkdrop::FamilyInfo| {
             search.is_empty()
@@ -131,7 +178,7 @@ impl VersoApp {
                         .map(|info| {
                             let template = SourceTemplate {
                                 name: info.name.clone(),
-                                source: Source::milkdrop(&info.id, 0),
+                                source: self.milk_prefs.source(&info.id, 0),
                             };
                             let mut tip = info.authors.join(", ");
                             if info.variants.len() > 1 {
@@ -151,12 +198,25 @@ impl VersoApp {
         ui: &mut egui::Ui,
         layer: usize,
         blend: &mut f32,
+        pattern: &mut verso_core::MilkPattern,
         input: &mut Option<usize>,
         input_mix: &mut f32,
     ) {
         ui.label("Blend");
         ui.add(egui::Slider::new(blend, 0.0..=10.0).suffix(" s"))
-            .on_hover_text("MilkDrop blend when the preset changes or this clip is launched over another MilkDrop clip on the layer; 0 cuts");
+            .on_hover_text("MilkDrop blend when the preset changes or this clip is launched over another MilkDrop clip on the layer; 0 cuts. Overrides MilkDrop Settings for this clip.");
+        ui.end_row();
+
+        ui.label("Pattern");
+        egui::ComboBox::from_id_salt("milkdrop pattern")
+            .selected_text(pattern.name())
+            .show_ui(ui, |ui| {
+                for p in verso_core::MilkPattern::ALL {
+                    ui.selectable_value(pattern, p, p.name());
+                }
+            })
+            .response
+            .on_hover_text("Shape of the blend. Overrides MilkDrop Settings for this clip.");
         ui.end_row();
 
         let layer_name = |i: usize| {
@@ -206,7 +266,7 @@ impl VersoApp {
         };
         let mut picked = None;
         ui.label("Source");
-        ui.label(format!("MilkDrop · {}", info.name))
+        ui.label(format!("MilkDrop Â· {}", info.name))
             .on_hover_text(&info.id);
         ui.end_row();
         if !info.authors.is_empty() {
@@ -224,13 +284,17 @@ impl VersoApp {
         ui.horizontal(|ui| {
             if count > 1 {
                 if ui
-                    .small_button("◀")
+                    .small_button("â—€")
                     .on_hover_text("Previous preset")
                     .clicked()
                 {
                     picked = Some((current + count - 1) % count);
                 }
-                if ui.small_button("▶").on_hover_text("Next preset").clicked() {
+                if ui
+                    .small_button("â–¶")
+                    .on_hover_text("Next preset")
+                    .clicked()
+                {
                     picked = Some((current + 1) % count);
                 }
             }

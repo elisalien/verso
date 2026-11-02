@@ -292,14 +292,7 @@ impl Composition {
             Command::SetLayerTransition { layer, seconds } => {
                 self.layer_mut(layer)?.transition = seconds.clamp(0.0, 30.0)
             }
-            Command::SetLayerGroup { layer, group } => {
-                if let Some(g) = group
-                    && g >= self.groups.len()
-                {
-                    return Err(Error::NoGroup(g));
-                }
-                self.layer_mut(layer)?.group = group
-            }
+            Command::SetLayerGroup { layer, group } => self.set_layer_group(layer, group)?,
             Command::AddGroup { layers } => {
                 self.group_layers_together(&layers)?;
             }

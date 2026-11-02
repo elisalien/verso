@@ -515,18 +515,24 @@ fn show_tabs(
         child.set_clip_rect(body);
         content(&mut child, id);
 
-        // A click anywhere in the group focuses its visible panel.
+        // A click anywhere in the group focuses its visible panel, unless a
+        // window over the group took it.
         let pressed = ui.input(|i| {
-            i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))
+            i.pointer
+                .interact_pos()
+                .filter(|p| i.pointer.any_pressed() && rect.contains(*p))
+        });
+        let pressed = pressed.is_some_and(|p| {
+            ui.ctx()
+                .layer_id_at(p)
+                .is_none_or(|layer| layer.order == ui.layer_id().order)
         });
         if pressed {
             state.focused = Some(id);
         }
         if state.focused == Some(id) {
-            let outline = ui.ctx().layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                ui.scope_id().with(("dock focus", id)),
-            ));
+            // Painted in the panel's own layer, so windows stay on top of it.
+            let outline = ui.painter().with_clip_rect(rect);
             outline.rect_stroke(
                 rect.shrink(1.0),
                 3.0,

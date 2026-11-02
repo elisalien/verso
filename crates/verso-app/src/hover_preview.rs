@@ -91,6 +91,11 @@ impl HoverPreview {
         self.texture.filter(|_| self.shown == Some(target))
     }
 
+    /// Target rendered this frame, from what was hovered last frame.
+    pub fn shown(&self) -> Option<HoverTarget> {
+        self.shown
+    }
+
     /// Renderer that drew `target`, for reading its output back.
     pub fn renderer(&self, target: HoverTarget) -> Option<&Renderer> {
         self.renderer

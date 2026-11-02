@@ -36,9 +36,15 @@ pub enum Param {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
     Set(Param),
-    LaunchClip { layer: usize, column: usize },
+    LaunchClip {
+        layer: usize,
+        column: usize,
+    },
     LaunchColumn(usize),
-    LaunchGroupColumn { group: usize, column: usize },
+    LaunchGroupColumn {
+        group: usize,
+        column: usize,
+    },
     EjectLayer(usize),
     ClearAll,
     /// Go: the next cue.

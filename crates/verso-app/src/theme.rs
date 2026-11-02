@@ -24,6 +24,14 @@ pub struct Palette {
     pub solo: [u8; 3],
     /// Selection outline.
     pub select: [u8; 3],
+    /// MilkDrop clips and browser entries, which blend into each other and
+    /// read other layers, unlike the other sources.
+    #[serde(default = "default_milkdrop")]
+    pub milkdrop: [u8; 3],
+}
+
+fn default_milkdrop() -> [u8; 3] {
+    Palette::TEAL.milkdrop
 }
 
 impl Palette {
@@ -39,6 +47,7 @@ impl Palette {
         warn: [226, 86, 86],
         solo: [232, 190, 64],
         select: [196, 202, 212],
+        milkdrop: [214, 92, 196],
     };
     pub const AMBER: Palette = Palette {
         accent: [232, 150, 48],
@@ -53,6 +62,7 @@ impl Palette {
         line: [58, 53, 70],
         accent: [158, 110, 240],
         select: [214, 200, 245],
+        milkdrop: [236, 120, 150],
         ..Palette::TEAL
     };
     /// Brighter text and borders, for bright venues or tired eyes.
@@ -68,6 +78,7 @@ impl Palette {
         warn: [255, 70, 70],
         solo: [255, 220, 0],
         select: [255, 255, 255],
+        milkdrop: [255, 90, 230],
     };
 
     pub const PRESETS: [(&'static str, Palette); 4] = [
@@ -78,10 +89,11 @@ impl Palette {
     ];
 
     /// Editable roles with their labels, for the settings window.
-    pub fn roles_mut(&mut self) -> [(&'static str, &mut [u8; 3]); 11] {
+    pub fn roles_mut(&mut self) -> [(&'static str, &mut [u8; 3]); 12] {
         [
             ("Accent", &mut self.accent),
             ("Selection", &mut self.select),
+            ("MilkDrop", &mut self.milkdrop),
             ("Bypass", &mut self.warn),
             ("Solo", &mut self.solo),
             ("Text", &mut self.text),
@@ -134,6 +146,9 @@ pub fn solo() -> Color32 {
 }
 pub fn select() -> Color32 {
     get(|p| p.select)
+}
+pub fn milkdrop() -> Color32 {
+    get(|p| p.milkdrop)
 }
 
 pub fn palette() -> Palette {

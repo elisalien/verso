@@ -986,13 +986,25 @@ fn highlighted_slice_is_tinted() {
     let a = setup.add_screen("A", (16, 8));
     setup.screens[0].slices = vec![
         Slice::new(a + 10, "Left", rect(16.0, 8.0), rect(8.0, 8.0)),
-        Slice::new(a + 11, "Right", rect(16.0, 8.0), [[8.0, 0.0], [16.0, 0.0], [16.0, 8.0], [8.0, 8.0]]),
+        Slice::new(
+            a + 11,
+            "Right",
+            rect(16.0, 8.0),
+            [[8.0, 0.0], [16.0, 0.0], [16.0, 8.0], [8.0, 8.0]],
+        ),
     ];
     screens.set_highlight(Some(a + 11));
 
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
-    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+    screens.render(
+        &gpu.device,
+        &gpu.queue,
+        &mut encoder,
+        &setup,
+        &renderer,
+        &comp,
+    );
     let pixels = read_back(&gpu, encoder, screens.texture(a).unwrap(), (16, 8));
     let at = |x: usize, y: usize| {
         let i = (y * 16 + x) * 4;
@@ -1033,7 +1045,14 @@ fn soft_edges_blend_overlapping_slices() {
 
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
-    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
+    screens.render(
+        &gpu.device,
+        &gpu.queue,
+        &mut encoder,
+        &setup,
+        &renderer,
+        &comp,
+    );
     let left = read_back(&gpu, encoder, screens.texture(a).unwrap(), (16, 8));
     let encoder = gpu.device.create_command_encoder(&Default::default());
     let right = read_back(&gpu, encoder, screens.texture(b).unwrap(), (16, 8));
@@ -1072,8 +1091,12 @@ fn test_patterns_replace_the_slices() {
     let ids: Vec<u64> = (0..4)
         .map(|i| {
             let id = setup.add_screen(&format!("S{i}"), (w as u32, h as u32));
-            setup.screens[i].slices =
-                vec![Slice::new(id + 10, "All", rect(size.0, size.1), rect(size.0, size.1))];
+            setup.screens[i].slices = vec![Slice::new(
+                id + 10,
+                "All",
+                rect(size.0, size.1),
+                rect(size.0, size.1),
+            )];
             id
         })
         .collect();
@@ -1081,8 +1104,20 @@ fn test_patterns_replace_the_slices() {
         screens.set_patterns(ids.iter().map(|&id| (id, pattern)).collect());
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
-        screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
-        read_back(&gpu, encoder, screens.texture(ids[0]).unwrap(), (w as u32, h as u32))
+        screens.render(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            &setup,
+            &renderer,
+            &comp,
+        );
+        read_back(
+            &gpu,
+            encoder,
+            screens.texture(ids[0]).unwrap(),
+            (w as u32, h as u32),
+        )
     };
     let at = |pixels: &[u8], x: usize, y: usize| {
         let i = (y * w + x) * 4;
@@ -1124,8 +1159,20 @@ fn test_patterns_replace_the_slices() {
     screens.set_patterns(Vec::new());
     let mut encoder = gpu.device.create_command_encoder(&Default::default());
     renderer.render(&gpu.device, &gpu.queue, &mut encoder, &comp, &[], 0.0);
-    screens.render(&gpu.device, &gpu.queue, &mut encoder, &setup, &renderer, &comp);
-    let plain = read_back(&gpu, encoder, screens.texture(ids[0]).unwrap(), (w as u32, h as u32));
+    screens.render(
+        &gpu.device,
+        &gpu.queue,
+        &mut encoder,
+        &setup,
+        &renderer,
+        &comp,
+    );
+    let plain = read_back(
+        &gpu,
+        encoder,
+        screens.texture(ids[0]).unwrap(),
+        (w as u32, h as u32),
+    );
     assert_eq!(at(&plain, 10, 10), [255, 0, 0]);
 }
 
@@ -1219,9 +1266,17 @@ fn milkdrop_clips_on_one_layer_blend() {
     }
     // A layer crossfade is set; between MilkDrop clips the preset blend wins.
     comp.layers[0].transition = 5.0;
-    comp.apply(Command::TriggerClip { layer: 0, column: 0 }).unwrap();
+    comp.apply(Command::TriggerClip {
+        layer: 0,
+        column: 0,
+    })
+    .unwrap();
     let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
-    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    renderer
+        .milkdrop_mut()
+        .library_mut()
+        .load_file(&path)
+        .unwrap();
     let mut t = 0.0;
     let mut frame = |renderer: &mut Renderer, comp: &Composition| {
         t += 0.1;
@@ -1230,7 +1285,11 @@ fn milkdrop_clips_on_one_layer_blend() {
     for _ in 0..4 {
         frame(&mut renderer, &comp);
     }
-    comp.apply(Command::TriggerClip { layer: 0, column: 1 }).unwrap();
+    comp.apply(Command::TriggerClip {
+        layer: 0,
+        column: 1,
+    })
+    .unwrap();
     let mut seen_mix = false;
     for _ in 0..8 {
         let c = frame(&mut renderer, &comp);

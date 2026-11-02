@@ -56,6 +56,7 @@ pub enum PanelKind {
     Output,
     Browser,
     Cues,
+    MilkdropSettings,
     Properties { kind: PropKind, lock: Option<Lock> },
 }
 
@@ -276,6 +277,7 @@ impl VersoApp {
             PanelKind::Output => "Output".into(),
             PanelKind::Browser => "Browser".into(),
             PanelKind::Cues => "Cues".into(),
+            PanelKind::MilkdropSettings => "MilkDrop Settings".into(),
             PanelKind::Properties { kind, lock: None } => kind.name().into(),
             PanelKind::Properties { kind, lock } => {
                 format!("{} 🔒 {}", kind.name(), self.target_label(*lock))
@@ -288,7 +290,7 @@ impl VersoApp {
         // Set again by the grid while the pointer is over a clip.
         self.hovered_clip = None;
         self.hover_target = None;
-        self.hover_source = None;
+        self.last_hover_name = self.hover_source.take().map(|(name, _)| name);
         // Selecting something brings its Properties panel forward.
         if self.props_tab != self.last_props_tab {
             self.last_props_tab = self.props_tab;
@@ -373,6 +375,7 @@ impl VersoApp {
             PanelKind::Output => self.output_panel(ui),
             PanelKind::Browser => self.browser(ui),
             PanelKind::Cues => self.cues_panel(ui),
+            PanelKind::MilkdropSettings => self.milkdrop_settings_panel(ui),
             PanelKind::Properties { kind, lock } => {
                 let mut lock = lock;
                 self.properties_header(ui, kind, &mut lock);
@@ -542,6 +545,7 @@ impl VersoApp {
             (PanelKind::Output, "Output"),
             (PanelKind::Browser, "Browser"),
             (PanelKind::Cues, "Cues"),
+            (PanelKind::MilkdropSettings, "MilkDrop Settings"),
         ] {
             if ui.button(name).clicked() {
                 self.workspace.show_panel(kind);

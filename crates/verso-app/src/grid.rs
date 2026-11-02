@@ -352,14 +352,16 @@ impl VersoApp {
 
     fn cell(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
         let (rect, response) = ui.allocate_exact_size(CELL, Sense::click());
-        let milk_family = match self.comp.layers[layer].clips[column]
+        // MilkDrop clips: family and input layer.
+        let milk = match self.comp.layers[layer].clips[column]
             .as_ref()
             .map(|c| &c.source)
         {
-            Some(Source::Milkdrop { family, .. }) => Some(family.clone()),
+            Some(Source::Milkdrop { family, input, .. }) => Some((family.clone(), *input)),
             _ => None,
         };
-        let milk_preview = milk_family.and_then(|family| self.milk_preview(ui.ctx(), &family));
+        let milk_input = milk.as_ref().map(|(_, input)| *input);
+        let milk_preview = milk.and_then(|(family, _)| self.milk_preview(ui.ctx(), &family));
         let clip = self.comp.layers[layer].clips[column].as_ref();
         let active = self.comp.layers[layer].active == Some(column);
         let selected = self.selected_clip == Some((layer, column));
@@ -409,8 +411,12 @@ impl VersoApp {
                     image.right_bottom(),
                 );
                 painter.rect_filled(label, 0.0, Color32::from_black_alpha(170));
+                if let Some(input) = milk_input {
+                    milkdrop_tag(&painter, image, label, input);
+                }
                 painter.text(
-                    label.left_center() + Vec2::new(4.0, 0.0),
+                    label.left_center()
+                        + Vec2::new(if milk_input.is_some() { 7.0 } else { 4.0 }, 0.0),
                     Align2::LEFT_CENTER,
                     &clip.name,
                     FontId::proportional(10.5),
@@ -467,6 +473,8 @@ impl VersoApp {
             Stroke::new(2.0, theme::accent())
         } else if selected {
             Stroke::new(1.5, theme::select())
+        } else if milk_input.is_some() {
+            Stroke::new(1.0, theme::milkdrop().gamma_multiply(0.7))
         } else {
             Stroke::new(1.0, theme::line())
         };
@@ -524,6 +532,7 @@ impl VersoApp {
                 self.props_tab = PropsTab::Clip;
             }
         }
+        self.milkdrop_menu(ui, layer, column);
         ui.separator();
         let launches = self.comp.layers[layer].launch_count(column);
         if ui
@@ -579,6 +588,28 @@ impl VersoApp {
             ui.label(egui::RichText::new("Crossfader").color(theme::text_dim()));
         });
     }
+}
+
+/// Marks a MilkDrop clip: a colored edge on its name strip `label`, and a
+/// tag in the top-right corner of `image` naming the input layer, if any.
+fn milkdrop_tag(painter: &egui::Painter, image: Rect, label: Rect, input: Option<usize>) {
+    let color = theme::milkdrop();
+    painter.rect_filled(
+        Rect::from_min_size(label.min, Vec2::new(3.0, label.height())),
+        0.0,
+        color,
+    );
+    let text = match input {
+        Some(layer) => format!("MD ← L{}", layer + 1),
+        None => "MD".to_owned(),
+    };
+    let galley = painter.layout_no_wrap(text, FontId::proportional(9.0), theme::bg_deep());
+    let tag = Rect::from_min_size(
+        image.right_top() + Vec2::new(-galley.size().x - 9.0, 3.0),
+        galley.size() + Vec2::new(6.0, 2.0),
+    );
+    painter.rect_filled(tag, 3.0, color);
+    painter.galley(tag.min + Vec2::new(3.0, 1.0), galley, theme::bg_deep());
 }
 
 /// UV rectangle that crops an image of `size` to fill `target` without

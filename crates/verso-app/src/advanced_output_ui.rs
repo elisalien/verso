@@ -69,7 +69,14 @@ impl AdvancedOutput {
     pub(crate) fn active_patterns(&self) -> Vec<(u64, Pattern)> {
         if self.identify_until.is_some_and(|t| Instant::now() < t) {
             return (self.setup.screens.iter().enumerate())
-                .map(|(i, s)| (s.id, Pattern::Identify { number: i as u32 + 1 }))
+                .map(|(i, s)| {
+                    (
+                        s.id,
+                        Pattern::Identify {
+                            number: i as u32 + 1,
+                        },
+                    )
+                })
                 .collect();
         }
         self.setup
@@ -250,7 +257,12 @@ impl VersoApp {
     fn pattern_controls(&mut self, ui: &mut egui::Ui) {
         let ao = &mut self.advanced;
         let live = ao.live;
-        let all = ao.setup.screens.iter().map(|s| ao.patterns.get(&s.id)).collect::<Vec<_>>();
+        let all = ao
+            .setup
+            .screens
+            .iter()
+            .map(|s| ao.patterns.get(&s.id))
+            .collect::<Vec<_>>();
         let shown = match all.first() {
             Some(first) if all.iter().all(|p| p == first) => first.map_or("Off", |p| p.label()),
             None => "Off",

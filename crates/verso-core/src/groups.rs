@@ -132,6 +132,34 @@ impl Composition {
             .expect("unbounded")
     }
 
+    /// Moves `layer` directly into `group` (`None`: top level). Refused when a
+    /// group would no longer be one adjacent block of layers.
+    pub(crate) fn set_layer_group(&mut self, layer: usize, group: Option<usize>) -> Result<()> {
+        if let Some(g) = group
+            && g >= self.groups.len()
+        {
+            return Err(Error::NoGroup(g));
+        }
+        let previous = self.layers.get(layer).ok_or(Error::NoLayer(layer))?.group;
+        self.layers[layer].group = group;
+        if !self.groups_adjacent() {
+            self.layers[layer].group = previous;
+            return Err(Error::NotAdjacent);
+        }
+        Ok(())
+    }
+
+    /// Whether the layers of every group form one adjacent block.
+    fn groups_adjacent(&self) -> bool {
+        (0..self.groups.len()).all(|g| {
+            let mut layers = self.group_layers(g);
+            let Some(first) = layers.next() else {
+                return true;
+            };
+            layers.enumerate().all(|(i, l)| l == first + i + 1)
+        })
+    }
+
     /// Removes `group`; its layers and groups move up to its parent.
     pub(crate) fn ungroup(&mut self, group: usize) -> Result<()> {
         let parent = self.groups.get(group).ok_or(Error::NoGroup(group))?.parent;
@@ -260,6 +288,40 @@ mod tests {
         assert_eq!(c.layers[0].active, None);
         assert_eq!(c.layer_gain(0), 0.0, "soloed group mutes others");
         assert!(c.layer_gain(1) > 0.0);
+    }
+
+    #[test]
+    fn set_layer_group_keeps_groups_adjacent() {
+        let mut c = comp(5);
+        c.apply(Command::AddGroup { layers: vec![1, 2] }).unwrap();
+        // Layer 4 is not next to the group.
+        assert!(matches!(
+            c.apply(Command::SetLayerGroup {
+                layer: 4,
+                group: Some(0)
+            }),
+            Err(Error::NotAdjacent)
+        ));
+        assert_eq!(c.layers[4].group, None);
+        c.apply(Command::SetLayerGroup {
+            layer: 3,
+            group: Some(0),
+        })
+        .unwrap();
+        // Taking out the middle layer would split the group.
+        assert!(matches!(
+            c.apply(Command::SetLayerGroup {
+                layer: 2,
+                group: None
+            }),
+            Err(Error::NotAdjacent)
+        ));
+        c.apply(Command::SetLayerGroup {
+            layer: 3,
+            group: None,
+        })
+        .unwrap();
+        assert_eq!(c.group_layers(0).collect::<Vec<_>>(), [1, 2]);
     }
 
     #[test]

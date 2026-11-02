@@ -419,6 +419,7 @@ impl VersoApp {
                     family,
                     variant,
                     blend,
+                    pattern,
                     input,
                     input_mix,
                 } => {
@@ -426,7 +427,7 @@ impl VersoApp {
                     if let Some(picked) = self.milkdrop_props(ui, &family, *variant) {
                         *variant = picked;
                     }
-                    self.milkdrop_playback(ui, layer, blend, input, input_mix);
+                    self.milkdrop_playback(ui, layer, blend, pattern, input, input_mix);
                 }
                 Source::Shader(effect) => {
                     ui.label("Source");
@@ -594,6 +595,7 @@ impl VersoApp {
             &mut self.files.tab,
             &[
                 (BrowserTab::Sources, "Sources"),
+                (BrowserTab::Milkdrop, "MilkDrop"),
                 (BrowserTab::Effects, "Effects"),
                 (BrowserTab::Files, "Files"),
                 (BrowserTab::Online, "Online"),
@@ -609,6 +611,13 @@ impl VersoApp {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.files.thumbnails, false, "List");
                     ui.selectable_value(&mut self.files.thumbnails, true, "Thumbnails");
+                    if self.files.thumbnails {
+                        let mut animate = !self.files.still_thumbnails;
+                        ui.checkbox(&mut animate, "Animate").on_hover_text(
+                            "Play every thumbnail. Off: thumbnails stay still and play under the pointer, which saves GPU time with many shaders.",
+                        );
+                        self.files.still_thumbnails = !animate;
+                    }
                 });
                 let shaders: Vec<SourceTemplate> = self
                     .renderer
@@ -632,8 +641,26 @@ impl VersoApp {
                         let shaders = shaders.into_iter().map(|t| (t, String::new())).collect();
                         self.browser_items(ui, shaders);
                     }
-                    self.milkdrop_browser(ui);
                 });
+            }
+            BrowserTab::Milkdrop => {
+                hint(
+                    ui,
+                    "MilkDrop presets blend into each other when launched on the same layer, and can read another layer as input.",
+                );
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.files.thumbnails, false, "List");
+                    ui.selectable_value(&mut self.files.thumbnails, true, "Thumbnails");
+                    if ui
+                        .button("Settings…")
+                        .on_hover_text("Blend, pattern and input mix for every MilkDrop clip")
+                        .clicked()
+                    {
+                        self.workspace
+                            .show_panel(crate::workspace::PanelKind::MilkdropSettings);
+                    }
+                });
+                self.milkdrop_browser(ui);
             }
             BrowserTab::Effects => self.effect_browser(ui),
             BrowserTab::Files => self.file_list(ui),
@@ -691,6 +718,11 @@ impl VersoApp {
             .unwrap_or_else(|| template.name.clone());
         let id = egui::Id::unique(("verso-browser", key));
         let (name, kind) = (template.name.clone(), source_kind(&template.source));
+        let kind_color = if matches!(template.source, Source::Milkdrop { .. }) {
+            theme::milkdrop()
+        } else {
+            theme::text_dim()
+        };
         let response = ui
             .dnd_drag_source(id, template.clone(), |ui| {
                 let (rect, response) =
@@ -713,7 +745,7 @@ impl VersoApp {
                     egui::Align2::RIGHT_CENTER,
                     kind,
                     egui::FontId::proportional(10.0),
-                    theme::text_dim(),
+                    kind_color,
                 );
                 response
             })
@@ -806,6 +838,7 @@ fn file_row(ui: &mut egui::Ui, path: &std::path::Path) {
 pub enum BrowserTab {
     #[default]
     Sources,
+    Milkdrop,
     Effects,
     Files,
     Online,
@@ -817,6 +850,8 @@ pub struct FileBrowser {
     pub tab: BrowserTab,
     /// Sources shown as a grid of thumbnails instead of a list.
     pub thumbnails: bool,
+    /// Thumbnails stay still and only play under the pointer.
+    pub still_thumbnails: bool,
     pub folder: Option<std::path::PathBuf>,
     pub entries: Vec<SourceTemplate>,
 }

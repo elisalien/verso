@@ -734,7 +734,10 @@ impl Slice {
                 let points = &self.contour.as_ref()?.input;
                 let first = *points.first()?;
                 let (min, max) = points.iter().fold((first, first), |(lo, hi), p| {
-                    ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+                    (
+                        [lo[0].min(p[0]), lo[1].min(p[1])],
+                        [hi[0].max(p[0]), hi[1].max(p[1])],
+                    )
                 });
                 Some([min, [max[0], min[1]], max, [min[0], max[1]]])
             }
@@ -773,9 +776,7 @@ pub fn edge_distance(quad: &Quad, p: [f32; 2]) -> f32 {
             let (a, b) = (quad[k], quad[(k + 1) % 4]);
             let e = [b[0] - a[0], b[1] - a[1]];
             let length = (e[0] * e[0] + e[1] * e[1]).sqrt();
-            (length > 0.0).then(|| {
-                side * (e[0] * (p[1] - a[1]) - e[1] * (p[0] - a[0])) / length
-            })
+            (length > 0.0).then(|| side * (e[0] * (p[1] - a[1]) - e[1] * (p[0] - a[0])) / length)
         })
         .fold(f32::MAX, f32::min)
 }
@@ -1023,7 +1024,12 @@ mod tests {
     fn two_projectors_share_their_overlap() {
         // Inputs 0–1100 and 900–2000: the overlap is 900–1100.
         let quads = [quad(0.0, 1100.0), quad(900.0, 2000.0)];
-        let at = |x: f32| (blend_weight(&quads, 0, [x, 50.0]), blend_weight(&quads, 1, [x, 50.0]));
+        let at = |x: f32| {
+            (
+                blend_weight(&quads, 0, [x, 50.0]),
+                blend_weight(&quads, 1, [x, 50.0]),
+            )
+        };
         assert_eq!(at(500.0), (1.0, 0.0));
         assert_eq!(at(1500.0), (0.0, 1.0));
         let (a, b) = at(1000.0);

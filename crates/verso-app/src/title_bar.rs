@@ -69,7 +69,11 @@ impl WindowSettings {
 /// they keep their own clicks.
 pub fn drag_area(ui: &mut egui::Ui) {
     let rect = ui.max_rect();
-    let response = ui.interact(rect, ui.scope_id().with("title bar drag"), Sense::click_and_drag());
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("title bar drag"),
+        Sense::click_and_drag(),
+    );
     if response.double_clicked() {
         toggle_maximized(ui.ctx());
     } else if response.drag_started() {

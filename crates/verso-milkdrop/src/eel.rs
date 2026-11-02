@@ -542,7 +542,7 @@ fn lex(src: &str) -> Result<Vec<Token>, String> {
             let value = match name.as_str() {
                 "pi" => std::f64::consts::PI,
                 "e" => std::f64::consts::E,
-                "phi" => 1.618_033_988_749_895,
+                "phi" => std::f64::consts::GOLDEN_RATIO,
                 n if n.starts_with('x') => i64::from_str_radix(&n[1..], 16)
                     .map_err(|_| format!("bad hex constant `${name}`"))?
                     as f64,

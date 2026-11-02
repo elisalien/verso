@@ -1032,7 +1032,16 @@ fn render_layer(
     // A clip change starts a transition from the last shown image.
     if active != state.shown {
         let had_content = state.shown.is_some() || state.transition.is_some();
-        state.transition = (layer.transition_time() > 0.0 && had_content).then(|| {
+        // Between two MilkDrop clips, the preset blend does the transition on
+        // the layer's shared feedback buffer instead of a crossfade.
+        let is_milk = |column: Option<usize>| {
+            column
+                .and_then(|c| layer.clips.get(c))
+                .and_then(Option::as_ref)
+                .is_some_and(|clip| matches!(clip.source, Source::Milkdrop { .. }))
+        };
+        let milk_blend = is_milk(state.shown) && is_milk(active);
+        state.transition = (layer.transition_time() > 0.0 && had_content && !milk_blend).then(|| {
             encoder.copy_texture_to_texture(
                 state.mixed.texture.as_image_copy(),
                 state.outgoing.texture.as_image_copy(),
@@ -1079,7 +1088,7 @@ fn render_layer(
                 input_mix,
                 ..
             },
-            Some(column),
+            Some(_),
         ) = (&clip.source, active)
         {
             let options = milkdrop::PlayOptions {
@@ -1087,11 +1096,13 @@ fn render_layer(
                 input: input.as_ref(),
                 input_mix: *input_mix,
             };
+            // One MilkDrop instance per layer: launching another MilkDrop clip
+            // blends from the image the previous one left in the buffer.
             milk.draw(
                 frame.device,
                 frame.queue,
                 encoder,
-                (index, column),
+                (index, 0),
                 family,
                 *variant,
                 options,

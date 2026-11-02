@@ -188,7 +188,9 @@ input. 147 preset families ship in `presets/milkdrop`, picked from the
 [Cream of the Crop](https://github.com/projectM-visualizer/presets-cream-of-the-crop)
 collection curated for NestDrop; remixes of one preset are grouped as one
 source with several presets. Credits: [presets/milkdrop/CREDITS.md](presets/milkdrop/CREDITS.md).
-Changing the preset of a clip blends like MilkDrop (Blend, in seconds). A
+Changing the preset of a clip blends like MilkDrop (Blend, in seconds), and so
+does launching another MilkDrop clip on the same layer: the new preset takes
+over the image the previous one left, instead of the layer's crossfade. A
 clip's Input feeds another layer into the preset, as its image textures and
 mixed into its feedback (Input Mix), like NestDrop's video input; set that
 layer's opacity to 0 to use it only as an input.

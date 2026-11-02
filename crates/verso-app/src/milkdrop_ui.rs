@@ -156,7 +156,7 @@ impl VersoApp {
     ) {
         ui.label("Blend");
         ui.add(egui::Slider::new(blend, 0.0..=10.0).suffix(" s"))
-            .on_hover_text("MilkDrop blend when the preset changes; 0 cuts");
+            .on_hover_text("MilkDrop blend when the preset changes or this clip is launched over another MilkDrop clip on the layer; 0 cuts");
         ui.end_row();
 
         let layer_name = |i: usize| {

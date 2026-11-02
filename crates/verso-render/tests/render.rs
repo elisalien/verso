@@ -1191,3 +1191,56 @@ fn slices_show_layers_and_groups() {
     // A layer that does not exist shows black.
     assert_eq!(pixel(ids[3]), [0, 0, 0]);
 }
+
+#[test]
+fn milkdrop_clips_on_one_layer_blend() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join("verso-render-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = milk_family(&dir);
+    // Red preset in column 1, blue in column 2, on the same layer.
+    let mut comp = Composition::new("t", 1, 2);
+    comp.width = 64;
+    comp.height = 36;
+    for (column, variant) in [(0, 0), (1, 1)] {
+        let mut source = Source::milkdrop("Test/milk-family", variant);
+        if let Source::Milkdrop { blend, .. } = &mut source {
+            *blend = 1.0;
+        }
+        comp.apply(Command::SetClip {
+            layer: 0,
+            column,
+            clip: Some(Clip::new("Milk", source)),
+        })
+        .unwrap();
+    }
+    // A layer crossfade is set; between MilkDrop clips the preset blend wins.
+    comp.layers[0].transition = 5.0;
+    comp.apply(Command::TriggerClip { layer: 0, column: 0 }).unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (comp.width, comp.height));
+    renderer.milkdrop_mut().library_mut().load_file(&path).unwrap();
+    let mut t = 0.0;
+    let mut frame = |renderer: &mut Renderer, comp: &Composition| {
+        t += 0.1;
+        mean_rgb(&render_frame(&gpu, renderer, comp, &[], t))
+    };
+    for _ in 0..4 {
+        frame(&mut renderer, &comp);
+    }
+    comp.apply(Command::TriggerClip { layer: 0, column: 1 }).unwrap();
+    let mut seen_mix = false;
+    for _ in 0..8 {
+        let c = frame(&mut renderer, &comp);
+        seen_mix |= c[0] > 20.0 && c[2] > 20.0;
+    }
+    assert!(seen_mix, "no frame mixed both presets");
+    // Done after the 1 s MilkDrop blend, well before the 5 s crossfade.
+    for _ in 0..4 {
+        frame(&mut renderer, &comp);
+    }
+    let blue = frame(&mut renderer, &comp);
+    assert!(blue[2] > 200.0 && blue[0] < 20.0, "{blue:?}");
+}

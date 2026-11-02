@@ -259,9 +259,11 @@ EEL d'origine + shaders warp/comp déjà traduits de HLSL en GLSL).
   → `textureLod`) puis traduits en WGSL par naga.
 - Familles : un fichier JSON regroupe les remixes d'un même preset
   (variantes). Le panneau du clip choisit la variante (◀ ▶, liste).
-- Fondu MilkDrop : changer de variante garde le tampon de rétroaction et
-  fond l'ancien preset vers le nouveau pendant `blend` secondes (2,5 par
-  défaut, 0 = coupe). Motif de fondu par sommet tiré au hasard (balayage,
+- Fondu MilkDrop : une instance par couche. Changer de variante, ou lancer
+  un autre clip MilkDrop sur la même couche, garde le tampon de rétroaction
+  et fond l'ancien preset vers le nouveau pendant `blend` secondes (celui du
+  clip entrant, 2,5 par défaut, 0 = coupe) ; le fondu enchaîné de la couche
+  est alors ignoré. Motif de fondu par sommet tiré au hasard (balayage,
   plasma, radial), maillage warp mélangé, warp et comp du nouveau preset
   dessinés en fondu sur l'ancien, sprites des deux presets pondérés.
 - Entrée : `input` désigne une autre couche dont l'image (convertie en

@@ -4,18 +4,40 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.3. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.3.0, first public release. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP, Resolume DXV3 and ProRes), effect chains (WGSL and ISF) on
 > clips, layers, groups and the composition, clip transitions and layer groups.
 > OSC and MIDI control with MIDI learn, audio analysis, tap tempo, LFO or audio
 > modulation and Lua scripts.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
-## Requirements
+**Website and user guide, in English and French:
+<https://elisalien.github.io/verso/>** ([français](https://elisalien.github.io/verso/fr/))
+
+## Download
+
+Packages for every system are on the
+[latest release](https://github.com/elisalien/verso/releases/latest):
+
+| System | Package |
+|---|---|
+| Windows 10/11 x64 | Portable `.zip`, FFmpeg included |
+| macOS 11+, Apple Silicon and Intel | `.dmg` (first launch: right-click › Open; `brew install ffmpeg`) |
+| Fedora / Ubuntu, Debian | `.rpm` / `.deb` |
+| Any Linux x86_64 | Portable `.tar.gz`, FFmpeg included |
+
+Pushing a `v*` tag builds them all and opens a draft release
+([.github/workflows/release.yml](.github/workflows/release.yml)); the notes come
+from `docs/releases/<tag>.md`. The website is the [site](site) folder, published
+by [.github/workflows/pages.yml](.github/workflows/pages.yml).
+
+## Build from source
+
+Requirements:
 
 - Rust (stable)
-- FFmpeg (`ffmpeg` and `ffprobe`) on `PATH` for video, or set `VERSO_FFMPEG` and
-  `VERSO_FFPROBE` to their paths
+- FFmpeg (`ffmpeg` and `ffprobe`) for video: next to the executable, on
+  `PATH`, or set `VERSO_FFMPEG` and `VERSO_FFPROBE` to their paths
 
 ## Run
 

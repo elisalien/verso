@@ -3618,7 +3618,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "verso-app"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "display-info",
  "eframe",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "verso-control"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "midir",
@@ -3653,7 +3653,7 @@ dependencies = [
 
 [[package]]
 name = "verso-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ron",
  "serde",
@@ -3662,7 +3662,7 @@ dependencies = [
 
 [[package]]
 name = "verso-io"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "libloading 0.9.0",
  "roxmltree",
@@ -3673,7 +3673,7 @@ dependencies = [
 
 [[package]]
 name = "verso-mcp"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "verso-core",
@@ -3681,7 +3681,7 @@ dependencies = [
 
 [[package]]
 name = "verso-media"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3689,7 +3689,7 @@ dependencies = [
 
 [[package]]
 name = "verso-milkdrop"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "serde",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "verso-online"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3708,7 +3708,7 @@ dependencies = [
 
 [[package]]
 name = "verso-render"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "image",
@@ -3723,7 +3723,7 @@ dependencies = [
 
 [[package]]
 name = "verso-script"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "mlua",
  "verso-core",

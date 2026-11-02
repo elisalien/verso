@@ -1,0 +1,154 @@
+name: Release
+
+# Pushing a tag such as v0.3.0 builds Verso for Windows, Linux and macOS and
+# opens a draft GitHub release with the packages and their checksums. Review
+# the draft on GitHub, then publish it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build (must exist), e.g. v0.3.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked -p verso-app
+      - name: Package
+        run: |
+          version=${TAG#v}
+          name=Verso-$version-windows-x64
+          bash packaging/stage.sh target/release/verso.exe "$version" "dist/$name"
+          # FFmpeg (GPL build) next to verso.exe, so video plays out of the box.
+          curl -sSfL -o ffmpeg.zip \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+          7z x -offmpeg ffmpeg.zip > /dev/null
+          cp ffmpeg/*/bin/ffmpeg.exe ffmpeg/*/bin/ffprobe.exe "dist/$name/"
+          cp ffmpeg/*/LICENSE.txt "dist/$name/FFMPEG-LICENSE.txt"
+          cd dist && 7z a -tzip "$name.zip" "$name" > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  linux:
+    # 22.04 rather than latest: an older glibc lets the binary run on more
+    # distributions (Debian 12, Ubuntu 22.04, every current Fedora).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Linux packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libgl1-mesa-dev libssl-dev libxcb1-dev libxcb-randr0-dev pkg-config rpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked -p verso-app
+      - name: Package
+        run: |
+          version=${TAG#v}
+          name=Verso-$version-linux-x86_64
+          bash packaging/stage.sh target/release/verso "$version" "dist/$name"
+          mkdir -p packages
+          bash packaging/linux/build-packages.sh "$version" "dist/$name" packages
+          # The portable archive also carries a static FFmpeg and the launcher.
+          curl -sSfL -o ffmpeg.tar.xz \
+            https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          mkdir ffmpeg && tar -xJf ffmpeg.tar.xz -C ffmpeg --strip-components=1
+          cp ffmpeg/bin/ffmpeg ffmpeg/bin/ffprobe "dist/$name/"
+          cp ffmpeg/LICENSE.txt "dist/$name/FFMPEG-LICENSE.txt"
+          cp packaging/linux/verso.desktop packaging/verso.svg "dist/$name/"
+          tar -C dist -czf "packages/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: packages/*
+
+  macos:
+    # One universal app: Apple Silicon and Intel, built on an Apple Silicon
+    # runner and joined with lipo.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked -p verso-app --target aarch64-apple-darwin
+          cargo build --release --locked -p verso-app --target x86_64-apple-darwin
+          lipo -create -output verso \
+            target/aarch64-apple-darwin/release/verso \
+            target/x86_64-apple-darwin/release/verso
+      - name: Package
+        run: |
+          version=${TAG#v}
+          name=Verso-$version-macos-universal
+          app=dmg/Verso.app
+          mkdir -p "$app/Contents/Resources"
+          # Verso looks for effects and presets next to its executable.
+          bash packaging/stage.sh verso "$version" "$app/Contents/MacOS"
+          mv "$app/Contents/MacOS/README.txt" "$app/Contents/MacOS/LICENSE.txt" dmg/
+          sed "s/@VERSION@/$version/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          # Ad-hoc signature: required to launch on Apple Silicon. The app is
+          # not notarized, so the first launch goes through right-click > Open.
+          codesign --force --deep --sign - "$app"
+          ln -s /Applications dmg/Applications
+          mkdir -p packages
+          hdiutil create -volname "Verso $version" -srcfolder dmg -format UDZO \
+            "packages/$name.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: packages/*.dmg
+
+  release:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Checksums
+        run: cd packages && sha256sum * > SHA256SUMS.txt
+      - name: Draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Verso ${{ env.TAG }}
+          body_path: docs/releases/${{ env.TAG }}.md
+          draft: true
+          files: packages/*

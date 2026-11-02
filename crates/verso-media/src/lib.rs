@@ -3,8 +3,9 @@
 //! Still images decode with the `image` crate. Video decodes in an `ffmpeg`
 //! child process that writes raw RGBA frames to a pipe, so every codec FFmpeg
 //! knows (HAP, Resolume DXV3, H.264, H.265, ProRes, …) plays without linking
-//! libav. The binaries are found on `PATH`, or through `VERSO_FFMPEG` and
-//! `VERSO_FFPROBE`.
+//! libav. The binaries are found through `VERSO_FFMPEG` and `VERSO_FFPROBE`,
+//! next to the Verso executable (release archives ship them there), or on
+//! `PATH`.
 
 mod player;
 
@@ -79,8 +80,8 @@ pub struct VideoInfo {
     pub duration: Option<f64>,
 }
 
-/// Path of an FFmpeg tool: `VERSO_<NAME>` if set, else the first match on
-/// `PATH`, else the bare name.
+/// Path of an FFmpeg tool: `VERSO_<NAME>` if set, else the copy next to the
+/// executable, else the first match on `PATH`, else the bare name.
 ///
 /// `PATH` is split by hand: `std::env::split_paths` and `Command` treat a stray
 /// `"` in one entry as an open quote and lose every entry after it.
@@ -90,6 +91,13 @@ pub fn tool_path(name: &str) -> String {
         return path;
     }
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&file)))
+        .filter(|path| path.is_file())
+    {
+        return bundled.to_string_lossy().into_owned();
+    }
     let separator = if cfg!(windows) { ';' } else { ':' };
     let paths = std::env::var("PATH").unwrap_or_default();
     paths

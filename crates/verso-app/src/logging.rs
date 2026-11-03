@@ -70,10 +70,8 @@ pub fn init() {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mcp = verso_mcp::requested_port(&args, std::env::var("VERSO_MCP_PORT").ok().as_deref());
-    let name = match mcp {
-        Some(port) => format!("verso-mcp-{port}.log"),
+    let name = match instance_tag() {
+        Some(tag) => format!("verso-{tag}.log"),
         None => "verso.log".to_owned(),
     };
     let path = dir.join(&name);
@@ -104,28 +102,70 @@ pub fn init() {
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        log::error!("panic: {info}");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        log::error!(
+            "panic: {info}
+{backtrace}"
+        );
         logger.flush();
+        // A separate report, so the cause survives the next run's log.
+        let report = format!(
+            "Verso {} crashed: {info}
+
+{backtrace}",
+            env!("CARGO_PKG_VERSION")
+        );
+        let _ = std::fs::write(dir.join("crash.log"), report);
         default_hook(info);
     }));
+}
+
+/// `mcp-<port>` for an instance started with an MCP server, which keeps its
+/// log and recovery copy apart so a test instance never replaces the files
+/// of the one in use.
+pub fn instance_tag() -> Option<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    verso_mcp::requested_port(&args, std::env::var("VERSO_MCP_PORT").ok().as_deref())
+        .map(|port| format!("mcp-{port}"))
 }
 
 /// GPU errors logged before the rest are dropped, so a broken resource used
 /// every frame does not fill the log.
 const GPU_ERRORS_LOGGED: usize = 20;
 
+/// Whether the GPU device was lost, shared with wgpu's callback.
+#[derive(Clone, Default)]
+pub struct GpuState {
+    lost: std::sync::Arc<Mutex<Option<String>>>,
+}
+
+impl GpuState {
+    /// Why the GPU device was lost, if it was.
+    pub fn lost(&self) -> Option<String> {
+        self.lost.lock().ok().and_then(|l| l.clone())
+    }
+}
+
 /// Logs GPU errors nothing else caught, and a lost device. In release builds
 /// an uncaptured error is logged instead of panicking, so one bad resource
 /// does not stop a show; debug builds keep the wgpu panic.
-pub fn watch_gpu(device: &eframe::wgpu::Device) {
+pub fn watch_gpu(device: &eframe::wgpu::Device) -> GpuState {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    device.set_device_lost_callback(|reason, message| {
+    let state = GpuState::default();
+    let lost = state.lost.clone();
+    device.set_device_lost_callback(move |reason, message| {
+        if reason == eframe::wgpu::DeviceLostReason::Destroyed {
+            return; // Normal shutdown.
+        }
         log::error!("GPU device lost ({reason:?}): {message}");
+        if let Ok(mut lost) = lost.lock() {
+            *lost = Some(message);
+        }
     });
     if cfg!(debug_assertions) {
-        return;
+        return state;
     }
     let count = AtomicUsize::new(0);
     device.on_uncaptured_error(Arc::new(move |error| {
@@ -135,4 +175,5 @@ pub fn watch_gpu(device: &eframe::wgpu::Device) {
             _ => {}
         }
     }));
+    state
 }

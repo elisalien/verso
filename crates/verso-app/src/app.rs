@@ -5,29 +5,19 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, TextureId};
 use eframe::{egui_wgpu, wgpu};
 use verso_core::output::InputSource;
-use verso_core::{Command, CommandKind, Composition, Source};
+use verso_core::{Clip, Command, CommandKind, Composition, IndexChanges, Source};
 use verso_render::{Renderer, Thumbnails};
 
-use crate::dialogs::{DialogKind, Dialogs};
+use crate::dialogs::{FileDialogs, FileRequest};
+use crate::history::History;
 use crate::media::Media;
+use crate::prefs::{Prefs, recovery};
 use crate::theme;
 
 mod mcp;
 
-/// Snapshots kept for undo.
-const UNDO_DEPTH: usize = 50;
 /// Status messages kept in the log.
 const LOG_LINES: usize = 200;
-/// Unsaved changes are copied to a `.verso.bak` file this often.
-const AUTOSAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// What to do once the user has answered the "unsaved changes" question.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum After {
-    New,
-    Open,
-    Quit,
-}
 
 /// Size of the live preview rendered for each clip cell.
 const CELL_THUMB: (u32, u32) = (192, 108);
@@ -84,16 +74,13 @@ pub struct VersoApp {
     /// Layers whose clip was launched again since the last media update.
     restarted: Vec<usize>,
     pub(crate) files: crate::panels::FileBrowser,
-    start: Instant,
+    pub(crate) start: Instant,
     last_frame: Instant,
     /// Seconds since the previous frame.
     frame_dt: f64,
     path: Option<PathBuf>,
-    /// Last autosave, or last save / open, after which a backup is pointless.
+    /// Last recovery copy, or last save / open, after which a copy is pointless.
     last_autosave: Instant,
-    /// MCP port of a test instance, which backs up to its own files so it
-    /// never replaces the backup of the instance in use.
-    mcp_port: Option<u16>,
     pub(crate) selected_clip: Option<(usize, usize)>,
     pub(crate) selected_layer: usize,
     /// Layers picked with Ctrl/Shift-click, for grouping.
@@ -119,20 +106,25 @@ pub struct VersoApp {
     pub(crate) milk_prefs: crate::milkdrop_settings::MilkPrefs,
     /// MCP server, when started with `--mcp`.
     mcp: mcp::McpState,
-    /// Commands collected while drawing, applied at the end of the frame.
-    pending: Vec<Command>,
+    /// Commands collected while drawing, applied at the end of the frame,
+    /// with whether each is a user edit (undoable) rather than a live action.
+    pending: Vec<(Command, bool)>,
     /// Whether the composition changed since it was saved or opened.
     pub(crate) dirty: bool,
-    undo: Vec<Composition>,
-    redo: Vec<Composition>,
-    /// Question shown when an action would lose unsaved changes.
-    confirm: Option<After>,
-    /// Action to run once the save in progress succeeds.
-    after_save: Option<After>,
-    /// Set when the user chose to quit: the next close request goes through.
-    quitting: bool,
-    /// File dialogs running on their own thread.
-    pub(crate) dialogs: Dialogs,
+    pub(crate) history: History,
+    pub(crate) prefs: Prefs,
+    /// While on, only live actions and performance controls change the
+    /// composition: no accidental edits during a show.
+    pub(crate) live_lock: bool,
+    pub(crate) clipboard: Option<Clip>,
+    /// Modal question: unsaved changes, crash recovery, missing media.
+    pub(crate) dialog: Option<Dialog>,
+    pub(crate) prefs_open: bool,
+    /// Set once the user agreed to close with unsaved changes.
+    quit_confirmed: bool,
+    /// Native file dialogs, polled every frame.
+    pub(crate) file_dialogs: FileDialogs,
+    gpu: crate::logging::GpuState,
     /// Status messages with the time they appeared, newest last.
     pub(crate) log: VecDeque<(Instant, String)>,
     last_status: String,
@@ -140,6 +132,122 @@ pub struct VersoApp {
     title: String,
     /// Resolution being typed or dragged, applied when the edit ends.
     pub(crate) edit_size: Option<(u32, u32)>,
+    /// Prints every command to stderr (`VERSO_TRACE=1`), for debugging.
+    trace: bool,
+}
+
+/// Keyboard shortcuts, handled after input is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shortcut {
+    Undo,
+    Redo,
+    Save,
+    SaveAs,
+    Open,
+    New,
+    DuplicateLayer,
+    LiveLock,
+    ClearAll,
+    EscapeHint,
+    Output,
+    Tap,
+    Learn,
+    Copy,
+    Cut,
+    Paste,
+    ClearCell,
+    Group,
+    Ungroup,
+}
+
+/// Commands a performer may still send while the live lock is on.
+fn allowed_when_locked(command: &Command) -> bool {
+    use verso_core::EffectEdit;
+    command.kind() == CommandKind::Play
+        || matches!(
+            command,
+            Command::SetLayerOpacity { .. }
+                | Command::SetLayerBypass { .. }
+                | Command::SetLayerSolo { .. }
+                | Command::SetLayerFader { .. }
+                | Command::SetGroupOpacity { .. }
+                | Command::SetGroupBypass { .. }
+                | Command::SetMasterOpacity(_)
+                | Command::SetCrossfader(_)
+                | Command::SetBpm(_)
+                | Command::ResetLaunchCount { .. }
+                | Command::EditEffects {
+                    edit: EffectEdit::SetParam { .. } | EffectEdit::SetBypass { .. },
+                    ..
+                }
+        )
+}
+
+/// What to do once the user decided about unsaved changes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AfterSave {
+    New,
+    Open,
+    OpenPath(PathBuf),
+    Quit,
+}
+
+/// A modal question.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Dialog {
+    /// Unsaved changes would be lost by `AfterSave`.
+    Unsaved(AfterSave),
+    /// The previous run crashed with unsaved work.
+    Recover,
+    /// Media files of the opened composition are missing.
+    Missing(usize),
+}
+
+/// Media files the composition uses that do not exist.
+fn missing_media(comp: &Composition) -> Vec<PathBuf> {
+    let mut missing: Vec<PathBuf> = comp
+        .layers
+        .iter()
+        .flat_map(|l| l.clips.iter().flatten())
+        .filter_map(|c| c.source.path())
+        .filter(|p| !p.exists())
+        .map(|p| p.to_owned())
+        .collect();
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
+/// Finds files by name under `dir`, a few levels deep.
+fn find_files(
+    dir: &std::path::Path,
+    names: &[std::ffi::OsString],
+) -> HashMap<std::ffi::OsString, PathBuf> {
+    let mut found = HashMap::new();
+    let mut stack = vec![(dir.to_owned(), 0)];
+    let mut visited = 0;
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > 50_000 {
+                return found;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < 5 {
+                    stack.push((path, depth + 1));
+                }
+            } else if let Some(name) = path.file_name()
+                && names.iter().any(|n| n == name)
+            {
+                found.entry(name.to_owned()).or_insert(path);
+            }
+        }
+    }
+    found
 }
 
 impl VersoApp {
@@ -151,7 +259,7 @@ impl VersoApp {
             .clone()
             .ok_or("Verso needs the wgpu renderer")?;
         let device = &render_state.device;
-        crate::logging::watch_gpu(device);
+        let gpu = crate::logging::watch_gpu(device);
         let comp = Composition::demo();
         let mut renderer = Renderer::new(device, (comp.width, comp.height));
         let effect_errors: Vec<String> = effect_dirs()
@@ -168,6 +276,13 @@ impl VersoApp {
             wgpu::FilterMode::Linear,
         );
         theme::load(&cc.egui_ctx);
+        let prefs = Prefs::load();
+        cc.egui_ctx.set_zoom_factor(prefs.ui_scale);
+        let crashed = recovery::start();
+        let reopen = (prefs.reopen_last && !crashed)
+            .then(|| prefs.recent.first().cloned())
+            .flatten()
+            .filter(|p| p.is_file());
         let ffmpeg = verso_media::ffmpeg_available();
         let (mcp, mcp_message) = mcp::McpState::start(&cc.egui_ctx);
         let mut app = Self {
@@ -195,7 +310,6 @@ impl VersoApp {
             frame_dt: 0.0,
             path: None,
             last_autosave: Instant::now(),
-            mcp_port: mcp::requested_port(),
             selected_clip: None,
             selected_layer: 0,
             selected_layers: Default::default(),
@@ -213,17 +327,21 @@ impl VersoApp {
                 .unwrap_or_default(),
             pending: Vec::new(),
             dirty: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            confirm: None,
-            after_save: None,
-            quitting: false,
-            dialogs: Dialogs::default(),
+            history: History::default(),
+            prefs,
+            live_lock: false,
+            clipboard: None,
+            dialog: crashed.then_some(Dialog::Recover),
+            prefs_open: false,
+            quit_confirmed: false,
+            file_dialogs: FileDialogs::default(),
+            gpu,
             log: VecDeque::new(),
             last_status: String::new(),
             log_open: false,
             title: String::new(),
             edit_size: None,
+            trace: std::env::var_os("VERSO_TRACE").is_some(),
             controls: Default::default(),
             scripts: Default::default(),
             outputs: Default::default(),
@@ -239,56 +357,10 @@ impl VersoApp {
         if !ffmpeg {
             app.status = "FFmpeg not found: videos will not play. Install FFmpeg (ffmpeg and ffprobe on PATH) or set VERSO_FFMPEG and VERSO_FFPROBE.".into();
         }
+        if let Some(path) = reopen {
+            app.open_path(path);
+        }
         Ok(app)
-    }
-
-    /// Clip shown in the Preview monitor: the one under the pointer, else the
-    /// selected one.
-    /// Composition the undo stack and the dirty flag compare against.
-    fn remember_for_undo(&mut self) {
-        self.undo.push(self.comp.clone());
-        if self.undo.len() > UNDO_DEPTH {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-    }
-
-    /// Restores `snapshot`, keeping what plays now so the show does not jump.
-    fn restore(&mut self, mut snapshot: Composition) -> Composition {
-        for (restored, current) in snapshot.layers.iter_mut().zip(&self.comp.layers) {
-            if let Some(column) = current.active
-                && restored.clips.get(column).is_some_and(Option::is_some)
-            {
-                restored.active = Some(column);
-            }
-            restored.launches = current.launches.clone();
-        }
-        let previous = std::mem::replace(&mut self.comp, snapshot);
-        self.dirty = true;
-        self.pending.clear();
-        previous
-    }
-
-    pub(crate) fn undo(&mut self) {
-        match self.undo.pop() {
-            Some(snapshot) => {
-                let previous = self.restore(snapshot);
-                self.redo.push(previous);
-                self.status = "Undo".into();
-            }
-            None => self.status = "Nothing to undo.".into(),
-        }
-    }
-
-    pub(crate) fn redo(&mut self) {
-        match self.redo.pop() {
-            Some(snapshot) => {
-                let previous = self.restore(snapshot);
-                self.undo.push(previous);
-                self.status = "Redo".into();
-            }
-            None => self.status = "Nothing to redo.".into(),
-        }
     }
 
     /// Draws the hovered layer or column for the Preview monitor.
@@ -400,9 +472,28 @@ impl VersoApp {
             .or(self.selected_clip)
     }
 
-    /// Queues a change; it applies at the end of the frame.
+    /// Shows `message` in the status bar; it also goes to the message log
+    /// and the log file.
+    pub(crate) fn problem(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        log::warn!("{message}");
+        self.status = message;
+    }
+
+    /// Queues a change made in the interface; it applies at the end of the
+    /// frame and can be undone (except live actions such as launching).
     pub(crate) fn send(&mut self, command: Command) {
-        self.pending.push(command);
+        if self.live_lock && !allowed_when_locked(&command) {
+            self.status = "Live lock is on: unlock (Ctrl+Shift+L) to edit".into();
+            return;
+        }
+        self.pending.push((command, true));
+    }
+
+    /// Queues a live change from a controller, script or shortcut. Never
+    /// recorded for undo and allowed under the live lock.
+    pub(crate) fn send_live(&mut self, command: Command) {
+        self.pending.push((command, false));
     }
 
     /// Text of the window title bar: composition name and unsaved marker.
@@ -412,22 +503,10 @@ impl VersoApp {
     }
 
     fn apply_pending(&mut self) {
-        let (edits, changes) = self.pending.iter().map(Command::kind).fold(
-            (false, false),
-            |(edits, changes), kind| {
-                (
-                    edits || kind == CommandKind::Edit,
-                    changes || kind != CommandKind::Play,
-                )
-            },
-        );
-        if edits {
-            self.remember_for_undo();
-        }
-        if changes {
-            self.dirty = true;
-        }
-        for command in std::mem::take(&mut self.pending) {
+        for (command, edit) in std::mem::take(&mut self.pending) {
+            if self.trace {
+                eprintln!("command (edit: {edit}): {command:?}");
+            }
             // Launching a clip again restarts it from the beginning.
             match &command {
                 Command::TriggerClip { layer, column } => {
@@ -444,10 +523,75 @@ impl VersoApp {
                 }
                 _ => {}
             }
-            if let Err(e) = self.comp.apply(command) {
-                self.status = e.to_string();
+            let changes = self.comp.index_changes(&command);
+            let kind = command.kind();
+            let undoable = edit && kind != CommandKind::Play;
+            let before = undoable.then(|| self.history.snapshot(&self.comp, &command));
+            match self.comp.apply(command) {
+                Ok(()) => {
+                    if let Some(Some(step)) = before {
+                        self.history.push(step);
+                    }
+                    if kind != CommandKind::Play {
+                        self.dirty = true;
+                    }
+                    if let Some(changes) = changes {
+                        self.follow(&changes);
+                    }
+                }
+                Err(e) => self.status = e.to_string(),
             }
         }
+        self.fix_selection();
+    }
+
+    /// Moves state kept per layer or column outside the composition.
+    fn follow(&mut self, changes: &IndexChanges) {
+        self.renderer.follow(&self.render_state.device, changes);
+        self.media.follow(changes);
+        let map_layer = |l: usize| changes.layers.get(l).copied().flatten();
+        let map_column = |c: usize| changes.columns.get(c).copied().flatten();
+        if let Some(l) = map_layer(self.selected_layer) {
+            self.selected_layer = l;
+        }
+        self.selected_clip = self
+            .selected_clip
+            .and_then(|(l, c)| Some((map_layer(l)?, map_column(c)?)));
+    }
+
+    pub(crate) fn undo(&mut self) {
+        let label = self.history.undo_label().map(str::to_owned);
+        if let Some(restored) = self.history.undo(&self.comp) {
+            self.restore(restored);
+            self.status = format!("Undo {}", label.unwrap_or_default());
+        }
+    }
+
+    pub(crate) fn redo(&mut self) {
+        let label = self.history.redo_label().map(str::to_owned);
+        if let Some(restored) = self.history.redo(&self.comp) {
+            self.restore(restored);
+            self.status = format!("Redo {}", label.unwrap_or_default());
+        }
+    }
+
+    /// Replaces the composition with a version from the history, keeping
+    /// what is playing now: undo never launches or stops clips.
+    fn restore(&mut self, mut restored: Composition) {
+        for (layer, current) in restored.layers.iter_mut().zip(&self.comp.layers) {
+            if layer.clips.len() == current.clips.len() {
+                layer.active = current
+                    .active
+                    .filter(|&c| layer.clips.get(c).is_some_and(Option::is_some));
+                layer.launches = current.launches.clone();
+            }
+        }
+        self.comp = restored;
+        self.dirty = true;
+        self.fix_selection();
+    }
+
+    fn fix_selection(&mut self) {
         // Keep selections valid after layers, groups or columns change.
         let (layers, groups) = (self.comp.layers.len(), self.comp.groups.len());
         self.selected_layers.retain(|&l| l < layers);
@@ -508,9 +652,17 @@ impl VersoApp {
                 .any(|s| matches!(s.input_source(), InputSource::Group(_)));
         self.renderer.keep_group_images(groups_shown);
         let views = self.media.layer_views(&self.comp);
-        self.renderer
-            .render(device, queue, &mut encoder, &rendered, &views, time);
-        drop(views);
+        let outgoing = self.media.outgoing_views();
+        self.renderer.render_with_outgoing(
+            device,
+            queue,
+            &mut encoder,
+            &rendered,
+            &views,
+            &outgoing,
+            time,
+        );
+        drop((views, outgoing));
         for error in self.renderer.take_errors() {
             log::warn!("{error}");
             self.status = error;
@@ -609,115 +761,197 @@ impl VersoApp {
                 self.output_texture,
             );
         }
+        drop(egui_renderer);
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() || self.dialog.is_some() || self.file_dialogs.is_open() {
             return;
         }
-        let keys = [
-            egui::Key::Num1,
-            egui::Key::Num2,
-            egui::Key::Num3,
-            egui::Key::Num4,
-            egui::Key::Num5,
-            egui::Key::Num6,
-            egui::Key::Num7,
-            egui::Key::Num8,
-            egui::Key::Num9,
+        use egui::{Key, Modifiers};
+        let digits = [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
         ];
         let columns = self.comp.columns.len();
-        let (mut commands, mut toggle_output, mut tap, mut learn) =
-            (Vec::new(), false, false, false);
-        let (mut group, mut ungroup) = (false, false);
-        let shortcut = |key, shift| {
-            egui::KeyboardShortcut::new(
-                if shift {
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT
-                } else {
-                    egui::Modifiers::COMMAND
-                },
-                key,
-            )
-        };
-        let (save, save_as, open, new, undo, redo) = ctx.input_mut(|i| {
-            (
-                i.consume_shortcut(&shortcut(egui::Key::S, false)),
-                i.consume_shortcut(&shortcut(egui::Key::S, true)),
-                i.consume_shortcut(&shortcut(egui::Key::O, false)),
-                i.consume_shortcut(&shortcut(egui::Key::N, false)),
-                i.consume_shortcut(&shortcut(egui::Key::Z, false)),
-                i.consume_shortcut(&shortcut(egui::Key::Z, true))
-                    || i.consume_shortcut(&shortcut(egui::Key::Y, false)),
-            )
-        });
-        if save || save_as {
-            self.save(save_as);
-        }
-        if open {
-            self.request(After::Open);
-        }
-        if new {
-            self.request(After::New);
-        }
-        if undo {
-            self.undo();
-        }
-        if redo {
-            self.redo();
-        }
-        ctx.input(|i| {
-            for (column, key) in keys.iter().enumerate() {
-                if i.key_pressed(*key) && column < columns {
-                    commands.push(Command::TriggerColumn(column));
+        let mut live = Vec::new();
+        let mut actions = Vec::new();
+        ctx.input_mut(|i| {
+            let mut shortcut = |i: &mut egui::InputState, modifiers, key, action: Shortcut| {
+                if i.consume_key(modifiers, key) {
+                    actions.push(action);
+                }
+            };
+            let command = Modifiers::COMMAND;
+            let shift_command = Modifiers::COMMAND | Modifiers::SHIFT;
+            shortcut(i, shift_command, Key::Z, Shortcut::Redo);
+            shortcut(i, command, Key::Y, Shortcut::Redo);
+            shortcut(i, command, Key::Z, Shortcut::Undo);
+            shortcut(i, shift_command, Key::S, Shortcut::SaveAs);
+            shortcut(i, command, Key::S, Shortcut::Save);
+            shortcut(i, command, Key::O, Shortcut::Open);
+            shortcut(i, command, Key::N, Shortcut::New);
+            shortcut(i, command, Key::D, Shortcut::DuplicateLayer);
+            shortcut(i, shift_command, Key::L, Shortcut::LiveLock);
+            shortcut(i, Modifiers::SHIFT, Key::Escape, Shortcut::ClearAll);
+            shortcut(i, shift_command, Key::G, Shortcut::Ungroup);
+            shortcut(i, command, Key::G, Shortcut::Group);
+            for event in &i.events {
+                match event {
+                    egui::Event::Copy => actions.push(Shortcut::Copy),
+                    egui::Event::Cut => actions.push(Shortcut::Cut),
+                    egui::Event::Paste(_) => actions.push(Shortcut::Paste),
+                    _ => {}
                 }
             }
-            if i.key_pressed(egui::Key::Escape) {
-                commands.push(Command::ClearAll);
+            if i.modifiers.is_none() || i.modifiers == Modifiers::SHIFT {
+                // 1–9 launch columns 1–9; with Shift, columns 10–18.
+                let page = if i.modifiers.shift { 9 } else { 0 };
+                for (n, key) in digits.iter().enumerate() {
+                    if i.key_pressed(*key) && page + n < columns {
+                        live.push(Command::TriggerColumn(page + n));
+                    }
+                }
             }
-            if i.key_pressed(egui::Key::Space) {
-                commands.push(Command::GoNextCue);
+            if i.modifiers.is_none() {
+                for (key, action) in [
+                    (Key::F2, Shortcut::Output),
+                    (Key::T, Shortcut::Tap),
+                    (Key::L, Shortcut::Learn),
+                    (Key::Delete, Shortcut::ClearCell),
+                    (Key::Backspace, Shortcut::ClearCell),
+                    (Key::Escape, Shortcut::EscapeHint),
+                ] {
+                    if i.key_pressed(key) {
+                        actions.push(action);
+                    }
+                }
             }
-            toggle_output = i.key_pressed(egui::Key::F2);
-            tap = i.key_pressed(egui::Key::T) && !i.modifiers.command;
-            learn = i.key_pressed(egui::Key::L) && !i.modifiers.command;
-            let g = i.modifiers.command && i.key_pressed(egui::Key::G);
-            group = g && !i.modifiers.shift;
-            ungroup = g && i.modifiers.shift;
+            if i.modifiers.is_none() && i.key_pressed(Key::Space) {
+                live.push(Command::GoNextCue);
+            }
         });
-        self.pending.extend(commands);
-        self.output_open ^= toggle_output;
-        if tap {
-            self.tap_tempo();
+        for command in live {
+            self.send_live(command);
         }
-        if learn {
-            self.toggle_learn();
-        }
-        if group {
-            self.group_selection();
-        }
-        if ungroup {
-            self.ungroup_selection();
+        for action in actions {
+            self.shortcut(action);
         }
     }
 
-    /// Saves to the current file, or asks for one. `save_as` always asks.
-    pub(crate) fn save(&mut self, save_as: bool) {
+    fn shortcut(&mut self, action: Shortcut) {
+        match action {
+            Shortcut::Undo => self.undo(),
+            Shortcut::Redo => self.redo(),
+            Shortcut::Save => self.save(false),
+            Shortcut::SaveAs => self.save(true),
+            Shortcut::Open => self.confirm_unsaved(AfterSave::Open),
+            Shortcut::New => self.confirm_unsaved(AfterSave::New),
+            Shortcut::DuplicateLayer => self.send(Command::DuplicateLayer(self.selected_layer)),
+            Shortcut::LiveLock => {
+                self.live_lock = !self.live_lock;
+                self.status = if self.live_lock {
+                    "Live lock on: editing is disabled".into()
+                } else {
+                    "Live lock off".into()
+                };
+            }
+            Shortcut::ClearAll => self.send_live(Command::ClearAll),
+            Shortcut::EscapeHint => {
+                self.status = "Shift+Esc clears all layers".into();
+            }
+            Shortcut::Output => self.output_open ^= true,
+            Shortcut::Tap => self.tap_tempo(),
+            Shortcut::Learn => self.toggle_learn(),
+            Shortcut::Copy => self.copy_clip(),
+            Shortcut::Cut => {
+                self.copy_clip();
+                self.clear_selected_cell();
+            }
+            Shortcut::Paste => self.paste_clip(),
+            Shortcut::ClearCell => self.clear_selected_cell(),
+            Shortcut::Group => self.group_selection(),
+            Shortcut::Ungroup => self.ungroup_selection(),
+        }
+    }
+
+    pub(crate) fn copy_clip(&mut self) {
+        let clip = self
+            .selected_clip
+            .and_then(|(l, c)| self.comp.layers.get(l)?.clips.get(c)?.clone());
+        if let Some(clip) = clip {
+            self.status = format!("Copied {}", clip.name);
+            self.clipboard = Some(clip);
+        }
+    }
+
+    pub(crate) fn paste_clip(&mut self) {
+        if let (Some((layer, column)), Some(clip)) = (self.selected_clip, self.clipboard.clone()) {
+            self.send(Command::SetClip {
+                layer,
+                column,
+                clip: Some(clip),
+            });
+        }
+    }
+
+    pub(crate) fn clear_selected_cell(&mut self) {
+        if let Some((layer, column)) = self.selected_clip {
+            self.send(Command::SetClip {
+                layer,
+                column,
+                clip: None,
+            });
+        }
+    }
+
+    /// Runs `then`, first asking what to do with unsaved changes.
+    pub(crate) fn confirm_unsaved(&mut self, then: AfterSave) {
+        if self.dirty {
+            self.dialog = Some(Dialog::Unsaved(then));
+        } else {
+            self.after_save(then);
+        }
+    }
+
+    fn after_save(&mut self, then: AfterSave) {
+        match then {
+            AfterSave::New => {
+                self.replace_composition(Composition::new("Untitled", 3, 8), None);
+            }
+            AfterSave::Open => self.open(),
+            AfterSave::OpenPath(path) => self.open_path(path),
+            AfterSave::Quit => self.quit_confirmed = true,
+        }
+    }
+
+    /// Saves to the current file, or asks for one; `then` runs once saved.
+    fn save_then(&mut self, save_as: bool, then: Option<AfterSave>) {
         match (&self.path, save_as) {
             (Some(path), false) => {
                 let path = path.clone();
-                self.save_to(&path);
+                self.save_to(path);
+                if let Some(then) = then.filter(|_| !self.dirty) {
+                    self.after_save(then);
+                }
             }
-            _ => {
-                let name = format!("{}.verso", self.comp.name);
-                self.dialogs.open(DialogKind::Save, move || {
-                    rfd::FileDialog::new()
-                        .add_filter("Verso composition", &["verso"])
-                        .set_file_name(name)
-                        .save_file()
-                });
-            }
+            _ => self.file_request(FileRequest::SaveAs(then)),
         }
+    }
+
+    fn save(&mut self, save_as: bool) {
+        self.save_then(save_as, None);
+    }
+
+    pub(crate) fn file_request(&mut self, request: FileRequest) {
+        self.file_dialogs.start(request, &self.comp.name);
     }
 
     /// The composition file text, with the current window layout in it.
@@ -726,58 +960,74 @@ impl VersoApp {
         self.comp.to_ron().map_err(|e| e.to_string())
     }
 
-    fn save_to(&mut self, path: &std::path::Path) {
+    /// Acts on a file dialog that just closed.
+    fn file_chosen(&mut self, request: FileRequest, path: Option<PathBuf>) {
+        let Some(path) = path else { return };
+        match request {
+            FileRequest::SaveAs(then) => {
+                self.save_to(path);
+                if let Some(then) = then.filter(|_| !self.dirty) {
+                    self.after_save(then);
+                }
+            }
+            FileRequest::Open => self.open_path(path),
+            FileRequest::Relink => self.relink_media(&path),
+            FileRequest::FilesFolder => self.files.open(path),
+            FileRequest::AdvancedImport => self.import_advanced_output(&path),
+            FileRequest::AdvancedExport(_) => self.export_advanced_output(&path),
+            FileRequest::AdvancedSvg => self.import_svg(&path),
+            FileRequest::EffectsFolder => {
+                let errors = self.renderer.library_mut().load_dir(&path);
+                self.status = match errors.first() {
+                    Some(first) => format!("{} effect(s) failed. {first}", errors.len()),
+                    None => format!("Loaded effects from {}", path.display()),
+                };
+            }
+        }
+    }
+
+    fn save_to(&mut self, path: PathBuf) {
         let result = self
             .document_text()
-            .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
+            .and_then(|text| write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
                 self.status = format!("Saved {}", path.display());
-                self.path = Some(path.to_owned());
                 self.dirty = false;
                 self.last_autosave = Instant::now();
-                if let Some(backup) = backup_path(Some(path), None, self.mcp_port) {
-                    let _ = std::fs::remove_file(backup);
-                }
-                if let Some(after) = self.after_save.take() {
-                    self.proceed(after);
-                }
+                recovery::discard();
+                self.prefs.add_recent(&path);
+                self.path = Some(path);
             }
-            Err(e) => {
-                self.status = format!("Save failed: {e}");
-                self.after_save = None;
-            }
+            Err(e) => self.status = format!("Save failed: {e}"),
         }
     }
 
-    fn open_file(&mut self, path: PathBuf) {
+    fn open(&mut self) {
+        self.file_request(FileRequest::Open);
+    }
+
+    pub(crate) fn open_path(&mut self, path: PathBuf) {
         let result = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| Composition::from_ron(&text).map_err(|e| e.to_string()));
+            .and_then(|text| Composition::from_ron_with_fixes(&text).map_err(|e| e.to_string()));
         match result {
-            Ok(comp) => self.replace_composition(comp, Some(path)),
+            Ok((comp, fixes)) => {
+                self.prefs.add_recent(&path);
+                self.replace_composition(comp, Some(path));
+                let missing = missing_media(&self.comp).len();
+                if missing > 0 {
+                    self.dialog = Some(Dialog::Missing(missing));
+                }
+                if !fixes.is_empty() {
+                    let status = format!("{} — {} problem(s) repaired", self.status, fixes.len());
+                    for fix in fixes {
+                        self.problem(format!("Repaired: {fix}"));
+                    }
+                    self.status = status;
+                }
+            }
             Err(e) => self.status = format!("Open failed: {e}"),
-        }
-    }
-
-    /// Runs `after`, asking first when unsaved changes would be lost.
-    fn request(&mut self, after: After) {
-        if self.dirty {
-            self.confirm = Some(after);
-        } else {
-            self.proceed(after);
-        }
-    }
-
-    fn proceed(&mut self, after: After) {
-        match after {
-            After::New => self.replace_composition(Composition::new("Untitled", 3, 8), None),
-            After::Open => self.dialogs.open(DialogKind::Open, || {
-                rfd::FileDialog::new()
-                    .add_filter("Verso composition", &["verso"])
-                    .pick_file()
-            }),
-            After::Quit => self.quitting = true,
         }
     }
 
@@ -802,107 +1052,10 @@ impl VersoApp {
         self.selected_layers.clear();
         self.selected_group = None;
         self.pending.clear();
-        self.undo.clear();
-        self.redo.clear();
+        self.history.clear();
         self.dirty = false;
         self.last_autosave = Instant::now();
         self.edit_size = None;
-    }
-
-    /// Where unsaved changes are backed up: next to the composition file, or
-    /// in the user directory for a composition that has no file yet.
-    fn autosave_path(&self) -> Option<PathBuf> {
-        backup_path(
-            self.path.as_deref(),
-            crate::online_ui::user_dir(),
-            self.mcp_port,
-        )
-    }
-
-    /// Writes the backup of a modified composition. Failures only go to the
-    /// log: a backup must never interrupt a set.
-    fn autosave(&mut self) {
-        self.last_autosave = Instant::now();
-        let Some(path) = self.autosave_path() else {
-            return;
-        };
-        let result = self
-            .document_text()
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
-        match result {
-            Ok(()) => log::info!("autosaved to {}", path.display()),
-            Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
-        }
-    }
-
-    /// Results of file dialogs that finished.
-    fn poll_dialogs(&mut self) {
-        for (kind, path) in self.dialogs.poll() {
-            match (kind, path) {
-                (DialogKind::Save, Some(path)) => self.save_to(&path),
-                (DialogKind::Save, None) => self.after_save = None,
-                (DialogKind::Open, Some(path)) => self.open_file(path),
-                (DialogKind::AdvancedImport, Some(path)) => self.import_advanced_output(&path),
-                (DialogKind::AdvancedExport, Some(path)) => self.export_advanced_output(&path),
-                (DialogKind::AdvancedSvg, Some(path)) => self.import_svg(&path),
-                (DialogKind::MediaFolder, Some(folder)) => self.files.open(folder),
-                (DialogKind::EffectFolder, Some(folder)) => {
-                    let errors = self.renderer.library_mut().load_dir(&folder);
-                    self.status = match errors.first() {
-                        Some(first) => format!("{} effect(s) failed. {first}", errors.len()),
-                        None => format!("Loaded effects from {}", folder.display()),
-                    };
-                }
-                (_, None) => {}
-            }
-        }
-    }
-
-    /// "Save changes?" question before New, Open or Quit.
-    fn confirm_window(&mut self, ctx: &egui::Context) {
-        let Some(after) = self.confirm else { return };
-        let verb = match after {
-            After::New => "starting a new composition",
-            After::Open => "opening another composition",
-            After::Quit => "quitting",
-        };
-        let mut choice = None;
-        egui::Modal::new(egui::Id::unique("unsaved")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading("Unsaved changes");
-            ui.label(format!(
-                "\"{}\" has changes that are not saved. Save them before {verb}?",
-                self.comp.name
-            ));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    choice = Some(true);
-                }
-                if ui.button("Don't Save").clicked() {
-                    choice = Some(false);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Cancel").clicked()
-                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
-                    {
-                        self.confirm = None;
-                    }
-                });
-            });
-        });
-        match choice {
-            Some(true) => {
-                self.confirm = None;
-                self.after_save = Some(after);
-                self.save(false);
-            }
-            Some(false) => {
-                self.confirm = None;
-                self.proceed(after);
-            }
-            None => {}
-        }
     }
 
     /// Keeps the status log and the window title current.
@@ -917,19 +1070,26 @@ impl VersoApp {
                 }
             }
         }
-        if self.dirty && self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
-            self.autosave();
+        if let Some((request, path)) = self.file_dialogs.poll() {
+            self.file_chosen(request, path);
         }
+        if let Some(reason) = self.gpu.lost() {
+            let status = format!("GPU lost ({reason}): save and restart Verso");
+            if self.status != status {
+                self.status = status;
+            }
+        }
+        self.autosave();
         let title = self.window_title();
         if title != self.title {
             self.title = title.clone();
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.quitting {
+        if ctx.input(|i| i.viewport().close_requested()) && self.dirty && !self.quit_confirmed {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(After::Quit);
+            self.dialog = Some(Dialog::Unsaved(AfterSave::Quit));
         }
-        if self.quitting {
+        if self.quit_confirmed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -973,6 +1133,8 @@ impl VersoApp {
                     });
             });
         self.log_open = open;
+        self.history.clear();
+        self.dirty = false;
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -984,31 +1146,39 @@ impl VersoApp {
             ui.label(egui::RichText::new("VERSO").strong().color(theme::accent()));
             ui.add_space(6.0);
             ui.menu_button("Composition", |ui| {
-                if ui
-                    .add(egui::Button::new("New").shortcut_text("Ctrl+N"))
-                    .clicked()
-                {
-                    self.request(After::New);
-                    ui.close();
+                if menu_item(ui, "New", "Ctrl+N").clicked() {
+                    self.confirm_unsaved(AfterSave::New);
                 }
-                if ui
-                    .add(egui::Button::new("Open…").shortcut_text("Ctrl+O"))
-                    .clicked()
-                {
-                    self.request(After::Open);
-                    ui.close();
+                if menu_item(ui, "Open…", "Ctrl+O").clicked() {
+                    self.confirm_unsaved(AfterSave::Open);
                 }
-                if ui
-                    .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
-                    .clicked()
-                {
+                ui.add_enabled_ui(!self.prefs.recent.is_empty(), |ui| {
+                    ui.menu_button("Open Recent", |ui| {
+                        for path in self.prefs.recent.clone() {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if ui
+                                .button(name)
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
+                            {
+                                self.confirm_unsaved(AfterSave::OpenPath(path));
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Clear List").clicked() {
+                            self.prefs.recent.clear();
+                            self.prefs.save();
+                        }
+                    });
+                });
+                if menu_item(ui, "Save", "Ctrl+S").clicked() {
                     self.save(false);
                     ui.close();
                 }
-                if ui
-                    .add(egui::Button::new("Save As…").shortcut_text("Ctrl+Shift+S"))
-                    .clicked()
-                {
+                if menu_item(ui, "Save As…", "Ctrl+Shift+S").clicked() {
                     self.save(true);
                     ui.close();
                 }
@@ -1020,54 +1190,106 @@ impl VersoApp {
                     );
                 }
                 ui.separator();
-                if ui.button("Clear All Layers (Esc)").clicked() {
-                    self.send(Command::ClearAll);
+                if ui.button("Preferences…").clicked() {
+                    self.prefs_open = true;
+                }
+                ui.separator();
+                if menu_item(ui, "Clear All Layers", "Shift+Esc").clicked() {
+                    self.send_live(Command::ClearAll);
                 }
             });
             ui.menu_button("Edit", |ui| {
+                let undo = self.history.undo_label().map(|l| format!("Undo {l}"));
                 if ui
                     .add_enabled(
-                        !self.undo.is_empty(),
-                        egui::Button::new("Undo").shortcut_text("Ctrl+Z"),
+                        undo.is_some(),
+                        egui::Button::new(undo.unwrap_or("Undo".into())).shortcut_text("Ctrl+Z"),
                     )
-                    .on_disabled_hover_text("Undo covers clips, layers, columns, groups, effect chains and mappings; not fader moves.")
                     .clicked()
                 {
                     self.undo();
-                    ui.close();
                 }
+                let redo = self.history.redo_label().map(|l| format!("Redo {l}"));
                 if ui
                     .add_enabled(
-                        !self.redo.is_empty(),
-                        egui::Button::new("Redo").shortcut_text("Ctrl+Shift+Z"),
+                        redo.is_some(),
+                        egui::Button::new(redo.unwrap_or("Redo".into()))
+                            .shortcut_text("Ctrl+Shift+Z"),
                     )
                     .clicked()
                 {
                     self.redo();
-                    ui.close();
+                }
+                ui.separator();
+                let has_clip = self
+                    .selected_clip
+                    .and_then(|(l, c)| self.comp.layers.get(l)?.clips.get(c)?.as_ref())
+                    .is_some();
+                if ui
+                    .add_enabled(has_clip, egui::Button::new("Copy Clip").shortcut_text("Ctrl+C"))
+                    .clicked()
+                {
+                    self.copy_clip();
+                }
+                let can_paste = self.clipboard.is_some() && self.selected_clip.is_some();
+                if ui
+                    .add_enabled(can_paste, egui::Button::new("Paste Clip").shortcut_text("Ctrl+V"))
+                    .clicked()
+                {
+                    self.paste_clip();
+                }
+                if ui
+                    .add_enabled(has_clip, egui::Button::new("Clear Cell").shortcut_text("Del"))
+                    .clicked()
+                {
+                    self.clear_selected_cell();
+                }
+                ui.separator();
+                let mut lock = self.live_lock;
+                if ui
+                    .checkbox(&mut lock, "Live Lock (Ctrl+Shift+L)")
+                    .on_hover_text("Only launching and performance controls work: no accidental edits during a show")
+                    .changed()
+                {
+                    self.shortcut(Shortcut::LiveLock);
                 }
             });
             ui.menu_button("Layer", |ui| {
                 if ui.button("New Layer").clicked() {
                     self.send(Command::AddLayer);
                 }
-                let name = self
-                    .comp
-                    .layers
-                    .get(self.selected_layer)
-                    .map(|l| l.name.clone())
-                    .unwrap_or_default();
-                if ui
-                    .add_enabled(
-                        self.comp.layers.len() > 1,
-                        egui::Button::new(format!("Delete {name}")),
-                    )
-                    .on_hover_text("Deletes the selected layer and its clips (Ctrl+Z undoes)")
-                    .clicked()
-                {
-                    self.send(Command::RemoveLayer(self.selected_layer));
-                    ui.close();
-                }
+                let layer = self.selected_layer;
+                let count = self.comp.layers.len();
+                ui.add_enabled_ui(layer < count, |ui| {
+                    if menu_item(ui, "Duplicate Selected Layer", "Ctrl+D").clicked() {
+                        self.send(Command::DuplicateLayer(layer));
+                    }
+                    if ui
+                        .add_enabled(layer + 1 < count, egui::Button::new("Move Selected Layer Up"))
+                        .clicked()
+                    {
+                        self.send(Command::MoveLayer {
+                            from: layer,
+                            to: layer + 1,
+                        });
+                    }
+                    if ui
+                        .add_enabled(layer > 0, egui::Button::new("Move Selected Layer Down"))
+                        .clicked()
+                    {
+                        self.send(Command::MoveLayer {
+                            from: layer,
+                            to: layer - 1,
+                        });
+                    }
+                    if ui
+                        .add_enabled(count > 1, egui::Button::new("Delete Selected Layer"))
+                        .on_hover_text("Ctrl+Z restores it")
+                        .clicked()
+                    {
+                        self.send(Command::RemoveLayer(layer));
+                    }
+                });
                 ui.separator();
                 if ui
                     .add_enabled(
@@ -1093,6 +1315,32 @@ impl VersoApp {
                 if ui.button("New Column").clicked() {
                     self.send(Command::AddColumn);
                 }
+                let column = self.selected_clip.map(|(_, c)| c);
+                let count = self.comp.columns.len();
+                ui.add_enabled_ui(column.is_some(), |ui| {
+                    let c = column.unwrap_or(0);
+                    if ui
+                        .add_enabled(c > 0, egui::Button::new("Move Selected Column Left"))
+                        .clicked()
+                    {
+                        self.send(Command::MoveColumn { from: c, to: c - 1 });
+                    }
+                    if ui
+                        .add_enabled(c + 1 < count, egui::Button::new("Move Selected Column Right"))
+                        .clicked()
+                    {
+                        self.send(Command::MoveColumn { from: c, to: c + 1 });
+                    }
+                    if ui
+                        .add_enabled(count > 1, egui::Button::new("Delete Selected Column"))
+                        .on_hover_text("Ctrl+Z restores it")
+                        .clicked()
+                    {
+                        self.send(Command::RemoveColumn(c));
+                    }
+                })
+                .response
+                .on_disabled_hover_text("Select a cell of the column first");
             });
             ui.menu_button("Output", |ui| {
                 ui.checkbox(&mut self.output_open, "Output Window (F2)");
@@ -1107,7 +1355,7 @@ impl VersoApp {
                     ui.separator();
                 }
                 let fps = 1.0 / ui.input(|i| i.stable_dt).max(1e-3);
-                if self.dialogs.busy() {
+                if self.file_dialogs.is_open() {
                     ui.spinner().on_hover_text("A file dialog is open");
                 }
                 ui.label(
@@ -1123,6 +1371,15 @@ impl VersoApp {
                     } else {
                         "Saved"
                     });
+                if self.live_lock {
+                    ui.label(
+                        egui::RichText::new(" LOCKED ")
+                            .strong()
+                            .color(Color32::BLACK)
+                            .background_color(theme::solo()),
+                    )
+                    .on_hover_text("Live lock: editing disabled (Ctrl+Shift+L)");
+                }
                 ui.separator();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     self.control_bar(ui);
@@ -1192,6 +1449,8 @@ impl eframe::App for VersoApp {
 
     fn on_exit(&mut self) {
         self.workspace.save();
+        self.prefs.save();
+        recovery::finish();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1219,7 +1478,7 @@ impl eframe::App for VersoApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(
-                            "1–9 column · Esc clear · Space next cue · F2 output · drag sources onto slots · right-click slot",
+                            "1–9 column · Shift+Esc clear · F2 output · Ctrl+Z undo · right-click for more",
                         )
                         .color(theme::text_dim()),
                     );
@@ -1231,9 +1490,9 @@ impl eframe::App for VersoApp {
             .show(ui, |ui| self.workspace(ui));
 
         let ctx = ui.ctx().clone();
-        self.poll_dialogs();
         self.handle_dropped_files(&ctx);
-        self.confirm_window(&ctx);
+        self.dialog_window(&ctx);
+        self.prefs_window(&ctx);
         self.log_window(&ctx);
         self.housekeeping(&ctx);
         self.control_window(&ctx);
@@ -1250,49 +1509,224 @@ impl eframe::App for VersoApp {
     }
 }
 
-/// Backup file of a composition: `name.verso.bak` next to its file, or
-/// `Untitled.verso.bak` in `user_dir` without one. An instance started with
-/// an MCP server adds `mcp-<port>` to the name, as for its log.
-fn backup_path(
-    file: Option<&std::path::Path>,
-    user_dir: Option<PathBuf>,
-    mcp_port: Option<u16>,
-) -> Option<PathBuf> {
-    let tag = mcp_port.map(|port| format!("mcp-{port}"));
-    match (file, tag) {
-        (Some(file), None) => Some(file.with_extension("verso.bak")),
-        (Some(file), Some(tag)) => Some(file.with_extension(format!("{tag}.verso.bak"))),
-        (None, None) => user_dir.map(|d| d.join("Untitled.verso.bak")),
-        (None, Some(tag)) => user_dir.map(|d| d.join(format!("Untitled-{tag}.verso.bak"))),
+/// A menu button with its shortcut shown on the right.
+fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response {
+    ui.add(egui::Button::new(label).shortcut_text(shortcut))
+}
+
+/// Seconds between recovery copies of unsaved work.
+const AUTOSAVE_SECONDS: u64 = 60;
+
+impl VersoApp {
+    fn autosave(&mut self) {
+        if !self.prefs.autosave
+            || !self.dirty
+            || self.last_autosave.elapsed().as_secs() < AUTOSAVE_SECONDS
+        {
+            return;
+        }
+        self.last_autosave = Instant::now();
+        let Some(path) = recovery::autosave_path() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // Failures only go to the log: a recovery copy must never interrupt
+        // a set.
+        let result = self
+            .document_text()
+            .and_then(|text| write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string()));
+        match result {
+            Ok(()) => log::info!("recovery copy written to {}", path.display()),
+            Err(e) => log::warn!("recovery copy to {} failed: {e}", path.display()),
+        }
+    }
+
+    fn relink_media(&mut self, dir: &std::path::Path) {
+        let missing = missing_media(&self.comp);
+        let names: Vec<_> = missing
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_owned())
+            .collect();
+        let found = find_files(dir, &names);
+        let mut relinked = 0;
+        for layer in &mut self.comp.layers {
+            for clip in layer.clips.iter_mut().flatten() {
+                let path = match &mut clip.source {
+                    Source::Image { path } | Source::Video { path, .. } => path,
+                    _ => continue,
+                };
+                if path.exists() {
+                    continue;
+                }
+                if let Some(new) = path.file_name().and_then(|n| found.get(n)) {
+                    *path = new.clone();
+                    relinked += 1;
+                }
+            }
+        }
+        if relinked > 0 {
+            self.dirty = true;
+        }
+        let still = missing_media(&self.comp).len();
+        self.status = format!("Relinked {relinked} clip(s); {still} file(s) still missing");
+        if still > 0 {
+            self.problem(format!("{still} media file(s) still missing"));
+        }
+    }
+
+    fn dialog_window(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.dialog.clone() else {
+            return;
+        };
+        let mut choice = None;
+        egui::Modal::new(egui::Id::unique("verso-dialog")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            match &dialog {
+                Dialog::Unsaved(_) => {
+                    ui.heading("Unsaved changes");
+                    ui.label(format!(
+                        "Save the changes to “{}” first?",
+                        self.comp.name
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            choice = Some(1);
+                        }
+                        if ui.button("Don't Save").clicked() {
+                            choice = Some(2);
+                        }
+                        if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            choice = Some(0);
+                        }
+                    });
+                }
+                Dialog::Missing(count) => {
+                    ui.heading("Missing media");
+                    ui.label(format!(
+                        "{count} media file(s) of this composition cannot be found. Pick a folder to search them by name (sub-folders included)."
+                    ));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Locate Folder…").clicked() {
+                            choice = Some(1);
+                        }
+                        if ui.button("Skip").clicked() {
+                            choice = Some(2);
+                        }
+                    });
+                }
+                Dialog::Recover => {
+                    ui.heading("Recover unsaved work?");
+                    ui.label("Verso did not close properly last time. A copy of the unsaved composition was kept.");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Recover").clicked() {
+                            choice = Some(1);
+                        }
+                        if ui.button("Discard").clicked() {
+                            choice = Some(2);
+                        }
+                    });
+                }
+            }
+        });
+        let Some(choice) = choice else { return };
+        self.dialog = None;
+        match (dialog, choice) {
+            (Dialog::Unsaved(then), 1) => self.save_then(false, Some(then)),
+            (Dialog::Unsaved(then), 2) => self.after_save(then),
+            (Dialog::Recover, 1) => {
+                let recovered = recovery::autosave_path()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .map(|text| Composition::from_ron_with_fixes(&text));
+                match recovered {
+                    Some(Ok((comp, _))) => {
+                        self.replace_composition(comp, None);
+                        self.dirty = true;
+                        self.status = "Recovered unsaved work: save it to keep it".into();
+                    }
+                    _ => self.status = "Could not read the recovery copy".into(),
+                }
+            }
+            (Dialog::Recover, _) => recovery::discard(),
+            (Dialog::Missing(_), 1) => self.file_request(FileRequest::Relink),
+            _ => {}
+        }
+    }
+
+    fn prefs_window(&mut self, ctx: &egui::Context) {
+        if !self.prefs_open {
+            return;
+        }
+        let mut open = true;
+        let before = self.prefs.clone();
+        egui::Window::new("Preferences")
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                use crate::prefs::CellClick;
+                ui.label("Clicking a clip cell");
+                ui.radio_value(
+                    &mut self.prefs.cell_click,
+                    CellClick::Launch,
+                    "Launches it (Ctrl+click only selects)",
+                );
+                ui.radio_value(
+                    &mut self.prefs.cell_click,
+                    CellClick::Select,
+                    "Selects it (double-click launches)",
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Interface size");
+                    ui.add(
+                        egui::Slider::new(&mut self.prefs.ui_scale, 0.75..=2.0)
+                            .step_by(0.05)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                    );
+                });
+                ui.add_space(6.0);
+                ui.checkbox(
+                    &mut self.prefs.autosave,
+                    "Keep a recovery copy of unsaved work",
+                )
+                .on_hover_text("Saved every minute; offered at the next start after a crash");
+                ui.checkbox(
+                    &mut self.prefs.reopen_last,
+                    "Open the last composition at startup",
+                );
+            });
+        if self.prefs != before {
+            if self.prefs.ui_scale != before.ui_scale {
+                ctx.set_zoom_factor(self.prefs.ui_scale);
+            }
+            self.prefs.save();
+        }
+        self.prefs_open = open;
     }
 }
 
-#[cfg(test)]
-mod backup_tests {
-    use std::path::{Path, PathBuf};
-
-    use super::backup_path;
-
-    #[test]
-    fn test_instances_back_up_to_their_own_files() {
-        let file = Path::new("shows/set.verso");
-        let dir = Some(PathBuf::from("user"));
-        assert_eq!(
-            backup_path(Some(file), dir.clone(), None),
-            Some(PathBuf::from("shows/set.verso.bak"))
-        );
-        assert_eq!(
-            backup_path(Some(file), dir.clone(), Some(7400)),
-            Some(PathBuf::from("shows/set.mcp-7400.verso.bak"))
-        );
-        assert_eq!(
-            backup_path(None, dir.clone(), None),
-            Some(PathBuf::from("user/Untitled.verso.bak"))
-        );
-        assert_eq!(
-            backup_path(None, dir, Some(7400)),
-            Some(PathBuf::from("user/Untitled-mcp-7400.verso.bak"))
-        );
-        assert_eq!(backup_path(None, None, None), None);
+/// Writes `data` to `path` without ever leaving a half-written file: the data
+/// goes to a temporary file next to it, the previous version is kept as
+/// `<name>.bak`, then the temporary file replaces `path`.
+pub(crate) fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
     }
+    if path.exists() {
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let _ = std::fs::copy(path, PathBuf::from(bak));
+    }
+    std::fs::rename(&tmp, path)
 }

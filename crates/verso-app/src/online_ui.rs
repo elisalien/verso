@@ -34,6 +34,41 @@ pub fn shaders_dir() -> Option<PathBuf> {
     user_dir().map(|d| d.join("shaders"))
 }
 
+/// Writes a secret readable by the current user only (on Unix; on Windows
+/// the per-user folder is already private).
+fn write_private(path: &std::path::Path, contents: &str) {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+        {
+            let _ = file.write_all(contents.as_bytes());
+        }
+        // Files written by older versions keep their permissions otherwise.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::write(path, contents);
+    }
+}
+
+/// Stable id for pasted code, so two pastes only share a file when their code
+/// is the same.
+fn content_hash(text: &str) -> u64 {
+    // FNV-1a: stable across runs and Rust versions, unlike `DefaultHasher`.
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 fn key_file() -> Option<PathBuf> {
     user_dir().map(|d| d.join("shadertoy-key.txt"))
 }
@@ -216,7 +251,7 @@ impl VersoApp {
                     if let Some(dir) = file.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
-                    let _ = std::fs::write(file, online.shadertoy_key.trim());
+                    write_private(&file, online.shadertoy_key.trim());
                 }
                 ui.hyperlink_to("Get a key", "https://www.shadertoy.com/myapps");
             });
@@ -386,7 +421,7 @@ impl VersoApp {
                 let name = self.online.paste_name.trim().to_owned();
                 let listing = Listing {
                     site: Site::ShaderToy,
-                    id: format!("pasted{}", self.online.paste_code.len()),
+                    id: format!("pasted{:016x}", content_hash(&self.online.paste_code)),
                     title: name.clone(),
                     author: String::new(),
                     url: String::new(),

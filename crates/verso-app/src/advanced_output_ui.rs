@@ -16,7 +16,7 @@ use verso_io::resolume_ao;
 use verso_render::Pattern;
 
 use crate::app::VersoApp;
-use crate::dialogs::DialogKind;
+use crate::dialogs::FileRequest;
 use crate::outputs::Monitor;
 use crate::theme;
 
@@ -190,14 +190,7 @@ impl VersoApp {
                 .on_hover_text("Advanced Output preset (.xml) saved by Resolume Arena")
                 .clicked()
             {
-                self.dialogs.open(DialogKind::AdvancedImport, || {
-                    let mut dialog = rfd::FileDialog::new()
-                        .add_filter("Resolume Advanced Output preset", &["xml"]);
-                    if let Some(dir) = resolume_preset_dir() {
-                        dialog = dialog.set_directory(dir);
-                    }
-                    dialog.pick_file()
-                });
+                self.file_request(FileRequest::AdvancedImport);
             }
             let can_export = !self.advanced.setup.screens.is_empty();
             if ui
@@ -206,15 +199,7 @@ impl VersoApp {
                 .clicked()
             {
                 let name = format!("{}.xml", self.advanced_name());
-                self.dialogs.open(DialogKind::AdvancedExport, move || {
-                    let mut dialog = rfd::FileDialog::new()
-                        .add_filter("Resolume Advanced Output preset", &["xml"])
-                        .set_file_name(name);
-                    if let Some(dir) = resolume_preset_dir() {
-                        dialog = dialog.set_directory(dir);
-                    }
-                    dialog.save_file()
-                });
+                self.file_request(FileRequest::AdvancedExport(name));
             }
             ui.separator();
             ui.label("Name");
@@ -825,7 +810,7 @@ impl VersoApp {
 }
 
 /// Arena's preset folder, when it exists.
-fn resolume_preset_dir() -> Option<PathBuf> {
+pub(crate) fn resolume_preset_dir() -> Option<PathBuf> {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
     let dir = PathBuf::from(home).join("Documents/Resolume Arena/Presets/Advanced Output");
     dir.is_dir().then_some(dir)

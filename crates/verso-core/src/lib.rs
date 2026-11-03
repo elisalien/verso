@@ -9,9 +9,12 @@ pub mod control;
 pub mod cue;
 mod effect;
 mod groups;
+pub mod mapping;
 pub mod modulation;
 pub mod output;
 mod source;
+mod structure;
+mod validate;
 
 pub use command::{Command, CommandKind};
 pub use composition::{
@@ -19,6 +22,8 @@ pub use composition::{
 };
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
 pub use source::{Generator, MilkPattern, Source};
+pub use structure::IndexChanges;
+pub use validate::{MAX_SIZE, MIN_SIZE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,6 +49,8 @@ pub enum Error {
     LastColumn,
     #[error("cue {0} does not exist")]
     NoCue(usize),
+    #[error("value is not a finite number")]
+    NotFinite,
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

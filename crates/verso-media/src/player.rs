@@ -12,7 +12,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 
-use crate::{Error, Frame, Result, VideoInfo, command, fit_size, probe, tool_path};
+use crate::{Error, Frame, Result, VideoInfo, command, fit_size, input, probe, tool_path};
 
 /// Decoded frames buffered ahead of playback.
 const QUEUE: usize = 6;
@@ -28,11 +28,18 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn spawn(path: &Path, size: (u32, u32)) -> Result<Self> {
+    /// Starts decoding `path` from `start` seconds.
+    fn spawn(path: &Path, size: (u32, u32), start: f64) -> Result<Self> {
         let program = tool_path("ffmpeg");
-        let mut child = command(&program)
-            .args(["-v", "error", "-hwaccel", "auto", "-i"])
-            .arg(path)
+        let mut cmd = command(&program);
+        cmd.args(["-v", "error", "-hwaccel", "auto"]);
+        if start > 0.0 {
+            // Before the input: fast seek to the nearest key frame, then
+            // decode up to `start`.
+            cmd.arg("-ss").arg(format!("{start:.3}"));
+        }
+        input(&mut cmd, path)?;
+        let mut child = cmd
             .args(["-an", "-vf"])
             .arg(format!("scale={}:{}", size.0, size.1))
             .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"])
@@ -45,7 +52,7 @@ impl Decoder {
             })?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let (sender, frames) = sync_channel(QUEUE);
-        let frame_len = (size.0 * size.1 * 4) as usize;
+        let frame_len = size.0 as usize * size.1 as usize * 4;
         thread::Builder::new()
             .name("verso-decoder".into())
             .spawn(move || read_frames(stdout, frame_len, sender))
@@ -57,7 +64,7 @@ impl Decoder {
     fn spawn_in_background(path: PathBuf, size: (u32, u32)) -> Receiver<Result<Decoder>> {
         let (sender, receiver) = sync_channel(1);
         thread::spawn(move || {
-            let _ = sender.send(Decoder::spawn(&path, size));
+            let _ = sender.send(Decoder::spawn(&path, size, 0.0));
         });
         receiver
     }
@@ -136,7 +143,7 @@ impl VideoPlayer {
             path: path.to_owned(),
             info,
             size,
-            decoder: Decoder::spawn(path, size)?,
+            decoder: Decoder::spawn(path, size, 0.0)?,
             standby: Standby::Spawning(Decoder::spawn_in_background(path.to_owned(), size)),
             position: 0.0,
             received: 0,
@@ -184,15 +191,35 @@ impl VideoPlayer {
             Standby::Ready(decoder) => Ok(decoder),
             Standby::Spawning(receiver) => match receiver.recv() {
                 Ok(result) => result,
-                Err(_) => Decoder::spawn(&self.path, self.size),
+                Err(_) => Decoder::spawn(&self.path, self.size, 0.0),
             },
-            Standby::Failed => Decoder::spawn(&self.path, self.size),
+            Standby::Failed => Decoder::spawn(&self.path, self.size, 0.0),
         };
         self.decoder = next?;
         self.standby =
             Standby::Spawning(Decoder::spawn_in_background(self.path.clone(), self.size));
         self.position = 0.0;
         self.received = 0;
+        self.ended = false;
+        Ok(())
+    }
+
+    /// Jumps to `seconds`. FFmpeg restarts there, so this takes a moment with
+    /// long-GOP codecs; HAP files use [`crate::HapPlayer`] instead. Jumping to
+    /// the start takes the standby decoder.
+    pub fn seek(&mut self, seconds: f64) -> Result<()> {
+        let end = self.info.duration.unwrap_or(f64::INFINITY);
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0.0, (end - 1.0 / self.info.fps).max(0.0))
+        } else {
+            0.0
+        };
+        if seconds == 0.0 {
+            return self.restart();
+        }
+        self.decoder = Decoder::spawn(&self.path, self.size, seconds)?;
+        self.position = seconds * self.info.fps;
+        self.received = self.position.floor() as u64;
         self.ended = false;
         Ok(())
     }
@@ -207,6 +234,11 @@ impl VideoPlayer {
                 Err(TryRecvError::Empty) => {}
             }
         }
+    }
+
+    /// Position of the shown frame, in seconds.
+    pub fn position(&self) -> f64 {
+        self.received.saturating_sub(1) as f64 / self.info.fps
     }
 
     /// Moves playback forward by `dt` seconds at `speed`, and returns the frame

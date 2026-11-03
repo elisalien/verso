@@ -466,6 +466,18 @@ impl VersoApp {
                     ui.end_row();
                     file_row(ui, path);
                 }
+                Source::Ndi { name } => {
+                    ui.label("Source");
+                    ui.label("NDI® input");
+                    ui.end_row();
+                    ui.label("Sender");
+                    ui.label(name.as_str());
+                    ui.end_row();
+                    ui.label("");
+                    let state = self.media.live_state(layer, column);
+                    ui.label(egui::RichText::new(state).small().color(theme::text_dim()));
+                    ui.end_row();
+                }
                 Source::Video {
                     path,
                     speed,
@@ -475,9 +487,31 @@ impl VersoApp {
                     ui.label("Video");
                     ui.end_row();
                     file_row(ui, path);
+                    let playback = self.media.playback(layer, column);
+                    let reversible = playback.is_some_and(|(_, _, r)| r);
                     ui.label("Speed");
-                    ui.add(egui::Slider::new(speed, 0.0..=4.0).suffix("×"));
+                    let range = if reversible { -4.0..=4.0 } else { 0.0..=4.0 };
+                    ui.add(egui::Slider::new(speed, range).suffix("×"))
+                        .on_hover_text(if reversible {
+                            "HAP plays natively: negative speeds play backwards"
+                        } else {
+                            "Backwards playback needs a HAP file"
+                        });
                     ui.end_row();
+                    if let Some((position, Some(duration), _)) = playback {
+                        ui.label("Position");
+                        let mut at = position;
+                        let response = ui.add(
+                            egui::Slider::new(&mut at, 0.0..=duration)
+                                .custom_formatter(|v, _| format!("{v:.2} s")),
+                        );
+                        if response.changed()
+                            && let Some(error) = self.media.seek(layer, column, at)
+                        {
+                            self.status = error;
+                        }
+                        ui.end_row();
+                    }
                     ui.label("Loop");
                     ui.checkbox(looping, "");
                     ui.end_row();
@@ -641,6 +675,37 @@ impl VersoApp {
                         let shaders = shaders.into_iter().map(|t| (t, String::new())).collect();
                         self.browser_items(ui, shaders);
                     }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        hint(ui, "NDI® sources");
+                        let searching = self.media.ndi_searching();
+                        if ui
+                            .add_enabled(
+                                !searching,
+                                egui::Button::new(if searching { "Searching…" } else { "Find" })
+                                    .small(),
+                            )
+                            .on_hover_text(
+                                "Look for NDI senders on the network (needs NDI Tools or the NDI runtime)",
+                            )
+                            .clicked()
+                        {
+                            self.media.search_ndi();
+                        }
+                    });
+                    let sources = self
+                        .media
+                        .ndi_sources()
+                        .iter()
+                        .map(|name| {
+                            let template = SourceTemplate {
+                                name: name.clone(),
+                                source: Source::Ndi { name: name.clone() },
+                            };
+                            (template, String::new())
+                        })
+                        .collect();
+                    self.browser_items(ui, sources);
                 });
             }
             BrowserTab::Milkdrop => {
@@ -671,10 +736,7 @@ impl VersoApp {
     fn file_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("Open Folder…").clicked() {
-                self.dialogs
-                    .open(crate::dialogs::DialogKind::MediaFolder, || {
-                        rfd::FileDialog::new().pick_folder()
-                    });
+                self.file_request(crate::dialogs::FileRequest::FilesFolder);
             }
             if self.files.folder.is_some() && ui.button("⟳").on_hover_text("Refresh").clicked() {
                 self.files.refresh();
@@ -820,6 +882,7 @@ fn source_kind(source: &Source) -> &'static str {
         Source::Image { .. } => "image",
         Source::Video { .. } => "video",
         Source::Milkdrop { .. } => "milkdrop",
+        Source::Ndi { .. } => "NDI",
     }
 }
 

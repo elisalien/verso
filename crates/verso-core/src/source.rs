@@ -110,6 +110,9 @@ pub enum Source {
         speed: f32,
         looping: bool,
     },
+    /// Live video from an NDI® source on the network, by its full name
+    /// (`MACHINE (Source)`).
+    Ndi { name: String },
 }
 
 fn default_milk_blend() -> f32 {
@@ -139,12 +142,16 @@ impl Source {
             Source::Solid { .. }
             | Source::Generator { .. }
             | Source::Shader(_)
-            | Source::Milkdrop { .. } => None,
+            | Source::Milkdrop { .. }
+            | Source::Ndi { .. } => None,
         }
     }
 
     /// Whether the GPU renders this source without any decoded media.
     pub fn is_procedural(&self) -> bool {
-        self.path().is_none()
+        matches!(
+            self,
+            Source::Solid { .. } | Source::Generator { .. } | Source::Shader(_)
+        )
     }
 }

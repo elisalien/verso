@@ -674,7 +674,7 @@ impl VersoApp {
                     .or(self.path.clone());
                 match path {
                     Some(path) => {
-                        self.save_to(&path);
+                        self.save_to(path);
                         Ok(ToolOutput::text(self.status.clone()))
                     }
                     None => Err("the composition has no file yet: give a path".into()),
@@ -682,7 +682,7 @@ impl VersoApp {
             }
             "open" => {
                 let path = PathBuf::from(args["path"].as_str().unwrap_or_default());
-                self.open_file(path);
+                self.open_path(path);
                 Ok(ToolOutput::text(self.status.clone()))
             }
             "new_composition" => {
@@ -725,7 +725,7 @@ impl VersoApp {
             "size": [self.comp.width, self.comp.height],
             "layers": self.comp.layers.len(),
             "columns": self.comp.columns.len(),
-            "undo_steps": self.undo.len(),
+            "undo_steps": self.history.undo_len(),
             "mcp_port": self.mcp.server.as_ref().map(McpServer::port),
             "log_file": crate::logging::path(),
             "ffmpeg": self.mcp.ffmpeg,

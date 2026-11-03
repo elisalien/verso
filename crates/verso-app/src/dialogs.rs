@@ -1,79 +1,100 @@
-//! File dialogs that do not stop the render loop.
+//! Native file dialogs that do not block the frame loop.
 //!
-//! A native file dialog blocks the thread that opens it. The app renders on
-//! the main thread, so a dialog opened there freezes the output window for
-//! as long as it stays open. Dialogs run on their own thread instead and
-//! report back through a channel, polled every frame.
-//!
-//! macOS only allows dialogs on the main thread; there they block as before.
+//! A blocking dialog stops `update`, so the output window would freeze while
+//! the user browses for a file. These dialogs are futures polled once per
+//! frame instead: the show goes on while the dialog is open.
 
+use std::future::Future;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DialogKind {
+use crate::app::AfterSave;
+
+/// What a file dialog was opened for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FileRequest {
+    /// Save the composition under a new name, then continue with `AfterSave`.
+    SaveAs(Option<AfterSave>),
     Open,
-    Save,
-    MediaFolder,
-    EffectFolder,
+    /// Folder to search missing media in.
+    Relink,
+    /// Folder for Browser › Files.
+    FilesFolder,
+    /// Folder of effects to load.
+    EffectsFolder,
+    /// Resolume Advanced Output preset to import.
     AdvancedImport,
-    AdvancedExport,
+    /// File to export the Advanced Output to, with its suggested name.
+    AdvancedExport(String),
+    /// SVG drawing whose shapes become slices.
     AdvancedSvg,
 }
 
-pub struct Dialogs {
-    sender: Sender<(DialogKind, Option<PathBuf>)>,
-    receiver: Receiver<(DialogKind, Option<PathBuf>)>,
-    /// Dialogs opened and not yet answered.
-    pending: usize,
+type Pending = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
+
+#[derive(Default)]
+pub struct FileDialogs {
+    open: Option<(FileRequest, Pending)>,
 }
 
-impl Default for Dialogs {
-    fn default() -> Self {
-        let (sender, receiver) = channel();
-        Self {
-            sender,
-            receiver,
-            pending: 0,
+impl FileDialogs {
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Shows the dialog for `request`; ignored while another is open.
+    pub fn start(&mut self, request: FileRequest, comp_name: &str) {
+        if self.open.is_some() {
+            return;
+        }
+        let composition = |d: rfd::AsyncFileDialog| d.add_filter("Verso composition", &["verso"]);
+        let future: Pending = match &request {
+            FileRequest::SaveAs(_) => Box::pin(
+                composition(rfd::AsyncFileDialog::new())
+                    .set_file_name(format!("{comp_name}.verso"))
+                    .save_file(),
+            ),
+            FileRequest::Open => Box::pin(composition(rfd::AsyncFileDialog::new()).pick_file()),
+            FileRequest::Relink | FileRequest::FilesFolder | FileRequest::EffectsFolder => {
+                Box::pin(rfd::AsyncFileDialog::new().pick_folder())
+            }
+            FileRequest::AdvancedImport => Box::pin(resolume_preset().pick_file()),
+            FileRequest::AdvancedExport(name) => {
+                Box::pin(resolume_preset().set_file_name(name).save_file())
+            }
+            FileRequest::AdvancedSvg => Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter("SVG drawing", &["svg"])
+                    .pick_file(),
+            ),
+        };
+        self.open = Some((request, future));
+    }
+
+    /// The finished dialog, if any: its request and the chosen path (`None`
+    /// when cancelled).
+    pub fn poll(&mut self) -> Option<(FileRequest, Option<PathBuf>)> {
+        let (_, future) = self.open.as_mut()?;
+        // The app repaints every frame, so polling without a waker is enough.
+        let mut cx = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            Poll::Pending => None,
+            Poll::Ready(handle) => {
+                let (request, _) = self.open.take()?;
+                Some((request, handle.map(|h| h.path().to_owned())))
+            }
         }
     }
 }
 
-impl Dialogs {
-    /// Shows a dialog built by `show`; its answer comes back from [`Self::poll`].
-    /// A second dialog of any kind is refused while one is open.
-    pub fn open(
-        &mut self,
-        kind: DialogKind,
-        show: impl FnOnce() -> Option<PathBuf> + Send + 'static,
-    ) {
-        if self.pending > 0 {
-            return;
-        }
-        self.pending += 1;
-        let sender = self.sender.clone();
-        if cfg!(target_os = "macos") {
-            let _ = sender.send((kind, show()));
-            return;
-        }
-        let spawned = std::thread::Builder::new()
-            .name("verso-dialog".into())
-            .spawn(move || {
-                let _ = sender.send((kind, show()));
-            });
-        if spawned.is_err() {
-            self.pending -= 1;
-        }
-    }
-
-    pub fn busy(&self) -> bool {
-        self.pending > 0
-    }
-
-    /// Answers that arrived since the last call.
-    pub fn poll(&mut self) -> Vec<(DialogKind, Option<PathBuf>)> {
-        let answers: Vec<_> = self.receiver.try_iter().collect();
-        self.pending = self.pending.saturating_sub(answers.len());
-        answers
+/// Dialog for Resolume Advanced Output presets, opened in Resolume's preset
+/// folder when it exists.
+fn resolume_preset() -> rfd::AsyncFileDialog {
+    let dialog =
+        rfd::AsyncFileDialog::new().add_filter("Resolume Advanced Output preset", &["xml"]);
+    match crate::advanced_output_ui::resolume_preset_dir() {
+        Some(dir) => dialog.set_directory(dir),
+        None => dialog,
     }
 }

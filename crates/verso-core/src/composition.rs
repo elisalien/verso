@@ -197,7 +197,11 @@ impl Layer {
     pub(crate) fn launch(&mut self, column: usize) {
         self.cue_transition = None;
         let was_active = self.active == Some(column);
-        self.active = self.clips[column].as_ref().map(|_| column);
+        self.active = self
+            .clips
+            .get(column)
+            .and_then(|c| c.as_ref())
+            .map(|_| column);
         if self.active.is_some() && !was_active {
             if self.launches.len() <= column {
                 self.launches.resize(column + 1, 0);
@@ -273,6 +277,9 @@ pub struct Composition {
     /// Cue fading or waiting to follow on. Not saved.
     #[serde(skip)]
     pub cue_run: Option<crate::cue::CueRun>,
+    /// Actions fired by incoming timecode, sorted by time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timecode_cues: Vec<crate::control::Cue>,
 }
 
 impl Composition {
@@ -299,6 +306,7 @@ impl Composition {
             layout: None,
             cues: Default::default(),
             cue_run: None,
+            timecode_cues: Vec::new(),
         }
     }
 
@@ -412,7 +420,7 @@ impl Composition {
         self.layers.get_mut(layer).ok_or(Error::NoLayer(layer))
     }
 
-    fn check_column(&self, column: usize) -> Result<()> {
+    pub(crate) fn check_column(&self, column: usize) -> Result<()> {
         if column < self.columns.len() {
             Ok(())
         } else {
@@ -427,8 +435,16 @@ impl Composition {
         )?)
     }
 
+    /// Parses a composition and repairs it (see [`Self::repair`]).
     pub fn from_ron(text: &str) -> Result<Self> {
-        Ok(ron::from_str(text)?)
+        Ok(Self::from_ron_with_fixes(text)?.0)
+    }
+
+    /// Like [`Self::from_ron`], also returning what had to be repaired.
+    pub fn from_ron_with_fixes(text: &str) -> Result<(Self, Vec<String>)> {
+        let mut comp: Self = ron::from_str(text)?;
+        let fixes = comp.repair();
+        Ok((comp, fixes))
     }
 
     pub(crate) fn trigger_clip(&mut self, layer: usize, column: usize) -> Result<()> {
@@ -514,6 +530,13 @@ impl Composition {
         self.midi.retain_mut(|m| match action(&m.action) {
             Some(a) => {
                 m.action = a;
+                true
+            }
+            None => false,
+        });
+        self.timecode_cues.retain_mut(|c| match action(&c.action) {
+            Some(a) => {
+                c.action = a;
                 true
             }
             None => false,

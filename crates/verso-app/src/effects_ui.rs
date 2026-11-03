@@ -200,10 +200,7 @@ impl VersoApp {
                 .on_hover_text("Load .wgsl (Verso) and .fs (ISF) effects from a folder")
                 .clicked()
             {
-                self.dialogs
-                    .open(crate::dialogs::DialogKind::EffectFolder, || {
-                        rfd::FileDialog::new().pick_folder()
-                    });
+                self.file_request(crate::dialogs::FileRequest::EffectsFolder);
             }
         });
         ui.label(

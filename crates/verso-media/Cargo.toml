@@ -4,7 +4,9 @@ description = "Verso media decoding: images and FFmpeg video playback"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+snap = "1.1.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "tga", "tiff"] }

@@ -41,6 +41,7 @@ pub fn source(source: &Source) -> Value {
             speed,
             looping,
         } => json!({"kind": "video", "path": path, "speed": speed, "looping": looping}),
+        Source::Ndi { name } => json!({"kind": "ndi", "name": name}),
     }
 }
 

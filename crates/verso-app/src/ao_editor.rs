@@ -12,7 +12,7 @@ use verso_core::output::{Slice, SliceKind};
 
 use crate::advanced_output_ui::EditorView;
 use crate::app::VersoApp;
-use crate::dialogs::DialogKind;
+use crate::dialogs::FileRequest;
 use crate::theme;
 
 /// Pointer distance, in UI points, that grabs a point.
@@ -305,11 +305,7 @@ impl VersoApp {
                 .on_hover_text("Each shape of the drawing becomes a polygon slice")
                 .clicked()
             {
-                self.dialogs.open(DialogKind::AdvancedSvg, || {
-                    rfd::FileDialog::new()
-                        .add_filter("SVG drawing", &["svg"])
-                        .pick_file()
-                });
+                self.file_request(FileRequest::AdvancedSvg);
             }
         });
     }

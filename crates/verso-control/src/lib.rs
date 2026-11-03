@@ -5,14 +5,17 @@
 
 mod analysis;
 mod audio;
+#[cfg(feature = "link")]
+pub mod link;
 mod midi;
 mod osc;
 mod tempo;
+pub mod timecode;
 
 pub use analysis::{Analyzer, Levels, WAVEFORM_LEN};
 pub use audio::{AudioInput, input_devices};
 pub use midi::{MidiEvent, MidiInputs};
-pub use osc::{OscEvent, OscServer};
+pub use osc::{OscAccess, OscEvent, OscServer};
 pub use tempo::TapTempo;
 
 #[derive(Debug, thiserror::Error)]

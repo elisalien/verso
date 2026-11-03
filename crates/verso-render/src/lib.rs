@@ -9,6 +9,7 @@
 
 mod effects;
 mod grab;
+pub mod mapping;
 mod media;
 pub mod milkdrop;
 mod slices;
@@ -21,7 +22,7 @@ use verso_core::{BlendMode, Composition, Effect, Source};
 
 pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind, ShaderKind};
 pub use grab::{FrameGrabber, GrabbedFrame};
-pub use media::{MediaTexture, MediaView};
+pub use media::{MediaFormat, MediaTexture, MediaView};
 pub use slices::{Pattern, ScreenRenderer};
 pub use thumbnails::Thumbnails;
 
@@ -64,7 +65,9 @@ struct OutputParams {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct MediaParams {
     scale: [f32; 2],
-    _pad: [f32; 2],
+    crop: [f32; 2],
+    ycocg: u32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -96,7 +99,17 @@ impl MediaParams {
         };
         Self {
             scale,
-            _pad: [0.0; 2],
+            crop: [1.0, 1.0],
+            ycocg: 0,
+            _pad: [0; 3],
+        }
+    }
+
+    fn for_view(view: &MediaView<'_>, target: (u32, u32)) -> Self {
+        Self {
+            crop: [view.crop.0, view.crop.1],
+            ycocg: view.ycocg as u32,
+            ..Self::fit(view.size, target)
         }
     }
 }
@@ -110,7 +123,8 @@ impl GeneratorParams {
             Source::Image { .. }
             | Source::Video { .. }
             | Source::Shader(_)
-            | Source::Milkdrop { .. } => return None,
+            | Source::Milkdrop { .. }
+            | Source::Ndi { .. } => return None,
         };
         Some(Self {
             time,
@@ -223,6 +237,9 @@ impl UniformPool {
 struct Transition {
     start: f32,
     duration: f32,
+    /// Column of the outgoing clip, which keeps playing while it fades out
+    /// when it can (generators, shaders, or video given as outgoing media).
+    from: Option<usize>,
 }
 
 /// GPU resources and playback state of one layer.
@@ -233,6 +250,8 @@ struct LayerState {
     /// frames so a clip change can freeze it as the outgoing image.
     mixed: Target,
     outgoing: Target,
+    /// Render passes of the outgoing clip; only exists during a transition.
+    outgoing_work: Option<Pair>,
     transition: Option<Transition>,
     /// Column shown last frame.
     shown: Option<usize>,
@@ -253,6 +272,7 @@ impl LayerState {
             work: Pair::new(device, "layer", size),
             mixed: Target::new(device, "layer mixed", size, WORK_FORMAT),
             outgoing: Target::new(device, "layer outgoing", size, WORK_FORMAT),
+            outgoing_work: None,
             transition: None,
             shown: None,
             image: None,
@@ -753,9 +773,32 @@ impl Renderer {
         &mut self.milk
     }
 
-    /// Recreates every size-dependent resource.
+    /// Moves per-layer render state (transitions, last frame) to follow layers
+    /// and columns that moved, so a reorder does not look like a clip change.
+    pub fn follow(&mut self, device: &wgpu::Device, changes: &verso_core::IndexChanges) {
+        let mut states: Vec<Option<LayerState>> = std::mem::take(&mut self.layers)
+            .into_iter()
+            .map(Some)
+            .collect();
+        changes.apply_to_layers(&mut states);
+        self.layers = states
+            .into_iter()
+            .map(|state| {
+                let mut state = state.unwrap_or_else(|| LayerState::new(device, self.size));
+                state.shown = state
+                    .shown
+                    .and_then(|c| changes.columns.get(c).copied().flatten());
+                state
+            })
+            .collect();
+    }
+
+    /// Recreates every size-dependent resource. The size is limited to what
+    /// the GPU supports, so an oversized composition renders smaller instead
+    /// of failing.
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        let size = (size.0.max(1), size.1.max(1));
+        let max = device.limits().max_texture_dimension_2d;
+        let size = (size.0.clamp(1, max), size.1.clamp(1, max));
         if size == self.size {
             return;
         }
@@ -886,6 +929,24 @@ impl Renderer {
         media: &[Option<MediaView<'_>>],
         time: f32,
     ) {
+        self.render_with_outgoing(device, queue, encoder, comp, media, &[], time);
+    }
+
+    /// Like [`Self::render`], with `outgoing[layer]` the media of the clip a
+    /// layer is fading out of, so outgoing video keeps playing during the
+    /// transition instead of freezing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_outgoing(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        comp: &Composition,
+        media: &[Option<MediaView<'_>>],
+        outgoing: &[Option<MediaView<'_>>],
+        time: f32,
+    ) {
+        let media = LayerMedia { media, outgoing };
         self.resize(device, (comp.width, comp.height));
         self.prepare_effects(device, comp);
         while self.layers.len() < comp.layers.len() {
@@ -932,7 +993,7 @@ impl Renderer {
             uniforms,
             &mut self.milk,
             comp,
-            media,
+            &media,
             None,
             composition,
             &mut self.layers,
@@ -972,7 +1033,7 @@ fn render_scope(
     uniforms: &mut UniformPool,
     milk: &mut milkdrop::MilkRenderer,
     comp: &Composition,
-    media: &[Option<MediaView<'_>>],
+    media: &LayerMedia<'_, '_>,
     scope: Option<usize>,
     dest: &mut Pair,
     states: &mut [LayerState],
@@ -1049,6 +1110,66 @@ fn render_scope(
     }
 }
 
+/// Media views of the layers: playing clips, and clips fading out.
+struct LayerMedia<'a, 'b> {
+    media: &'a [Option<MediaView<'b>>],
+    outgoing: &'a [Option<MediaView<'b>>],
+}
+
+/// Draws `clip` (its source, then its effects) into `pair`. Returns false
+/// when there is nothing to draw (media not loaded).
+fn draw_clip(
+    frame: &Frame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    uniforms: &mut UniformPool,
+    clip: &verso_core::Clip,
+    media: Option<MediaView<'_>>,
+    pair: &mut Pair,
+) -> bool {
+    pair.clear(encoder);
+    let aspect = frame.size.0 as f32 / frame.size.1 as f32;
+    if let Source::Shader(effect) = &clip.source {
+        frame.draw_effect(
+            encoder,
+            uniforms,
+            effect,
+            frame.blank,
+            &pair.current().view,
+            WORK_FORMAT,
+        );
+    }
+    let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
+        Some(params) => {
+            let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+            Some(frame.bind(&frame.pipelines.generator_layout, uniforms, u, &[]))
+                .map(|g| (g, &frame.pipelines.generator))
+        }
+        None => media.map(|view| {
+            let params = MediaParams::for_view(&view, frame.size);
+            let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+            let group = frame.bind(
+                &frame.pipelines.media_layout,
+                uniforms,
+                u,
+                &[
+                    wgpu::BindingResource::TextureView(view.view),
+                    wgpu::BindingResource::Sampler(&frame.pipelines.sampler),
+                ],
+            );
+            (group, &frame.pipelines.media)
+        }),
+    };
+    let shader = matches!(clip.source, Source::Shader(_));
+    if let Some((group, pipeline)) = &drawn {
+        let mut rp = pass(encoder, &pair.current().view, true);
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+    frame.run_chain(encoder, uniforms, &clip.effects, None, pair);
+    drawn.is_some() || shader
+}
+
 /// Layer whose image feeds the MilkDrop clip playing on layer `index`.
 fn milk_input(comp: &Composition, index: usize) -> Option<usize> {
     match &comp.layers.get(index)?.active_clip()?.source {
@@ -1065,7 +1186,7 @@ fn render_layer(
     uniforms: &mut UniformPool,
     milk: &mut milkdrop::MilkRenderer,
     comp: &Composition,
-    media: &[Option<MediaView<'_>>],
+    media: &LayerMedia<'_, '_>,
     index: usize,
     state: &mut LayerState,
     input: Option<wgpu::TextureView>,
@@ -1098,6 +1219,13 @@ fn render_layer(
                 Transition {
                     start: frame.time,
                     duration: layer.transition_time(),
+                    // Only a clean cut from one clip keeps the old one playing;
+                    // a change during a transition fades from the frozen mix.
+                    // MilkDrop shares one instance per layer, so its outgoing
+                    // image stays frozen.
+                    from: state
+                        .shown
+                        .filter(|_| state.transition.is_none() && !is_milk(state.shown)),
                 }
             });
         state.shown = active;
@@ -1110,24 +1238,39 @@ fn render_layer(
     }
     let transitioning = state.transition.is_some();
     if active.is_none() && !transitioning {
+        state.outgoing_work = None;
         return;
     }
     let level = comp.layer_level(index);
 
+    // Outgoing clip still playing: redraw it into `state.outgoing`.
+    let outgoing_clip = state
+        .transition
+        .and_then(|t| t.from)
+        .and_then(|c| layer.clips.get(c)?.as_ref());
+    match outgoing_clip {
+        Some(clip) => {
+            let view = media.outgoing.get(index).copied().flatten();
+            let live = clip.source.is_procedural() || view.is_some();
+            if live {
+                let work = state
+                    .outgoing_work
+                    .get_or_insert_with(|| Pair::new(frame.device, "layer outgoing", frame.size));
+                if draw_clip(frame, encoder, uniforms, clip, view, work) {
+                    encoder.copy_texture_to_texture(
+                        work.current().texture.as_image_copy(),
+                        state.outgoing.texture.as_image_copy(),
+                        state.outgoing.texture.size(),
+                    );
+                }
+            }
+        }
+        None => state.outgoing_work = None,
+    }
+
     // Incoming clip: source, then clip effects, in `state.work`.
     state.work.clear(encoder);
     if let Some(clip) = layer.active_clip() {
-        let aspect = frame.size.0 as f32 / frame.size.1 as f32;
-        if let Source::Shader(effect) = &clip.source {
-            frame.draw_effect(
-                encoder,
-                uniforms,
-                effect,
-                frame.blank,
-                &state.work.current().view,
-                WORK_FORMAT,
-            );
-        }
         if let (
             Source::Milkdrop {
                 family,
@@ -1168,35 +1311,11 @@ fn render_layer(
                 frame.size,
                 frame.time,
             );
+            frame.run_chain(encoder, uniforms, &clip.effects, None, &mut state.work);
+        } else {
+            let view = media.media.get(index).copied().flatten();
+            draw_clip(frame, encoder, uniforms, clip, view, &mut state.work);
         }
-        let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
-            Some(params) => {
-                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
-                Some(frame.bind(&frame.pipelines.generator_layout, uniforms, u, &[]))
-                    .map(|g| (g, &frame.pipelines.generator))
-            }
-            None => media.get(index).copied().flatten().map(|view| {
-                let params = MediaParams::fit(view.size, frame.size);
-                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
-                let group = frame.bind(
-                    &frame.pipelines.media_layout,
-                    uniforms,
-                    u,
-                    &[
-                        wgpu::BindingResource::TextureView(view.view),
-                        wgpu::BindingResource::Sampler(&frame.pipelines.sampler),
-                    ],
-                );
-                (group, &frame.pipelines.media)
-            }),
-        };
-        if let Some((group, pipeline)) = drawn {
-            let mut rp = pass(encoder, &state.work.current().view, true);
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        frame.run_chain(encoder, uniforms, &clip.effects, None, &mut state.work);
     }
 
     // Transition into `state.mixed`.

@@ -8,7 +8,10 @@ and Linux.
 > including HAP, Resolume DXV3 and ProRes), effect chains (WGSL and ISF) on
 > clips, layers, groups and the composition, clip transitions and layer groups.
 > OSC and MIDI control with MIDI learn, audio analysis, tap tempo, LFO or audio
-> modulation and Lua scripts.
+> modulation and Lua scripts. Ableton Link, MIDI and audio (LTC) timecode with
+> cues, NDI® input and output, Spout (Windows) and Syphon (macOS) output. HAP
+> plays natively on the GPU (instant seeking, reverse playback) and outgoing
+> clips keep playing during transitions.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 **Website and user guide, in English and French:
@@ -38,6 +41,10 @@ Requirements:
 - Rust (stable)
 - FFmpeg (`ffmpeg` and `ffprobe`) for video: next to the executable, on
   `PATH`, or set `VERSO_FFMPEG` and `VERSO_FFPROBE` to their paths
+- CMake, a C++ compiler and libclang for Ableton Link (build without it:
+  `cargo build --release -p verso-app --no-default-features`)
+- Linux: ALSA headers to build (`sudo apt install libasound2-dev pkg-config` on
+  Debian/Ubuntu, `alsa-lib-devel` on Fedora)
 
 ## Run
 
@@ -49,8 +56,10 @@ cargo run --release -p verso-app
 
 | Input | Action |
 |---|---|
-| Click a cell | Trigger that clip on its layer (empty cell ejects the layer) |
-| Click a column header, or keys `1`–`9` | Trigger the whole column |
+| Click a cell | Trigger that clip on its layer (empty cell ejects the layer). Preferences can make click select and double-click launch |
+| Ctrl+click a cell | Select it without launching |
+| Click a column header, or keys `1`–`9` (`Shift+1`–`9` for columns 10–18) | Trigger the whole column |
+| Drag a cell onto another | Move the clip (swaps with a full cell); hold `Alt` to copy |
 | Drag a source from the Sources browser onto a cell | Load it into that slot |
 | Drop image or video files from your file manager onto a cell | Load them into that slot and the next ones |
 | Browser › Files › Open Folder… | List a folder's media to drag onto cells |
@@ -63,19 +72,23 @@ cargo run --release -p verso-app
 | Right-click a panel tab › Undock | Open the panel in its own window (Dock back or close it to return) |
 | Hover a clip thumbnail | Show it in the Preview panel |
 | Window › Interface Colors… | Pick a preset or any color for each interface role |
-| Right-click a cell | Change its source or clear it |
+| Right-click a layer or column header | Duplicate, move, group, delete (layers); rename, move, clear, delete (columns) |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Del` | Copy, cut, paste, clear the selected cell |
+| `Ctrl+D` | Duplicate the selected layer |
+| `Ctrl+Shift+L` | Live lock: only launching and performance controls work |
+| Right-click a cell | Copy, paste, change its source or clear it |
 | `X` / `B` / `S` on a layer | Eject / bypass / solo |
 | `A` / `B` on a layer | Assign it to a crossfader side |
 | Double-click a fader | Reset it |
 | `L` or **MIDI Learn** | Learn mode: click a control, then move a MIDI control |
 | `T` or **TAP** | Tap tempo |
 | Right-click a fader or effect parameter | Add an LFO or audio modulation |
-| **Control…** | OSC port, MIDI inputs and mappings, audio input, modulators |
+| **Control…** | OSC port and access, MIDI inputs and mappings, audio input, modulators |
 | **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
-| `Esc` | Clear all layers |
+| `Shift+Esc` | Clear all layers (plain `Esc` only closes menus) |
 | Window › Cues | Cue list: **Record** stores the clip playing and the opacity of every layer, the master and the crossfader; **GO** or `Space` plays the next cue with its fade (clips crossfade, levels move); each cue waits for Go or follows on after some seconds or beats. Moving a fader by hand stops a fade |
 | `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | New, open, save, save as. Verso asks before losing unsaved changes (`*` in the title) |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo structure edits: clips, layers, columns, groups, effect chains, mappings (fader moves are not undone) |
+| `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) | Undo / redo edits; a fader drag is one step, and launching clips or going to cues is never undone |
 | Right-click a layer header › Delete Layer, a column header › Delete Column | Remove them with their clips (undoable) |
 | Click the status bar, or Window › Messages… | History of status messages and errors |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
@@ -84,12 +97,21 @@ cargo run --release -p verso-app
 | Drag a panel tab | Move it to another tab group, or to an edge to split; drag separators to resize |
 | Window menu | Open more Composition, Group, Layer or Clip panels, reopen panels, reset the layout |
 | 🔗 Follow / 🔒 Locked in a Properties panel | Follow the selection, or stay on one group, layer or clip; the list picks the target |
+| Output › Spout / Syphon Output | Share the output with apps on the same computer (Windows: Spout; macOS: Syphon, needs `Syphon.framework` in `/Library/Frameworks`) |
+| Browser › Sources › NDI® sources › Find | List NDI senders on the network; drag one onto a cell to play it live |
+| **LINK** | Join the Ableton Link session: shared tempo and beat phase (number of peers shown) |
+| Control › Timecode | Read MIDI Time Code or LTC on an audio channel; add cues that fire an OSC address at a timecode |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Browser › Sources › MilkDrop | Audio-reactive MilkDrop presets by category; a clip's Properties pick among the remixes of its preset (with a MilkDrop blend) and can feed another layer into it |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
 | Hover a layer or column header, or a MilkDrop clip | The Preview monitor shows that layer alone, what the column would output, or the clip playing live |
 | Hover a source in Browser › Sources | The Preview monitor plays it; List / Thumbnails switches the browser to a grid of live thumbnails |
 | Window › Save Layout as Default | Reset Layout then returns to this layout (Built-in Layout restores the original) |
+| Properties › Clip › Position / Speed | Scrub a playing video; HAP files also play backwards (negative speed) |
+| Composition › Preferences… | Click behaviour, interface size, recovery copy, reopen last file |
+
+Unsaved work is copied every minute and offered back after a crash (Composition › Preferences turns it off). Missing
+media files can be relinked by picking a folder when a composition opens.
 
 ## Workspace
 
@@ -223,17 +245,43 @@ Raw `.milk` files are not supported yet.
 
 Lua scripts define `frame(t)` and/or `beat(n)` and drive the composition with
 `verso.set(address, value)`, `verso.trigger(address)` and `verso.get(address)`,
-using the OSC addresses. See [scripts/beat-chase.lua](scripts/beat-chase.lua).
+using the OSC addresses. `t.timecode` gives the incoming timecode in seconds.
+See [scripts/beat-chase.lua](scripts/beat-chase.lua).
 Scripts are saved in the composition and run sandboxed (no file or OS access,
 endless loops are stopped).
 
 NDI® is a registered trademark of Vizrt NDI AB.
+
+## Safety
+
+- Scripts saved in a composition run sandboxed: no file, OS or network
+  access, 64 MiB of memory and 5 million instructions per call (`pcall` cannot
+  catch the limit).
+- Compositions are checked when opened: inconsistent or out-of-range values
+  are repaired and listed in the status bar. Saves are atomic and keep the
+  previous version as `<name>.verso.bak`.
+- Media paths are read as local files only.
+- OSC listens to this computer only unless **Accept from other computers** is
+  on in the Control window; you can then list the allowed addresses.
+- Logs and crash reports go to `verso.log` and `crash.log` in Verso's user
+  folder (`%APPDATA%\Verso`, `~/Library/Application Support/Verso` or
+  `~/.config/verso`).
 
 ## Test
 
 ```bash
 cargo test --workspace
 ```
+
+## Bench
+
+```bash
+cargo run --release -p verso-app --example bench
+```
+
+Measures compositing (1, 4, 8 layers), FFmpeg decoding of 1080p H.264 and HAP
+(1 and 4 players) and the full path of 4 HAP 1080p layers against 60 fps. Run it
+on the show computer.
 
 GPU tests in `verso-render/tests` check output pixels and write
 `target/verso-demo.png`. They skip when no GPU adapter is available.

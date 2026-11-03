@@ -10,6 +10,7 @@ mod dock;
 mod effects_ui;
 mod grid;
 mod groups_ui;
+mod history;
 mod hover_preview;
 mod logging;
 mod media;
@@ -18,6 +19,7 @@ mod milkdrop_ui;
 mod online_ui;
 mod outputs;
 mod panels;
+mod prefs;
 mod scripts_ui;
 mod source_browser;
 mod theme;
@@ -28,7 +30,20 @@ mod workspace;
 fn main() -> eframe::Result {
     logging::init();
     let window = title_bar::WindowSettings::load();
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+        // Ask for BC textures when the GPU has them: HAP video then goes to
+        // the GPU without decoding.
+        let base = setup.device_descriptor.clone();
+        setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+            let mut descriptor = base(adapter);
+            descriptor.required_features |=
+                adapter.features() & eframe::wgpu::Features::TEXTURE_COMPRESSION_BC;
+            descriptor
+        });
+    }
     let options = eframe::NativeOptions {
+        wgpu_options,
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Verso")

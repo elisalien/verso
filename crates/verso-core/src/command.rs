@@ -164,6 +164,30 @@ pub enum Command {
     /// The cue after the current one (the first when none is current).
     GoNextCue,
     GoPreviousCue,
+    /// Adds a timecode cue, keeping timecode cues sorted by time.
+    AddTimecodeCue(crate::control::Cue),
+    RemoveTimecodeCue(usize),
+    SetTimecodeCue {
+        index: usize,
+        cue: crate::control::Cue,
+    },
+    /// Moves a layer so it ends at index `to`.
+    MoveLayer {
+        from: usize,
+        to: usize,
+    },
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
+    DuplicateLayer(usize),
+    /// Moves (swapping with a full destination) or copies a clip between
+    /// cells, each given as `(layer, column)`.
+    MoveClip {
+        from: (usize, usize),
+        to: (usize, usize),
+        copy: bool,
+    },
 }
 
 /// What a command means for the document: whether it needs saving and
@@ -240,13 +264,23 @@ impl Command {
             | RecordCue { .. }
             | UpdateCue(_)
             | RemoveCue(_)
-            | MoveCue { .. } => CommandKind::Edit,
+            | MoveCue { .. }
+            | AddTimecodeCue(_)
+            | RemoveTimecodeCue(_)
+            | SetTimecodeCue { .. }
+            | MoveLayer { .. }
+            | MoveColumn { .. }
+            | DuplicateLayer(_)
+            | MoveClip { .. } => CommandKind::Edit,
         }
     }
 }
 
 impl Composition {
     pub fn apply(&mut self, command: Command) -> Result<()> {
+        if !command.is_finite() {
+            return Err(Error::NotFinite);
+        }
         match command {
             Command::TriggerClip { layer, column } => self.trigger_clip(layer, column)?,
             Command::TriggerColumn(column) => self.trigger_column(column)?,
@@ -385,6 +419,27 @@ impl Composition {
             Command::GoCue(index) => self.go_cue(index)?,
             Command::GoNextCue => self.go_next_cue()?,
             Command::GoPreviousCue => self.go_previous_cue()?,
+            Command::AddTimecodeCue(cue) => {
+                self.timecode_cues.push(cue);
+                self.sort_timecode_cues();
+            }
+            Command::RemoveTimecodeCue(index) => {
+                if index >= self.timecode_cues.len() {
+                    return Err(Error::NoCue(index));
+                }
+                self.timecode_cues.remove(index);
+            }
+            Command::SetTimecodeCue { index, cue } => {
+                *self
+                    .timecode_cues
+                    .get_mut(index)
+                    .ok_or(Error::NoCue(index))? = cue;
+                self.sort_timecode_cues();
+            }
+            Command::MoveLayer { from, to } => self.move_layer(from, to)?,
+            Command::MoveColumn { from, to } => self.move_column(from, to)?,
+            Command::DuplicateLayer(layer) => self.duplicate_layer(layer)?,
+            Command::MoveClip { from, to, copy } => self.move_clip(from, to, copy)?,
         }
         Ok(())
     }

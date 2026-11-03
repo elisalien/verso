@@ -12,6 +12,10 @@ pub const CELL: Vec2 = Vec2::new(112.0, 63.0);
 pub const HEADER_WIDTH: f32 = 236.0;
 const COLUMN_HEADER_HEIGHT: f32 = 22.0;
 
+/// A clip dragged from another cell: `(layer, column)`.
+#[derive(Clone, Copy)]
+pub struct CellPayload(pub usize, pub usize);
+
 /// A source dragged from the browser.
 #[derive(Clone)]
 pub struct SourceTemplate {
@@ -121,8 +125,8 @@ impl VersoApp {
         let mut child =
             ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(3.0, 2.0))));
         child.horizontal_centered(|ui| {
-            if widgets::square_button(ui, "X", "Clear all layers").clicked() {
-                self.send(Command::ClearAll);
+            if widgets::square_button(ui, "X", "Clear all layers (Shift+Esc)").clicked() {
+                self.send_live(Command::ClearAll);
             }
             ui.label(egui::RichText::new("Composition").strong());
             let mut opacity = self.comp.master.opacity;
@@ -176,11 +180,19 @@ impl VersoApp {
         if response.contains_pointer() {
             self.hover_target = Some(crate::hover_preview::HoverTarget::Column(column));
         }
-        let response = response.on_hover_text("Click to launch the column");
+        let key = match column {
+            0..=8 => format!(" ({})", column + 1),
+            9..=17 => format!(" (Shift+{})", column - 8),
+            _ => String::new(),
+        };
+        let response = response.on_hover_text(format!(
+            "Click to launch the column{key} · right-click: rename, move, delete"
+        ));
         let learning = self.learnable(ui, rect, Action::LaunchColumn(column));
         if response.clicked() && !learning {
-            self.send(Command::TriggerColumn(column));
+            self.send_live(Command::TriggerColumn(column));
         }
+        let count = self.comp.columns.len();
         response.context_menu(|ui| {
             let mut name = self.comp.columns[column].name.clone();
             ui.label("Column name");
@@ -202,10 +214,25 @@ impl VersoApp {
                 ui.close();
             }
             if ui
-                .add_enabled(
-                    self.comp.columns.len() > 1,
-                    egui::Button::new("Delete Column"),
-                )
+                .add_enabled(column > 0, egui::Button::new("Move Left"))
+                .clicked()
+            {
+                self.send(Command::MoveColumn {
+                    from: column,
+                    to: column - 1,
+                });
+            }
+            if ui
+                .add_enabled(column + 1 < count, egui::Button::new("Move Right"))
+                .clicked()
+            {
+                self.send(Command::MoveColumn {
+                    from: column,
+                    to: column + 1,
+                });
+            }
+            if ui
+                .add_enabled(count > 1, egui::Button::new("Delete Column"))
                 .on_hover_text("Deletes the column and its clips on every layer (Ctrl+Z undoes)")
                 .clicked()
             {
@@ -294,7 +321,7 @@ impl VersoApp {
             ui.horizontal(|ui| {
                 let eject = widgets::square_button(ui, "X", "Eject the playing clip");
                 if !self.learnable(ui, eject.rect, Action::EjectLayer(index)) && eject.clicked() {
-                    self.send(Command::EjectLayer(index));
+                    self.send_live(Command::EjectLayer(index));
                 }
                 let toggle = widgets::toggle(ui, &mut bypass, "B", theme::warn(), "Bypass");
                 if !self.learnable(ui, toggle.rect, Action::Set(Param::LayerBypass(index)))
@@ -347,11 +374,49 @@ impl VersoApp {
         if response.contains_pointer() {
             self.hover_target = Some(crate::hover_preview::HoverTarget::Layer(index));
         }
-        response.context_menu(|ui| self.layer_group_menu(ui, index));
+        let count = self.comp.layers.len();
+        response.context_menu(|ui| {
+            if ui
+                .add(egui::Button::new("Duplicate").shortcut_text("Ctrl+D"))
+                .clicked()
+            {
+                self.send(Command::DuplicateLayer(index));
+                ui.close();
+            }
+            if ui
+                .add_enabled(index + 1 < count, egui::Button::new("Move Up"))
+                .clicked()
+            {
+                self.send(Command::MoveLayer {
+                    from: index,
+                    to: index + 1,
+                });
+            }
+            if ui
+                .add_enabled(index > 0, egui::Button::new("Move Down"))
+                .clicked()
+            {
+                self.send(Command::MoveLayer {
+                    from: index,
+                    to: index - 1,
+                });
+            }
+            ui.separator();
+            self.layer_group_menu(ui, index);
+        });
     }
 
     fn cell(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
-        let (rect, response) = ui.allocate_exact_size(CELL, Sense::click());
+        let has_clip = self.comp.layers[layer].clips[column].is_some();
+        let sense = if has_clip && !self.live_lock {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        };
+        let (rect, response) = ui.allocate_exact_size(CELL, sense);
+        if has_clip && !self.live_lock && response.dragged() {
+            response.dnd_set_drag_payload(CellPayload(layer, column));
+        }
         // MilkDrop clips: family and input layer.
         let milk = match self.comp.layers[layer].clips[column]
             .as_ref()
@@ -366,6 +431,9 @@ impl VersoApp {
         let active = self.comp.layers[layer].active == Some(column);
         let selected = self.selected_clip == Some((layer, column));
         let drop_hover = response.dnd_hover_payload::<SourceTemplate>().is_some()
+            || response
+                .dnd_hover_payload::<CellPayload>()
+                .is_some_and(|p| (p.0, p.1) != (layer, column))
             || (response.dnd_hover_payload::<EffectTemplate>().is_some() && clip.is_some());
         let painter = ui.painter_at(rect);
         self.cell_rects.push((rect, (layer, column)));
@@ -493,7 +561,20 @@ impl VersoApp {
             ));
         }
 
-        if let Some(template) = widgets::dropped::<EffectTemplate>(&response) {
+        let launch_on_click = self.prefs.cell_click == crate::prefs::CellClick::Launch;
+        let select_only = ui.input(|i| i.modifiers.command);
+        if let Some(from) = widgets::dropped::<CellPayload>(&response) {
+            if (from.0, from.1) != (layer, column) {
+                // Alt (Option) copies; otherwise the clips move or swap.
+                let copy = ui.input(|i| i.modifiers.alt);
+                self.send(Command::MoveClip {
+                    from: (from.0, from.1),
+                    to: (layer, column),
+                    copy,
+                });
+                self.selected_clip = Some((layer, column));
+            }
+        } else if let Some(template) = widgets::dropped::<EffectTemplate>(&response) {
             if self.comp.layers[layer].clips[column].is_some() {
                 self.add_effect(EffectTarget::Clip { layer, column }, &template);
                 self.selected_clip = Some((layer, column));
@@ -509,18 +590,50 @@ impl VersoApp {
             self.props_tab = PropsTab::Clip;
         } else if self.learnable(ui, rect, Action::LaunchClip { layer, column }) {
             // Learn mode picks the cell instead of launching it.
-        } else if response.clicked() {
+        } else if response.clicked() || response.double_clicked() {
             self.selected_clip = Some((layer, column));
             self.selected_layer = layer;
             if self.comp.layers[layer].clips[column].is_some() {
                 self.props_tab = PropsTab::Clip;
             }
-            self.send(Command::TriggerClip { layer, column });
+            let launch = if launch_on_click {
+                response.clicked() && !select_only
+            } else {
+                response.double_clicked()
+            };
+            if launch {
+                self.send_live(Command::TriggerClip { layer, column });
+            }
         }
+        let hint = if launch_on_click {
+            "Click: launch · Ctrl+click: select · drag: move (Alt: copy) · right-click: menu"
+        } else {
+            "Click: select · double-click: launch · drag: move (Alt: copy) · right-click: menu"
+        };
+        let response = response.on_hover_text_at_pointer(hint);
         response.context_menu(|ui| self.cell_menu(ui, layer, column));
     }
 
     fn cell_menu(&mut self, ui: &mut egui::Ui, layer: usize, column: usize) {
+        let has_clip = self.comp.layers[layer].clips[column].is_some();
+        if ui
+            .add_enabled(has_clip, egui::Button::new("Copy").shortcut_text("Ctrl+C"))
+            .clicked()
+        {
+            self.selected_clip = Some((layer, column));
+            self.copy_clip();
+        }
+        if ui
+            .add_enabled(
+                self.clipboard.is_some(),
+                egui::Button::new("Paste").shortcut_text("Ctrl+V"),
+            )
+            .clicked()
+        {
+            self.selected_clip = Some((layer, column));
+            self.paste_clip();
+        }
+        ui.separator();
         for template in SourceTemplate::all() {
             if ui.button(&template.name).clicked() {
                 self.send(Command::SetClip {
@@ -544,7 +657,10 @@ impl VersoApp {
         {
             self.send(Command::ResetLaunchCount { layer, column });
         }
-        if ui.button("Clear").clicked() {
+        if ui
+            .add_enabled(has_clip, egui::Button::new("Clear").shortcut_text("Del"))
+            .clicked()
+        {
             self.send(Command::SetClip {
                 layer,
                 column,

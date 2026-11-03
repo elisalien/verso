@@ -37,7 +37,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
       - name: Test
+        if: runner.os != 'Linux'
         run: cargo test --workspace
+      # Lavapipe (software Vulkan) segfaults when several wgpu devices run
+      # at once, so the GPU tests run one at a time on Linux.
+      - name: Test
+        if: runner.os == 'Linux'
+        run: |
+          cargo test --workspace --exclude verso-render --exclude verso-app
+          cargo test -p verso-render -p verso-app -- --test-threads=1
       - name: Build without Ableton Link
         if: runner.os == 'Linux'
         run: cargo check -p verso-app --no-default-features

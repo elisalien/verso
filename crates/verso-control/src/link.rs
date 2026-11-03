@@ -61,12 +61,18 @@ mod tests {
     #[test]
     fn beats_advance_at_the_tempo() {
         let mut link = Link::new(120.0);
+        let before = Instant::now();
         let (bpm, start) = link.capture();
         assert_eq!(bpm, 120.0);
         std::thread::sleep(Duration::from_millis(500));
         let (_, later) = link.capture();
-        // Half a second at 120 BPM is one beat.
-        assert!((later - start - 1.0).abs() < 0.1, "{start} → {later}");
+        // 120 BPM is two beats per second. Measure the real elapsed time:
+        // CI runners can oversleep by well over 100 ms.
+        let expected = 2.0 * before.elapsed().as_secs_f64();
+        assert!(
+            (later - start - expected).abs() < 0.1,
+            "{start} → {later}, expected {expected} beats"
+        );
         link.set_tempo(90.0);
         assert!((link.capture().0 - 90.0).abs() < 1e-6);
     }

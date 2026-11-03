@@ -47,8 +47,48 @@ pub enum EffectTarget {
     Clip { layer: usize, column: usize },
 }
 
+/// `index` after the item at `removed` is deleted: `None` when it was the
+/// deleted one.
+pub(crate) fn shifted(index: usize, removed: usize) -> Option<usize> {
+    match index.cmp(&removed) {
+        std::cmp::Ordering::Less => Some(index),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(index - 1),
+    }
+}
+
+impl EffectTarget {
+    pub fn without_layer(self, removed: usize) -> Option<Self> {
+        Some(match self {
+            EffectTarget::Layer(l) => EffectTarget::Layer(shifted(l, removed)?),
+            EffectTarget::Clip { layer, column } => EffectTarget::Clip {
+                layer: shifted(layer, removed)?,
+                column,
+            },
+            other => other,
+        })
+    }
+
+    pub fn without_column(self, removed: usize) -> Option<Self> {
+        Some(match self {
+            EffectTarget::Clip { layer, column } => EffectTarget::Clip {
+                layer,
+                column: shifted(column, removed)?,
+            },
+            other => other,
+        })
+    }
+
+    pub fn without_group(self, removed: usize) -> Option<Self> {
+        Some(match self {
+            EffectTarget::Group(g) => EffectTarget::Group(shifted(g, removed)?),
+            other => other,
+        })
+    }
+}
+
 /// Change to one effect chain.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EffectEdit {
     Add(Effect),
     Remove(usize),

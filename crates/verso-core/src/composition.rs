@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::control::MidiMapping;
+use crate::control::{Action, MidiMapping, Param};
 use crate::modulation::Modulator;
 use crate::{Effect, EffectTarget, Error, Generator, Result, Source};
 
@@ -88,7 +88,15 @@ pub struct Group {
     pub opacity: f32,
     pub bypass: bool,
     #[serde(default)]
+    pub solo: bool,
+    #[serde(default)]
     pub effects: Vec<Effect>,
+    /// Group containing this one.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// Member layers hidden in the grid.
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl Group {
@@ -98,7 +106,10 @@ impl Group {
             blend: BlendMode::Alpha,
             opacity: 1.0,
             bypass: false,
+            solo: false,
             effects: Vec::new(),
+            parent: None,
+            collapsed: false,
         }
     }
 }
@@ -145,6 +156,10 @@ pub struct Layer {
     /// to the media: replacing the clip keeps the count.
     #[serde(default)]
     pub launches: Vec<u32>,
+    /// Transition of the last clip change when a cue made it (the cue's
+    /// fade); cleared by the next launch or eject. Not saved.
+    #[serde(skip)]
+    pub cue_transition: Option<f32>,
 }
 
 impl Layer {
@@ -162,7 +177,14 @@ impl Layer {
             transition: 0.0,
             group: None,
             launches: vec![0; columns],
+            cue_transition: None,
         }
+    }
+
+    /// Crossfade time of the latest clip change: the cue's fade when a cue
+    /// made it, the layer's transition otherwise.
+    pub fn transition_time(&self) -> f32 {
+        self.cue_transition.unwrap_or(self.transition)
     }
 
     /// Times the slot in `column` was launched.
@@ -171,9 +193,16 @@ impl Layer {
     }
 
     /// Plays the clip in `column`, counting the launch; an empty slot ejects.
-    fn launch(&mut self, column: usize) {
-        self.active = self.clips[column].as_ref().map(|_| column);
-        if self.active.is_some() {
+    /// Relaunching the clip already playing is not counted.
+    pub(crate) fn launch(&mut self, column: usize) {
+        self.cue_transition = None;
+        let was_active = self.active == Some(column);
+        self.active = self
+            .clips
+            .get(column)
+            .and_then(|c| c.as_ref())
+            .map(|_| column);
+        if self.active.is_some() && !was_active {
             if self.launches.len() <= column {
                 self.launches.resize(column + 1, 0);
             }
@@ -239,6 +268,18 @@ pub struct Composition {
     pub midi: Vec<MidiMapping>,
     #[serde(default)]
     pub scripts: Vec<Script>,
+    /// Window layout of the app that saved the file (panels, docking),
+    /// opaque to the core. Files without one open with the current layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "crate::cue::CueList::is_empty")]
+    pub cues: crate::cue::CueList,
+    /// Cue fading or waiting to follow on. Not saved.
+    #[serde(skip)]
+    pub cue_run: Option<crate::cue::CueRun>,
+    /// Actions fired by incoming timecode, sorted by time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timecode_cues: Vec<crate::control::Cue>,
 }
 
 impl Composition {
@@ -262,7 +303,21 @@ impl Composition {
             modulators: Vec::new(),
             midi: Vec::new(),
             scripts: Vec::new(),
+            layout: None,
+            cues: Default::default(),
+            cue_run: None,
+            timecode_cues: Vec::new(),
         }
+    }
+
+    /// Like [`Self::demo`] with `layers` layers.
+    pub fn demo_with_layers(layers: usize) -> Self {
+        let mut comp = Self::demo();
+        while comp.layers.len() < layers {
+            comp.add_layer();
+        }
+        comp.layers.truncate(layers);
+        comp
     }
 
     /// A small composition with generators in every cell, useful to try the app.
@@ -310,8 +365,7 @@ impl Composition {
         let Some(layer) = self.layers.get(index) else {
             return 0.0;
         };
-        let any_solo = self.layers.iter().any(|l| l.solo);
-        if layer.bypass || (any_solo && !layer.solo) {
+        if layer.bypass || (self.any_solo() && !self.soloed(index)) {
             return 0.0;
         }
         layer.opacity * self.master.fader_level(layer.fader)
@@ -323,15 +377,6 @@ impl Composition {
             Some(group) if !group.bypass => group.opacity,
             _ => 0.0,
         }
-    }
-
-    /// Layers of a group, bottom first.
-    pub fn group_layers(&self, group: usize) -> impl Iterator<Item = usize> + '_ {
-        self.layers
-            .iter()
-            .enumerate()
-            .filter(move |(_, l)| l.group == Some(group))
-            .map(|(i, _)| i)
     }
 
     pub fn effects(&self, target: EffectTarget) -> Option<&Vec<Effect>> {
@@ -371,38 +416,11 @@ impl Composition {
         self.groups.get_mut(group).ok_or(Error::NoGroup(group))
     }
 
-    pub(crate) fn add_group(&mut self, layers: &[usize]) -> Result<()> {
-        if let Some(&bad) = layers.iter().find(|&&l| l >= self.layers.len()) {
-            return Err(Error::NoLayer(bad));
-        }
-        let index = self.groups.len();
-        self.groups.push(Group::new(format!("Group {}", index + 1)));
-        for &l in layers {
-            self.layers[l].group = Some(index);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn remove_group(&mut self, group: usize) -> Result<()> {
-        if group >= self.groups.len() {
-            return Err(Error::NoGroup(group));
-        }
-        self.groups.remove(group);
-        for layer in &mut self.layers {
-            layer.group = match layer.group {
-                Some(g) if g == group => None,
-                Some(g) if g > group => Some(g - 1),
-                other => other,
-            };
-        }
-        Ok(())
-    }
-
     pub fn layer_mut(&mut self, layer: usize) -> Result<&mut Layer> {
         self.layers.get_mut(layer).ok_or(Error::NoLayer(layer))
     }
 
-    fn check_column(&self, column: usize) -> Result<()> {
+    pub(crate) fn check_column(&self, column: usize) -> Result<()> {
         if column < self.columns.len() {
             Ok(())
         } else {
@@ -417,8 +435,16 @@ impl Composition {
         )?)
     }
 
+    /// Parses a composition and repairs it (see [`Self::repair`]).
     pub fn from_ron(text: &str) -> Result<Self> {
-        Ok(ron::from_str(text)?)
+        Ok(Self::from_ron_with_fixes(text)?.0)
+    }
+
+    /// Like [`Self::from_ron`], also returning what had to be repaired.
+    pub fn from_ron_with_fixes(text: &str) -> Result<(Self, Vec<String>)> {
+        let mut comp: Self = ron::from_str(text)?;
+        let fixes = comp.repair();
+        Ok((comp, fixes))
     }
 
     pub(crate) fn trigger_clip(&mut self, layer: usize, column: usize) -> Result<()> {
@@ -438,6 +464,83 @@ impl Composition {
     pub(crate) fn add_layer(&mut self) {
         let name = format!("Layer {}", self.layers.len() + 1);
         self.layers.push(Layer::new(name, self.columns.len()));
+    }
+
+    /// Deletes `layer`. References to it (modulators, MIDI mappings) are
+    /// dropped and references to the layers above move down. Groups left
+    /// without layers are dissolved.
+    pub(crate) fn remove_layer(&mut self, layer: usize) -> Result<()> {
+        if layer >= self.layers.len() {
+            return Err(Error::NoLayer(layer));
+        }
+        if self.layers.len() == 1 {
+            return Err(Error::LastLayer);
+        }
+        self.layers.remove(layer);
+        self.prune(|p| p.without_layer(layer), |a| a.without_layer(layer));
+        self.cues_without_layer(layer);
+        while let Some(empty) =
+            (0..self.groups.len()).find(|&g| self.group_layers(g).next().is_none())
+        {
+            self.ungroup(empty)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes `column` and the clips in it on every layer. A layer playing
+    /// that column is ejected.
+    pub(crate) fn remove_column(&mut self, column: usize) -> Result<()> {
+        self.check_column(column)?;
+        if self.columns.len() == 1 {
+            return Err(Error::LastColumn);
+        }
+        self.columns.remove(column);
+        for layer in &mut self.layers {
+            if column < layer.clips.len() {
+                layer.clips.remove(column);
+            }
+            if column < layer.launches.len() {
+                layer.launches.remove(column);
+            }
+            layer.active = match layer.active {
+                Some(c) if c == column => None,
+                Some(c) if c > column => Some(c - 1),
+                other => other,
+            };
+        }
+        self.prune(|p| p.without_column(column), |a| a.without_column(column));
+        self.cues_without_column(column);
+        Ok(())
+    }
+
+    /// Rewrites or drops every modulator and MIDI mapping after an index
+    /// change: `param` and `action` return the new target, or `None` to drop.
+    pub(crate) fn prune(
+        &mut self,
+        param: impl Fn(&Param) -> Option<Param>,
+        action: impl Fn(&Action) -> Option<Action>,
+    ) {
+        self.modulators.retain_mut(|m| match param(&m.param) {
+            Some(p) => {
+                m.param = p;
+                true
+            }
+            None => false,
+        });
+        self.midi.retain_mut(|m| match action(&m.action) {
+            Some(a) => {
+                m.action = a;
+                true
+            }
+            None => false,
+        });
+        self.timecode_cues.retain_mut(|c| match action(&c.action) {
+            Some(a) => {
+                c.action = a;
+                true
+            }
+            None => false,
+        });
     }
 
     pub(crate) fn add_column(&mut self) {

@@ -4,14 +4,18 @@ description = "Verso wgpu compositing engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 verso-core.workspace = true
+verso-milkdrop.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "wgsl-out"] }
 serde_json = "1"
+pollster = "1.0.1"
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-pollster = "1.0.1"
+verso-io.workspace = true
+verso-media.workspace = true

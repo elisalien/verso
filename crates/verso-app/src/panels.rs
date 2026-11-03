@@ -26,11 +26,41 @@ fn monitor_image(ui: &mut egui::Ui, texture: Option<TextureId>, size: Vec2, aspe
             Color32::WHITE,
         );
     }
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::LINE), StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, theme::line()),
+        StrokeKind::Inside,
+    );
     rect
 }
 
+/// `m:ss` for a duration in seconds.
+pub(crate) fn clock(seconds: f64) -> String {
+    let whole = seconds.max(0.0) as u64;
+    format!("{}:{:02}", whole / 60, whole % 60)
+}
+
+/// Thin playback progress line along the bottom edge of `rect`.
+pub(crate) fn progress_strip(painter: &egui::Painter, rect: Rect, progress: f32) {
+    let strip = Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - 3.0),
+        rect.right_bottom(),
+    );
+    painter.rect_filled(strip, 0.0, Color32::from_black_alpha(120));
+    let done = Rect::from_min_max(
+        strip.min,
+        egui::pos2(
+            strip.left() + strip.width() * progress.clamp(0.0, 1.0),
+            strip.bottom(),
+        ),
+    );
+    painter.rect_filled(done, 0.0, theme::accent());
+}
+
 fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    // Labels fit the minimum column width; sliders take the rest.
+    widgets::fit_sliders(ui, 90.0, 10.0);
     egui::Grid::new(id)
         .num_columns(2)
         .spacing([10.0, 6.0])
@@ -39,54 +69,48 @@ fn property_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl VersoApp {
-    pub(crate) fn properties(&mut self, ui: &mut egui::Ui) {
-        widgets::header(ui, "Properties");
-        let grouped = self
-            .comp
-            .layers
-            .get(self.selected_layer)
-            .is_some_and(|l| l.group.is_some());
-        if self.props_tab == PropsTab::Group && !grouped {
-            self.props_tab = PropsTab::Layer;
-        }
-        let mut tabs = vec![(PropsTab::Composition, "Composition")];
-        if grouped {
-            tabs.push((PropsTab::Group, "Group"));
-        }
-        tabs.extend([(PropsTab::Layer, "Layer"), (PropsTab::Clip, "Clip")]);
-        widgets::tabs(ui, &mut self.props_tab, &tabs);
-        ui.separator();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            match self.props_tab {
-                PropsTab::Composition => self.composition_properties(ui),
-                PropsTab::Group => self.group_properties(ui),
-                PropsTab::Layer => self.layer_properties(ui),
-                PropsTab::Clip => self.clip_properties(ui),
-            }
-            if let Some(target) = self.props_target() {
-                self.effect_chain(ui, target);
-            }
-        });
-    }
-
-    fn composition_properties(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn composition_properties(&mut self, ui: &mut egui::Ui) {
         property_grid(ui, "composition", |ui| {
             ui.label("Name");
-            ui.text_edit_singleline(&mut self.comp.name);
+            let mut name = self.comp.name.clone();
+            if ui.text_edit_singleline(&mut name).changed() {
+                self.send(Command::Rename(name));
+            }
             ui.end_row();
 
             ui.label("Resolution");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut self.comp.width).range(16..=8192));
-                ui.label("×");
-                ui.add(egui::DragValue::new(&mut self.comp.height).range(16..=8192));
-            });
+            // Applied when the drag or the typing ends: each change rebuilds
+            // every render texture.
+            let (mut width, mut height) = self
+                .edit_size
+                .unwrap_or((self.comp.width, self.comp.height));
+            let done = ui
+                .horizontal(|ui| {
+                    let w = ui.add(egui::DragValue::new(&mut width).range(16..=8192));
+                    ui.label("×");
+                    let h = ui.add(egui::DragValue::new(&mut height).range(16..=8192));
+                    if w.changed() || h.changed() {
+                        self.edit_size = Some((width, height));
+                    }
+                    let editing = w.dragged() || h.dragged() || w.has_focus() || h.has_focus();
+                    self.edit_size.is_some() && !editing
+                })
+                .inner;
+            if done && let Some((width, height)) = self.edit_size.take() {
+                self.send(Command::SetResolution { width, height });
+            }
             ui.end_row();
 
             ui.label("Master");
             let mut opacity = self.comp.master.opacity;
-            if widgets::fader(ui, &mut opacity, Vec2::new(200.0, 18.0), theme::ACCENT, 1.0)
-                .changed()
+            if widgets::fader(
+                ui,
+                &mut opacity,
+                Vec2::new(200.0, 18.0),
+                theme::accent(),
+                1.0,
+            )
+            .changed()
             {
                 self.send(Command::SetMasterOpacity(opacity));
             }
@@ -119,15 +143,11 @@ impl VersoApp {
         });
     }
 
-    fn group_properties(&mut self, ui: &mut egui::Ui) {
-        let Some(g) = self
-            .comp
-            .layers
-            .get(self.selected_layer)
-            .and_then(|l| l.group)
-        else {
+    pub(crate) fn group_properties(&mut self, ui: &mut egui::Ui, g: usize) {
+        if g >= self.comp.groups.len() {
+            ui.label(egui::RichText::new("This group no longer exists.").color(theme::text_dim()));
             return;
-        };
+        }
         let group = &self.comp.groups[g];
         let (mut name, mut blend, mut opacity, mut bypass) =
             (group.name.clone(), group.blend, group.opacity, group.bypass);
@@ -152,17 +172,38 @@ impl VersoApp {
             ui.end_row();
 
             ui.label("Opacity");
-            if widgets::fader(ui, &mut opacity, Vec2::new(200.0, 18.0), theme::ACCENT, 1.0)
-                .changed()
+            if widgets::fader(
+                ui,
+                &mut opacity,
+                Vec2::new(200.0, 18.0),
+                theme::accent(),
+                1.0,
+            )
+            .changed()
             {
                 self.send(Command::SetGroupOpacity { group: g, opacity });
             }
             ui.end_row();
 
-            ui.label("Bypass");
-            if widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass").changed() {
-                self.send(Command::SetGroupBypass { group: g, bypass });
-            }
+            ui.label("State");
+            ui.horizontal(|ui| {
+                if widgets::toggle(ui, &mut bypass, "B", theme::warn(), "Bypass").changed() {
+                    self.send(Command::SetGroupBypass { group: g, bypass });
+                }
+                let mut solo = self.comp.groups[g].solo;
+                if widgets::toggle(ui, &mut solo, "S", theme::solo(), "Solo").changed() {
+                    self.send(Command::SetGroupSolo { group: g, solo });
+                }
+            });
+            ui.end_row();
+
+            ui.label("Inside");
+            let parent = self.comp.groups[g]
+                .parent
+                .and_then(|p| self.comp.groups.get(p))
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Composition".into());
+            ui.label(parent);
             ui.end_row();
 
             ui.label("Layers");
@@ -184,8 +225,7 @@ impl VersoApp {
         }
     }
 
-    fn layer_properties(&mut self, ui: &mut egui::Ui) {
-        let index = self.selected_layer;
+    pub(crate) fn layer_properties(&mut self, ui: &mut egui::Ui, index: usize) {
         let Some(layer) = self.comp.layers.get(index) else {
             ui.label("No layer.");
             return;
@@ -222,8 +262,14 @@ impl VersoApp {
             ui.end_row();
 
             ui.label("Opacity");
-            if widgets::fader(ui, &mut opacity, Vec2::new(200.0, 18.0), theme::ACCENT, 1.0)
-                .changed()
+            if widgets::fader(
+                ui,
+                &mut opacity,
+                Vec2::new(200.0, 18.0),
+                theme::accent(),
+                1.0,
+            )
+            .changed()
             {
                 self.send(Command::SetLayerOpacity {
                     layer: index,
@@ -234,13 +280,13 @@ impl VersoApp {
 
             ui.label("State");
             ui.horizontal(|ui| {
-                if widgets::toggle(ui, &mut bypass, "B", theme::WARN, "Bypass").changed() {
+                if widgets::toggle(ui, &mut bypass, "B", theme::warn(), "Bypass").changed() {
                     self.send(Command::SetLayerBypass {
                         layer: index,
                         bypass,
                     });
                 }
-                if widgets::toggle(ui, &mut solo, "S", theme::SOLO, "Solo").changed() {
+                if widgets::toggle(ui, &mut solo, "S", theme::solo(), "Solo").changed() {
                     self.send(Command::SetLayerSolo { layer: index, solo });
                 }
             });
@@ -311,9 +357,9 @@ impl VersoApp {
         });
     }
 
-    fn clip_properties(&mut self, ui: &mut egui::Ui) {
-        let Some((layer, column)) = self.selected_clip else {
-            ui.label(egui::RichText::new("Select a clip.").color(theme::TEXT_DIM));
+    pub(crate) fn clip_properties(&mut self, ui: &mut egui::Ui, slot: Option<(usize, usize)>) {
+        let Some((layer, column)) = slot else {
+            ui.label(egui::RichText::new("Select a clip.").color(theme::text_dim()));
             return;
         };
         let Some(Some(mut clip)) = self
@@ -325,11 +371,12 @@ impl VersoApp {
         else {
             ui.label(
                 egui::RichText::new("Empty slot. Drag a source here from the browser.")
-                    .color(theme::TEXT_DIM),
+                    .color(theme::text_dim()),
             );
             return;
         };
         let before = clip.clone();
+        let transport = self.media.transport(layer, column);
         property_grid(ui, "clip", |ui| {
             ui.label("Name");
             ui.text_edit_singleline(&mut clip.name);
@@ -348,7 +395,7 @@ impl VersoApp {
                     ui.label("Solid Color");
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    widgets::color_edit(ui, color);
                     ui.end_row();
                 }
                 Source::Generator { kind, color, speed } => {
@@ -362,11 +409,25 @@ impl VersoApp {
                         });
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    widgets::color_edit(ui, color);
                     ui.end_row();
                     ui.label("Speed");
                     ui.add(egui::Slider::new(speed, 0.0..=4.0));
                     ui.end_row();
+                }
+                Source::Milkdrop {
+                    family,
+                    variant,
+                    blend,
+                    pattern,
+                    input,
+                    input_mix,
+                } => {
+                    let family = family.clone();
+                    if let Some(picked) = self.milkdrop_props(ui, &family, *variant) {
+                        *variant = picked;
+                    }
+                    self.milkdrop_playback(ui, layer, blend, pattern, input, input_mix);
                 }
                 Source::Shader(effect) => {
                     ui.label("Source");
@@ -377,7 +438,7 @@ impl VersoApp {
                             if let Some(credit) = &def.credit {
                                 ui.label("Credit");
                                 ui.label(
-                                    egui::RichText::new(credit).small().color(theme::TEXT_DIM),
+                                    egui::RichText::new(credit).small().color(theme::text_dim()),
                                 );
                                 ui.end_row();
                             }
@@ -394,7 +455,7 @@ impl VersoApp {
                         }
                         None => {
                             ui.label("");
-                            ui.label(egui::RichText::new("Shader not found").color(theme::WARN));
+                            ui.label(egui::RichText::new("Shader not found").color(theme::warn()));
                             ui.end_row();
                         }
                     }
@@ -405,6 +466,18 @@ impl VersoApp {
                     ui.end_row();
                     file_row(ui, path);
                 }
+                Source::Ndi { name } => {
+                    ui.label("Source");
+                    ui.label("NDI® input");
+                    ui.end_row();
+                    ui.label("Sender");
+                    ui.label(name.as_str());
+                    ui.end_row();
+                    ui.label("");
+                    let state = self.media.live_state(layer, column);
+                    ui.label(egui::RichText::new(state).small().color(theme::text_dim()));
+                    ui.end_row();
+                }
                 Source::Video {
                     path,
                     speed,
@@ -414,11 +487,54 @@ impl VersoApp {
                     ui.label("Video");
                     ui.end_row();
                     file_row(ui, path);
+                    let playback = self.media.playback(layer, column);
+                    let reversible = playback.is_some_and(|(_, _, r)| r);
                     ui.label("Speed");
-                    ui.add(egui::Slider::new(speed, 0.0..=4.0).suffix("×"));
+                    let range = if reversible { -4.0..=4.0 } else { 0.0..=4.0 };
+                    ui.add(egui::Slider::new(speed, range).suffix("×"))
+                        .on_hover_text(if reversible {
+                            "HAP plays natively: negative speeds play backwards"
+                        } else {
+                            "Backwards playback needs a HAP file"
+                        });
                     ui.end_row();
+                    if let Some((position, Some(duration), _)) = playback {
+                        ui.label("Position");
+                        let mut at = position;
+                        let response = ui.add(
+                            egui::Slider::new(&mut at, 0.0..=duration)
+                                .custom_formatter(|v, _| format!("{v:.2} s")),
+                        );
+                        if response.changed()
+                            && let Some(error) = self.media.seek(layer, column, at)
+                        {
+                            self.status = error;
+                        }
+                        ui.end_row();
+                    }
                     ui.label("Loop");
                     ui.checkbox(looping, "");
+                    ui.end_row();
+                    ui.label("Position");
+                    match transport {
+                        Some(t) => {
+                            let text = match t.duration {
+                                Some(d) => format!("{} / {}", clock(t.position), clock(d)),
+                                None => clock(t.position),
+                            };
+                            let bar = egui::ProgressBar::new(t.progress().unwrap_or(0.0))
+                                .desired_height(14.0)
+                                .text(egui::RichText::new(text).monospace().size(10.0));
+                            ui.add(bar).on_hover_text(format!(
+                                "Frame {}{}",
+                                t.frame,
+                                if t.ended { ", ended" } else { "" }
+                            ));
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("Not playing").color(theme::text_dim()));
+                        }
+                    }
                     ui.end_row();
                 }
             }
@@ -432,19 +548,37 @@ impl VersoApp {
         }
     }
 
-    pub(crate) fn monitors(&mut self, ui: &mut egui::Ui) {
+    /// The selected clip, letterboxed, with its launch counter.
+    pub(crate) fn preview_panel(&mut self, ui: &mut egui::Ui) {
         let comp_aspect = self.comp.width as f32 / self.comp.height.max(1) as f32;
-        let spacing = ui.spacing().item_spacing.x;
-        let width = ((ui.available_width() - spacing) / 2.0).max(40.0);
-        let height = (ui.available_height() - 22.0).max(40.0);
-
+        // A hovered layer or column header shows what it would output.
+        if let Some((texture, caption)) = self.hover_preview() {
+            let size = (ui.available_size() - Vec2::new(0.0, 18.0)).max(Vec2::splat(40.0));
+            monitor_image(ui, Some(texture), size, comp_aspect);
+            ui.label(
+                egui::RichText::new(caption)
+                    .small()
+                    .color(theme::text_dim()),
+            );
+            return;
+        }
         // Media clips show their own frame at its own aspect.
-        let (clip_texture, clip_aspect) = match self.selected_clip {
+        let previewed = self.preview_slot();
+        let (clip_texture, clip_aspect) = match previewed {
             Some((layer, column)) => {
                 let procedural = self.comp.layers[layer].clips[column]
                     .as_ref()
                     .is_none_or(|clip| clip.source.is_procedural());
-                if procedural {
+                let milk = match self.comp.layers[layer].clips[column]
+                    .as_ref()
+                    .map(|c| &c.source)
+                {
+                    Some(Source::Milkdrop { family, .. }) => Some(family.clone()),
+                    _ => None,
+                };
+                if let Some(family) = milk {
+                    (self.milk_preview(ui.ctx(), &family), 16.0 / 9.0)
+                } else if procedural {
                     (self.monitor_texture, comp_aspect)
                 } else {
                     match self.media.clip_texture(&self.comp, layer, column) {
@@ -455,41 +589,37 @@ impl VersoApp {
             }
             None => (None, comp_aspect),
         };
-        let output_texture = self.output_texture;
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(width);
-                widgets::header(ui, "Preview");
-                let monitor =
-                    monitor_image(ui, clip_texture, Vec2::new(width, height), clip_aspect);
-                // Launch counter of the selected slot.
-                if let Some((layer, column)) = self.selected_clip {
-                    let launches = self.comp.layers[layer].launch_count(column);
-                    let painter = ui.painter_at(monitor);
-                    let galley = painter.layout_no_wrap(
-                        format!("× {launches}"),
-                        egui::FontId::monospace(12.0),
-                        theme::BG_DEEP,
-                    );
-                    let badge = Rect::from_min_size(
-                        monitor.right_bottom() - galley.size() - Vec2::new(14.0, 10.0),
-                        galley.size() + Vec2::new(8.0, 4.0),
-                    );
-                    painter.rect_filled(badge, 3.0, theme::ACCENT);
-                    painter.galley(badge.min + Vec2::new(4.0, 2.0), galley, theme::BG_DEEP);
-                }
-            });
-            ui.vertical(|ui| {
-                ui.set_width(width);
-                widgets::header(ui, "Output");
-                monitor_image(
-                    ui,
-                    Some(output_texture),
-                    Vec2::new(width, height),
-                    comp_aspect,
-                );
-            });
-        });
+        let size = ui.available_size().max(Vec2::splat(40.0));
+        let monitor = monitor_image(ui, clip_texture, size, clip_aspect);
+        if let Some((layer, column)) = previewed {
+            let launches = self.comp.layers[layer].launch_count(column);
+            let painter = ui.painter_at(monitor);
+            if let Some(progress) = self
+                .media
+                .transport(layer, column)
+                .and_then(|t| t.progress())
+            {
+                progress_strip(&painter, monitor, progress);
+            }
+            let galley = painter.layout_no_wrap(
+                format!("× {launches}"),
+                egui::FontId::monospace(12.0),
+                theme::bg_deep(),
+            );
+            let badge = Rect::from_min_size(
+                monitor.right_bottom() - galley.size() - Vec2::new(14.0, 10.0),
+                galley.size() + Vec2::new(8.0, 4.0),
+            );
+            painter.rect_filled(badge, 3.0, theme::accent());
+            painter.galley(badge.min + Vec2::new(4.0, 2.0), galley, theme::bg_deep());
+        }
+    }
+
+    /// The composition output.
+    pub(crate) fn output_panel(&mut self, ui: &mut egui::Ui) {
+        let aspect = self.comp.width as f32 / self.comp.height.max(1) as f32;
+        let size = ui.available_size().max(Vec2::splat(40.0));
+        monitor_image(ui, Some(self.output_texture), size, aspect);
     }
 
     pub(crate) fn browser(&mut self, ui: &mut egui::Ui) {
@@ -499,6 +629,7 @@ impl VersoApp {
             &mut self.files.tab,
             &[
                 (BrowserTab::Sources, "Sources"),
+                (BrowserTab::Milkdrop, "MilkDrop"),
                 (BrowserTab::Effects, "Effects"),
                 (BrowserTab::Files, "Files"),
                 (BrowserTab::Online, "Online"),
@@ -509,11 +640,19 @@ impl VersoApp {
             BrowserTab::Sources => {
                 hint(
                     ui,
-                    "Drag onto a clip slot, or double-click to load into the selected slot.",
+                    "Drag onto a clip slot, or double-click to load into the selected slot. Hover to preview.",
                 );
-                for template in SourceTemplate::all() {
-                    self.browser_item(ui, template);
-                }
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.files.thumbnails, false, "List");
+                    ui.selectable_value(&mut self.files.thumbnails, true, "Thumbnails");
+                    if self.files.thumbnails {
+                        let mut animate = !self.files.still_thumbnails;
+                        ui.checkbox(&mut animate, "Animate").on_hover_text(
+                            "Play every thumbnail. Off: thumbnails stay still and play under the pointer, which saves GPU time with many shaders.",
+                        );
+                        self.files.still_thumbnails = !animate;
+                    }
+                });
                 let shaders: Vec<SourceTemplate> = self
                     .renderer
                     .library()
@@ -524,13 +663,69 @@ impl VersoApp {
                         source: Source::Shader(verso_core::Effect::new(&def.id, &def.name)),
                     })
                     .collect();
-                if !shaders.is_empty() {
-                    ui.add_space(6.0);
-                    hint(ui, "Shaders");
-                    for template in shaders {
-                        self.browser_item(ui, template);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let builtin = SourceTemplate::all()
+                        .into_iter()
+                        .map(|t| (t, String::new()))
+                        .collect();
+                    self.browser_items(ui, builtin);
+                    if !shaders.is_empty() {
+                        ui.add_space(6.0);
+                        hint(ui, "Shaders");
+                        let shaders = shaders.into_iter().map(|t| (t, String::new())).collect();
+                        self.browser_items(ui, shaders);
                     }
-                }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        hint(ui, "NDI® sources");
+                        let searching = self.media.ndi_searching();
+                        if ui
+                            .add_enabled(
+                                !searching,
+                                egui::Button::new(if searching { "Searching…" } else { "Find" })
+                                    .small(),
+                            )
+                            .on_hover_text(
+                                "Look for NDI senders on the network (needs NDI Tools or the NDI runtime)",
+                            )
+                            .clicked()
+                        {
+                            self.media.search_ndi();
+                        }
+                    });
+                    let sources = self
+                        .media
+                        .ndi_sources()
+                        .iter()
+                        .map(|name| {
+                            let template = SourceTemplate {
+                                name: name.clone(),
+                                source: Source::Ndi { name: name.clone() },
+                            };
+                            (template, String::new())
+                        })
+                        .collect();
+                    self.browser_items(ui, sources);
+                });
+            }
+            BrowserTab::Milkdrop => {
+                hint(
+                    ui,
+                    "MilkDrop presets blend into each other when launched on the same layer, and can read another layer as input.",
+                );
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.files.thumbnails, false, "List");
+                    ui.selectable_value(&mut self.files.thumbnails, true, "Thumbnails");
+                    if ui
+                        .button("Settings…")
+                        .on_hover_text("Blend, pattern and input mix for every MilkDrop clip")
+                        .clicked()
+                    {
+                        self.workspace
+                            .show_panel(crate::workspace::PanelKind::MilkdropSettings);
+                    }
+                });
+                self.milkdrop_browser(ui);
             }
             BrowserTab::Effects => self.effect_browser(ui),
             BrowserTab::Files => self.file_list(ui),
@@ -540,10 +735,8 @@ impl VersoApp {
 
     fn file_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("Open Folder…").clicked()
-                && let Some(folder) = rfd::FileDialog::new().pick_folder()
-            {
-                self.files.open(folder);
+            if ui.button("Open Folder…").clicked() {
+                self.file_request(crate::dialogs::FileRequest::FilesFolder);
             }
             if self.files.folder.is_some() && ui.button("⟳").on_hover_text("Refresh").clicked() {
                 self.files.refresh();
@@ -570,6 +763,16 @@ impl VersoApp {
 
     /// One draggable row of the browser.
     fn browser_item(&mut self, ui: &mut egui::Ui, template: SourceTemplate) {
+        self.browser_item_with_tip(ui, template, "");
+    }
+
+    /// Browser row with `tip` shown on hover when not empty.
+    pub(crate) fn browser_item_with_tip(
+        &mut self,
+        ui: &mut egui::Ui,
+        template: SourceTemplate,
+        tip: &str,
+    ) {
         let key = template
             .source
             .path()
@@ -577,14 +780,19 @@ impl VersoApp {
             .unwrap_or_else(|| template.name.clone());
         let id = egui::Id::unique(("verso-browser", key));
         let (name, kind) = (template.name.clone(), source_kind(&template.source));
+        let kind_color = if matches!(template.source, Source::Milkdrop { .. }) {
+            theme::milkdrop()
+        } else {
+            theme::text_dim()
+        };
         let response = ui
             .dnd_drag_source(id, template.clone(), |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
-                let fill = if response.hovered() {
-                    theme::BG_RAISED
+                let fill = if response.contains_pointer() {
+                    theme::bg_raised()
                 } else {
-                    theme::BG_PANEL
+                    theme::bg_panel()
                 };
                 ui.painter().rect_filled(rect, 2.0, fill);
                 ui.painter().text(
@@ -592,28 +800,19 @@ impl VersoApp {
                     egui::Align2::LEFT_CENTER,
                     &name,
                     egui::FontId::proportional(12.0),
-                    theme::TEXT,
+                    theme::text(),
                 );
                 ui.painter().text(
                     rect.right_center() - Vec2::new(8.0, 0.0),
                     egui::Align2::RIGHT_CENTER,
                     kind,
                     egui::FontId::proportional(10.0),
-                    theme::TEXT_DIM,
+                    kind_color,
                 );
                 response
             })
             .inner;
-        if response.double_clicked()
-            && let Some((layer, column)) = self.selected_clip
-        {
-            self.send(Command::SetClip {
-                layer,
-                column,
-                clip: Some(template.clip()),
-            });
-            self.props_tab = PropsTab::Clip;
-        }
+        self.browser_item_events(response, template, tip);
     }
 
     /// Loads files dropped from the OS file manager into the slot under the
@@ -621,6 +820,16 @@ impl VersoApp {
     pub(crate) fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let (files, pointer) = ctx.input(|i| (i.raw.dropped_files.clone(), i.pointer.latest_pos()));
         if files.is_empty() {
+            return;
+        }
+        // A Resolume Advanced Output preset goes to the Advanced Output window.
+        let preset = files
+            .iter()
+            .map(|f| f.path())
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
+        if let Some(path) = preset {
+            let path = path.to_owned();
+            self.import_advanced_output(&path);
             return;
         }
         let under_pointer = pointer.and_then(|pos| {
@@ -662,7 +871,7 @@ impl VersoApp {
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM));
+    ui.label(egui::RichText::new(text).small().color(theme::text_dim()));
 }
 
 fn source_kind(source: &Source) -> &'static str {
@@ -672,6 +881,8 @@ fn source_kind(source: &Source) -> &'static str {
         Source::Generator { .. } => "generator",
         Source::Image { .. } => "image",
         Source::Video { .. } => "video",
+        Source::Milkdrop { .. } => "milkdrop",
+        Source::Ndi { .. } => "NDI",
     }
 }
 
@@ -690,6 +901,7 @@ fn file_row(ui: &mut egui::Ui, path: &std::path::Path) {
 pub enum BrowserTab {
     #[default]
     Sources,
+    Milkdrop,
     Effects,
     Files,
     Online,
@@ -699,6 +911,10 @@ pub enum BrowserTab {
 #[derive(Default)]
 pub struct FileBrowser {
     pub tab: BrowserTab,
+    /// Sources shown as a grid of thumbnails instead of a list.
+    pub thumbnails: bool,
+    /// Thumbnails stay still and only play under the pointer.
+    pub still_thumbnails: bool,
     pub folder: Option<std::path::PathBuf>,
     pub entries: Vec<SourceTemplate>,
 }

@@ -4,6 +4,7 @@ description = "Verso control inputs: OSC, MIDI, audio analysis and tempo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 cpal = "0.18.2"
@@ -11,3 +12,9 @@ midir = "0.11.1"
 realfft = "3.5.1"
 rosc = "0.11.4"
 thiserror.workspace = true
+rusty_link = { version = "0.4.9", optional = true }
+
+[features]
+default = ["link"]
+# Ableton Link tempo sync (builds the official Link library: needs CMake and a C++ compiler).
+link = ["dep:rusty_link"]

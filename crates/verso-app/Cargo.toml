@@ -4,6 +4,7 @@ description = "Verso VJ application"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "verso"
@@ -13,12 +14,25 @@ path = "src/main.rs"
 verso-core.workspace = true
 verso-render.workspace = true
 eframe.workspace = true
+serde.workspace = true
+ron.workspace = true
 rfd = "0.17.2"
 verso-media.workspace = true
 verso-control.workspace = true
 verso-script.workspace = true
 verso-io.workspace = true
 verso-online.workspace = true
+verso-milkdrop.workspace = true
+verso-mcp.workspace = true
+serde_json = "1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+log = "0.4"
+display-info = "0.5"
+
+[features]
+default = ["link"]
+# Ableton Link tempo sync (builds the official Link library: needs CMake and a C++ compiler).
+link = ["verso-control/link"]
 
 [dev-dependencies]
 pollster = "1.0.1"

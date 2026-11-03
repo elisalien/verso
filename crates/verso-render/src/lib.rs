@@ -9,7 +9,10 @@
 
 mod effects;
 mod grab;
+pub mod mapping;
 mod media;
+pub mod milkdrop;
+mod slices;
 mod thumbnails;
 
 use std::collections::HashMap;
@@ -19,7 +22,8 @@ use verso_core::{BlendMode, Composition, Effect, Source};
 
 pub use effects::{EffectDef, EffectLibrary, ParamDef, ParamKind, ShaderKind};
 pub use grab::{FrameGrabber, GrabbedFrame};
-pub use media::{MediaTexture, MediaView};
+pub use media::{MediaFormat, MediaTexture, MediaView};
+pub use slices::{Pattern, ScreenRenderer};
 pub use thumbnails::Thumbnails;
 
 /// Internal format: HDR so successive blends do not band.
@@ -61,7 +65,9 @@ struct OutputParams {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct MediaParams {
     scale: [f32; 2],
-    _pad: [f32; 2],
+    crop: [f32; 2],
+    ycocg: u32,
+    _pad: [u32; 3],
 }
 
 #[repr(C)]
@@ -93,7 +99,17 @@ impl MediaParams {
         };
         Self {
             scale,
-            _pad: [0.0; 2],
+            crop: [1.0, 1.0],
+            ycocg: 0,
+            _pad: [0; 3],
+        }
+    }
+
+    fn for_view(view: &MediaView<'_>, target: (u32, u32)) -> Self {
+        Self {
+            crop: [view.crop.0, view.crop.1],
+            ycocg: view.ycocg as u32,
+            ..Self::fit(view.size, target)
         }
     }
 }
@@ -104,7 +120,11 @@ impl GeneratorParams {
         let (kind, color, speed) = match *source {
             Source::Solid { color } => (SOLID_KIND, color, 0.0),
             Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
-            Source::Image { .. } | Source::Video { .. } | Source::Shader(_) => return None,
+            Source::Image { .. }
+            | Source::Video { .. }
+            | Source::Shader(_)
+            | Source::Milkdrop { .. }
+            | Source::Ndi { .. } => return None,
         };
         Some(Self {
             time,
@@ -217,6 +237,9 @@ impl UniformPool {
 struct Transition {
     start: f32,
     duration: f32,
+    /// Column of the outgoing clip, which keeps playing while it fades out
+    /// when it can (generators, shaders, or video given as outgoing media).
+    from: Option<usize>,
 }
 
 /// GPU resources and playback state of one layer.
@@ -227,9 +250,20 @@ struct LayerState {
     /// frames so a clip change can freeze it as the outgoing image.
     mixed: Target,
     outgoing: Target,
+    /// Render passes of the outgoing clip; only exists during a transition.
+    outgoing_work: Option<Pair>,
     transition: Option<Transition>,
     /// Column shown last frame.
     shown: Option<usize>,
+    /// Where this frame's image of the layer is, after its effects: `None`
+    /// when the layer drew nothing.
+    image: Option<LayerImage>,
+}
+
+#[derive(Clone, Copy)]
+enum LayerImage {
+    Mixed,
+    Work,
 }
 
 impl LayerState {
@@ -238,8 +272,10 @@ impl LayerState {
             work: Pair::new(device, "layer", size),
             mixed: Target::new(device, "layer mixed", size, WORK_FORMAT),
             outgoing: Target::new(device, "layer outgoing", size, WORK_FORMAT),
+            outgoing_work: None,
             transition: None,
             shown: None,
+            image: None,
         }
     }
 }
@@ -322,6 +358,20 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Runs `create` inside wgpu error scopes, so a shader or pipeline the driver
+/// rejects becomes an error instead of a panic of the uncaptured handler.
+pub(crate) fn checked<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let value = create();
+    let internal = pollster::block_on(internal.pop());
+    let validation = pollster::block_on(validation.pop());
+    match internal.or(validation) {
+        Some(error) => Err(error.to_string()),
+        None => Ok(value),
+    }
 }
 
 fn shader(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
@@ -544,13 +594,23 @@ pub struct Renderer {
     library: EffectLibrary,
     /// Compiled effect pipelines by effect id and target format.
     effects: HashMap<(String, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// Effects the GPU driver refused, by id, with its message.
+    broken: HashMap<String, String>,
+    /// Driver errors not yet reported, see [`Self::take_errors`].
+    new_errors: Vec<String>,
     /// 1×1 transparent texture: the input of generator shaders.
     blank: Target,
     composition: Pair,
-    group: Pair,
+    /// One pair per group nesting depth.
+    groups: Vec<Pair>,
+    /// A copy of each group's image, kept when [`Self::keep_group_images`]
+    /// is on: group pairs are reused by sibling groups.
+    group_images: Vec<Target>,
+    keep_groups: bool,
     output: Target,
     layers: Vec<LayerState>,
     uniforms: UniformPool,
+    milk: milkdrop::MilkRenderer,
 }
 
 impl Renderer {
@@ -634,18 +694,54 @@ impl Renderer {
             pipelines,
             library: EffectLibrary::builtin(),
             effects: HashMap::new(),
+            broken: HashMap::new(),
+            new_errors: Vec::new(),
             blank: Target::new(device, "blank", (1, 1), WORK_FORMAT),
             composition: Pair::new(device, "composition", size),
-            group: Pair::new(device, "group", size),
+            groups: Vec::new(),
+            group_images: Vec::new(),
+            keep_groups: false,
             output: Target::new(device, "output", size, OUTPUT_FORMAT),
             layers: Vec::new(),
             uniforms: UniformPool::default(),
+            milk: milkdrop::MilkRenderer::default(),
         }
     }
 
     /// Composition size in pixels.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// Keeps a copy of each group's image for [`Self::group_view`], at the
+    /// cost of one texture copy per group and frame.
+    pub fn keep_group_images(&mut self, keep: bool) {
+        self.keep_groups = keep;
+        if !keep {
+            self.group_images.clear();
+        }
+    }
+
+    /// This frame's image of layer `index` after its effects, before its
+    /// opacity: linear, premultiplied, in a float format. `None` when the
+    /// layer drew nothing.
+    pub fn layer_view(&self, index: usize) -> Option<&wgpu::TextureView> {
+        let state = self.layers.get(index)?;
+        Some(match state.image? {
+            LayerImage::Mixed => &state.mixed.view,
+            LayerImage::Work => &state.work.current().view,
+        })
+    }
+
+    /// This frame's image of group `index` after its effects, like
+    /// [`Self::layer_view`]. Needs [`Self::keep_group_images`].
+    pub fn group_view(&self, index: usize) -> Option<&wgpu::TextureView> {
+        self.group_images.get(index).map(|t| &t.view)
+    }
+
+    /// A transparent texture, for sources that drew nothing.
+    pub fn blank_view(&self) -> &wgpu::TextureView {
+        &self.blank.view
     }
 
     /// Final image, in [`OUTPUT_FORMAT`]. Recreated when the size changes.
@@ -664,20 +760,55 @@ impl Renderer {
     /// Changing the library drops compiled pipelines; they rebuild on demand.
     pub fn library_mut(&mut self) -> &mut EffectLibrary {
         self.effects.clear();
+        self.broken.clear();
         &mut self.library
     }
 
-    /// Recreates every size-dependent resource.
+    /// MilkDrop presets and their running state.
+    pub fn milkdrop(&self) -> &milkdrop::MilkRenderer {
+        &self.milk
+    }
+
+    pub fn milkdrop_mut(&mut self) -> &mut milkdrop::MilkRenderer {
+        &mut self.milk
+    }
+
+    /// Moves per-layer render state (transitions, last frame) to follow layers
+    /// and columns that moved, so a reorder does not look like a clip change.
+    pub fn follow(&mut self, device: &wgpu::Device, changes: &verso_core::IndexChanges) {
+        let mut states: Vec<Option<LayerState>> = std::mem::take(&mut self.layers)
+            .into_iter()
+            .map(Some)
+            .collect();
+        changes.apply_to_layers(&mut states);
+        self.layers = states
+            .into_iter()
+            .map(|state| {
+                let mut state = state.unwrap_or_else(|| LayerState::new(device, self.size));
+                state.shown = state
+                    .shown
+                    .and_then(|c| changes.columns.get(c).copied().flatten());
+                state
+            })
+            .collect();
+    }
+
+    /// Recreates every size-dependent resource. The size is limited to what
+    /// the GPU supports, so an oversized composition renders smaller instead
+    /// of failing.
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        let size = (size.0.max(1), size.1.max(1));
+        let max = device.limits().max_texture_dimension_2d;
+        let size = (size.0.clamp(1, max), size.1.clamp(1, max));
         if size == self.size {
             return;
         }
         self.size = size;
         self.composition = Pair::new(device, "composition", size);
-        self.group = Pair::new(device, "group", size);
+        self.groups.clear();
+        self.group_images.clear();
         self.output = Target::new(device, "output", size, OUTPUT_FORMAT);
         self.layers.clear();
+        self.milk.reset();
     }
 
     /// Compiles the pipelines of every effect `comp` uses.
@@ -710,19 +841,44 @@ impl Renderer {
         if self.effects.contains_key(&key) {
             return;
         }
+        if self.broken.contains_key(id) {
+            return;
+        }
         let Some(def) = self.library.get(id) else {
             return;
         };
-        let fragment = shader(device, &def.name, &def.fragment);
-        let pipeline = pipeline(
-            device,
-            &def.name,
-            (&self.pipelines.effect_vs, "vs_main"),
-            (&fragment, def.entry),
-            &self.pipelines.effect_layout,
-            format,
-        );
-        self.effects.insert(key, pipeline);
+        let compiled = checked(device, || {
+            let fragment = shader(device, &def.name, &def.fragment);
+            pipeline(
+                device,
+                &def.name,
+                (&self.pipelines.effect_vs, "vs_main"),
+                (&fragment, def.entry),
+                &self.pipelines.effect_layout,
+                format,
+            )
+        });
+        match compiled {
+            Ok(pipeline) => {
+                self.effects.insert(key, pipeline);
+            }
+            Err(error) => {
+                self.new_errors
+                    .push(format!("Effect {} refused by the GPU: {error}", def.name));
+                self.broken.insert(id.to_owned(), error);
+            }
+        }
+    }
+
+    /// Why the GPU driver refused effect `id`, if it did. The effect then
+    /// draws nothing.
+    pub fn effect_error(&self, id: &str) -> Option<&str> {
+        self.broken.get(id).map(String::as_str)
+    }
+
+    /// Driver errors since the last call, for the status bar.
+    pub fn take_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.new_errors)
     }
 
     /// Renders a generator shader into `output`, a [`OUTPUT_FORMAT`] texture of
@@ -773,12 +929,37 @@ impl Renderer {
         media: &[Option<MediaView<'_>>],
         time: f32,
     ) {
+        self.render_with_outgoing(device, queue, encoder, comp, media, &[], time);
+    }
+
+    /// Like [`Self::render`], with `outgoing[layer]` the media of the clip a
+    /// layer is fading out of, so outgoing video keeps playing during the
+    /// transition instead of freezing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_outgoing(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        comp: &Composition,
+        media: &[Option<MediaView<'_>>],
+        outgoing: &[Option<MediaView<'_>>],
+        time: f32,
+    ) {
+        let media = LayerMedia { media, outgoing };
         self.resize(device, (comp.width, comp.height));
         self.prepare_effects(device, comp);
         while self.layers.len() < comp.layers.len() {
             self.layers.push(LayerState::new(device, self.size));
         }
         self.layers.truncate(comp.layers.len());
+        let depth = (0..comp.groups.len())
+            .map(|g| comp.group_depth(g) + 1)
+            .max()
+            .unwrap_or(0);
+        while self.groups.len() < depth {
+            self.groups.push(Pair::new(device, "group", self.size));
+        }
         self.uniforms.next = 0;
 
         let frame = Frame {
@@ -794,54 +975,32 @@ impl Renderer {
         drop(pass(encoder, &self.blank.view, true));
         let uniforms = &mut self.uniforms;
         let composition = &mut self.composition;
-        let group_pair = &mut self.group;
-        composition.clear(encoder);
-
-        let mut groups_done = vec![false; comp.groups.len()];
-        for index in 0..comp.layers.len() {
-            match comp.layers[index].group.filter(|&g| g < comp.groups.len()) {
-                None => render_layer(
-                    &frame,
-                    encoder,
-                    uniforms,
-                    comp,
-                    media,
-                    index,
-                    &mut self.layers[index],
-                    composition,
-                ),
-                Some(g) if !groups_done[g] => {
-                    groups_done[g] = true;
-                    group_pair.clear(encoder);
-                    for member in comp.group_layers(g) {
-                        render_layer(
-                            &frame,
-                            encoder,
-                            uniforms,
-                            comp,
-                            media,
-                            member,
-                            &mut self.layers[member],
-                            group_pair,
-                        );
-                    }
-                    let group = &comp.groups[g];
-                    frame.run_chain(encoder, uniforms, &group.effects, None, group_pair);
-                    let gain = comp.group_gain(g);
-                    if gain > 0.0 {
-                        frame.blend(
-                            encoder,
-                            uniforms,
-                            composition,
-                            &group_pair.current().view,
-                            group.blend,
-                            gain,
-                        );
-                    }
-                }
-                Some(_) => {}
+        let group_pairs = &mut self.groups[..];
+        if self.keep_groups {
+            while self.group_images.len() < comp.groups.len() {
+                self.group_images
+                    .push(Target::new(device, "group image", self.size, WORK_FORMAT));
             }
+            self.group_images.truncate(comp.groups.len());
         }
+        let group_images = &mut self.group_images[..];
+        composition.clear(encoder);
+        self.milk.begin_frame();
+
+        render_scope(
+            &frame,
+            encoder,
+            uniforms,
+            &mut self.milk,
+            comp,
+            &media,
+            None,
+            composition,
+            &mut self.layers,
+            group_pairs,
+            group_images,
+        );
+        self.milk.end_frame();
         frame.run_chain(encoder, uniforms, &comp.effects, None, composition);
 
         let params = OutputParams {
@@ -864,35 +1023,211 @@ impl Renderer {
     }
 }
 
+/// Renders the layers of `scope` (a group, or the whole composition) onto
+/// `dest`, bottom first. Each group inside renders into its own pair from
+/// `spare`, gets its effects, and blends onto `dest` as one image.
+#[allow(clippy::too_many_arguments)]
+fn render_scope(
+    frame: &Frame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    uniforms: &mut UniformPool,
+    milk: &mut milkdrop::MilkRenderer,
+    comp: &Composition,
+    media: &LayerMedia<'_, '_>,
+    scope: Option<usize>,
+    dest: &mut Pair,
+    states: &mut [LayerState],
+    spare: &mut [Pair],
+    group_images: &mut [Target],
+) {
+    let mut done = vec![false; comp.groups.len()];
+    for index in 0..comp.layers.len() {
+        if scope.is_some_and(|s| !comp.layer_in_group(index, s)) {
+            continue;
+        }
+        match comp.child_toward(scope, index) {
+            None => {
+                // A MilkDrop clip can read another layer's last image.
+                let input = milk_input(comp, index)
+                    .filter(|&i| i != index)
+                    .and_then(|i| states.get(i))
+                    .map(|s| s.mixed.view.clone());
+                render_layer(
+                    frame,
+                    encoder,
+                    uniforms,
+                    milk,
+                    comp,
+                    media,
+                    index,
+                    &mut states[index],
+                    input,
+                    dest,
+                )
+            }
+            Some(g) if !done[g] => {
+                done[g] = true;
+                let Some((pair, deeper)) = spare.split_first_mut() else {
+                    continue;
+                };
+                pair.clear(encoder);
+                render_scope(
+                    frame,
+                    encoder,
+                    uniforms,
+                    milk,
+                    comp,
+                    media,
+                    Some(g),
+                    pair,
+                    states,
+                    deeper,
+                    group_images,
+                );
+                let group = &comp.groups[g];
+                frame.run_chain(encoder, uniforms, &group.effects, None, pair);
+                if let Some(image) = group_images.get(g) {
+                    encoder.copy_texture_to_texture(
+                        pair.current().texture.as_image_copy(),
+                        image.texture.as_image_copy(),
+                        image.texture.size(),
+                    );
+                }
+                let gain = comp.group_gain(g);
+                if gain > 0.0 {
+                    frame.blend(
+                        encoder,
+                        uniforms,
+                        dest,
+                        &pair.current().view,
+                        group.blend,
+                        gain,
+                    );
+                }
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// Media views of the layers: playing clips, and clips fading out.
+struct LayerMedia<'a, 'b> {
+    media: &'a [Option<MediaView<'b>>],
+    outgoing: &'a [Option<MediaView<'b>>],
+}
+
+/// Draws `clip` (its source, then its effects) into `pair`. Returns false
+/// when there is nothing to draw (media not loaded).
+fn draw_clip(
+    frame: &Frame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
+    uniforms: &mut UniformPool,
+    clip: &verso_core::Clip,
+    media: Option<MediaView<'_>>,
+    pair: &mut Pair,
+) -> bool {
+    pair.clear(encoder);
+    let aspect = frame.size.0 as f32 / frame.size.1 as f32;
+    if let Source::Shader(effect) = &clip.source {
+        frame.draw_effect(
+            encoder,
+            uniforms,
+            effect,
+            frame.blank,
+            &pair.current().view,
+            WORK_FORMAT,
+        );
+    }
+    let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
+        Some(params) => {
+            let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+            Some(frame.bind(&frame.pipelines.generator_layout, uniforms, u, &[]))
+                .map(|g| (g, &frame.pipelines.generator))
+        }
+        None => media.map(|view| {
+            let params = MediaParams::for_view(&view, frame.size);
+            let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
+            let group = frame.bind(
+                &frame.pipelines.media_layout,
+                uniforms,
+                u,
+                &[
+                    wgpu::BindingResource::TextureView(view.view),
+                    wgpu::BindingResource::Sampler(&frame.pipelines.sampler),
+                ],
+            );
+            (group, &frame.pipelines.media)
+        }),
+    };
+    let shader = matches!(clip.source, Source::Shader(_));
+    if let Some((group, pipeline)) = &drawn {
+        let mut rp = pass(encoder, &pair.current().view, true);
+        rp.set_pipeline(pipeline);
+        rp.set_bind_group(0, group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+    frame.run_chain(encoder, uniforms, &clip.effects, None, pair);
+    drawn.is_some() || shader
+}
+
+/// Layer whose image feeds the MilkDrop clip playing on layer `index`.
+fn milk_input(comp: &Composition, index: usize) -> Option<usize> {
+    match &comp.layers.get(index)?.active_clip()?.source {
+        Source::Milkdrop { input, .. } => *input,
+        _ => None,
+    }
+}
+
 /// Renders layer `index` and blends it onto `dest`.
 #[allow(clippy::too_many_arguments)]
 fn render_layer(
     frame: &Frame<'_>,
     encoder: &mut wgpu::CommandEncoder,
     uniforms: &mut UniformPool,
+    milk: &mut milkdrop::MilkRenderer,
     comp: &Composition,
-    media: &[Option<MediaView<'_>>],
+    media: &LayerMedia<'_, '_>,
     index: usize,
     state: &mut LayerState,
+    input: Option<wgpu::TextureView>,
     dest: &mut Pair,
 ) {
     let layer = &comp.layers[index];
     let active = layer.active.filter(|_| layer.active_clip().is_some());
+    state.image = None;
 
     // A clip change starts a transition from the last shown image.
-    if active != state.shown {
+    let clip_changed = active != state.shown;
+    if clip_changed {
         let had_content = state.shown.is_some() || state.transition.is_some();
-        state.transition = (layer.transition > 0.0 && had_content).then(|| {
-            encoder.copy_texture_to_texture(
-                state.mixed.texture.as_image_copy(),
-                state.outgoing.texture.as_image_copy(),
-                state.mixed.texture.size(),
-            );
-            Transition {
-                start: frame.time,
-                duration: layer.transition,
-            }
-        });
+        // Between two MilkDrop clips, the preset blend does the transition on
+        // the layer's shared feedback buffer instead of a crossfade.
+        let is_milk = |column: Option<usize>| {
+            column
+                .and_then(|c| layer.clips.get(c))
+                .and_then(Option::as_ref)
+                .is_some_and(|clip| matches!(clip.source, Source::Milkdrop { .. }))
+        };
+        let milk_blend = milk.settings.layer_blend && is_milk(state.shown) && is_milk(active);
+        state.transition =
+            (layer.transition_time() > 0.0 && had_content && !milk_blend).then(|| {
+                encoder.copy_texture_to_texture(
+                    state.mixed.texture.as_image_copy(),
+                    state.outgoing.texture.as_image_copy(),
+                    state.mixed.texture.size(),
+                );
+                Transition {
+                    start: frame.time,
+                    duration: layer.transition_time(),
+                    // Only a clean cut from one clip keeps the old one playing;
+                    // a change during a transition fades from the frozen mix.
+                    // MilkDrop shares one instance per layer, so its outgoing
+                    // image stays frozen.
+                    from: state
+                        .shown
+                        .filter(|_| state.transition.is_none() && !is_milk(state.shown)),
+                }
+            });
         state.shown = active;
     }
     let progress = state
@@ -903,52 +1238,84 @@ fn render_layer(
     }
     let transitioning = state.transition.is_some();
     if active.is_none() && !transitioning {
+        state.outgoing_work = None;
         return;
     }
     let level = comp.layer_level(index);
 
+    // Outgoing clip still playing: redraw it into `state.outgoing`.
+    let outgoing_clip = state
+        .transition
+        .and_then(|t| t.from)
+        .and_then(|c| layer.clips.get(c)?.as_ref());
+    match outgoing_clip {
+        Some(clip) => {
+            let view = media.outgoing.get(index).copied().flatten();
+            let live = clip.source.is_procedural() || view.is_some();
+            if live {
+                let work = state
+                    .outgoing_work
+                    .get_or_insert_with(|| Pair::new(frame.device, "layer outgoing", frame.size));
+                if draw_clip(frame, encoder, uniforms, clip, view, work) {
+                    encoder.copy_texture_to_texture(
+                        work.current().texture.as_image_copy(),
+                        state.outgoing.texture.as_image_copy(),
+                        state.outgoing.texture.size(),
+                    );
+                }
+            }
+        }
+        None => state.outgoing_work = None,
+    }
+
     // Incoming clip: source, then clip effects, in `state.work`.
     state.work.clear(encoder);
     if let Some(clip) = layer.active_clip() {
-        let aspect = frame.size.0 as f32 / frame.size.1 as f32;
-        if let Source::Shader(effect) = &clip.source {
-            frame.draw_effect(
+        if let (
+            Source::Milkdrop {
+                family,
+                variant,
+                blend,
+                pattern,
+                input_mix,
+                ..
+            },
+            Some(_),
+        ) = (&clip.source, active)
+        {
+            // Without layer blends, the layer transition replaces the preset
+            // blend when another clip is launched.
+            let blend = if clip_changed && !milk.settings.layer_blend {
+                0.0
+            } else {
+                *blend
+            };
+            let options = milkdrop::PlayOptions {
+                blend,
+                pattern: *pattern,
+                input: input.as_ref(),
+                input_mix: *input_mix,
+            };
+            // One MilkDrop instance per layer: launching another MilkDrop clip
+            // blends from the image the previous one left in the buffer.
+            milk.draw(
+                frame.device,
+                frame.queue,
                 encoder,
-                uniforms,
-                effect,
-                frame.blank,
+                (index, 0),
+                family,
+                *variant,
+                options,
                 &state.work.current().view,
                 WORK_FORMAT,
+                frame.size,
+                frame.time,
             );
+            frame.run_chain(encoder, uniforms, &clip.effects, None, &mut state.work);
+        } else {
+            let view = media.media.get(index).copied().flatten();
+            draw_clip(frame, encoder, uniforms, clip, view, &mut state.work);
         }
-        let drawn = match GeneratorParams::new(&clip.source, frame.time, aspect) {
-            Some(params) => {
-                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
-                Some(frame.bind(&frame.pipelines.generator_layout, uniforms, u, &[]))
-                    .map(|g| (g, &frame.pipelines.generator))
-            }
-            None => media.get(index).copied().flatten().map(|view| {
-                let params = MediaParams::fit(view.size, frame.size);
-                let u = uniforms.push(frame.device, frame.queue, bytemuck::bytes_of(&params));
-                let group = frame.bind(
-                    &frame.pipelines.media_layout,
-                    uniforms,
-                    u,
-                    &[
-                        wgpu::BindingResource::TextureView(view.view),
-                        wgpu::BindingResource::Sampler(&frame.pipelines.sampler),
-                    ],
-                );
-                (group, &frame.pipelines.media)
-            }),
-        };
-        if let Some((group, pipeline)) = drawn {
-            let mut rp = pass(encoder, &state.work.current().view, true);
-            rp.set_pipeline(pipeline);
-            rp.set_bind_group(0, &group, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        frame.run_chain(encoder, uniforms, &clip.effects, None, &mut state.work);
     }
 
     // Transition into `state.mixed`.
@@ -981,6 +1348,11 @@ fn render_layer(
         &mut state.work,
     );
     if level > 0.0 {
+        state.image = Some(if ran {
+            LayerImage::Work
+        } else {
+            LayerImage::Mixed
+        });
         let result = if ran {
             &state.work.current().view
         } else {

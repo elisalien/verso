@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux packages (ALSA, windowing, FFmpeg, software Vulkan for GPU tests)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev \
+            libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libgl1-mesa-dev libssl-dev libxcb1-dev libxcb-randr0-dev pkg-config \
+            ffmpeg mesa-vulkan-drivers
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Test
+        if: runner.os != 'Linux'
+        run: cargo test --workspace
+      # Lavapipe (software Vulkan) segfaults when several wgpu devices run
+      # at once, so the GPU tests run one at a time on Linux.
+      - name: Test
+        if: runner.os == 'Linux'
+        run: |
+          cargo test --workspace --exclude verso-render --exclude verso-app
+          cargo test -p verso-render -p verso-app -- --test-threads=1
+      - name: Build without Ableton Link
+        if: runner.os == 'Linux'
+        run: cargo check -p verso-app --no-default-features
+
+  deny:
+    name: Dependencies (advisories, licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

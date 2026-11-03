@@ -41,6 +41,9 @@ impl MidiInputs {
                     continue;
                 }
             };
+            // Receive MIDI Time Code (quarter frames and SysEx) too.
+            let mut input = input;
+            input.ignore(midir::Ignore::ActiveSense);
             let sender = sender.clone();
             let port_name = name.clone();
             match input.connect(

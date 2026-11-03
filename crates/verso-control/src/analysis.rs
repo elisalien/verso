@@ -6,6 +6,8 @@ use realfft::{RealFftPlanner, RealToComplex};
 
 const FRAME: usize = 1024;
 const HOP: usize = 512;
+/// Latest raw samples kept for waveform consumers (MilkDrop).
+pub const WAVEFORM_LEN: usize = 1024;
 /// Seconds of onset history used for the tempo estimate.
 const TEMPO_WINDOW: f32 = 8.0;
 const MIN_BPM: f32 = 70.0;
@@ -38,6 +40,9 @@ pub struct Analyzer {
     fft: Arc<dyn RealToComplex<f32>>,
     window: Vec<f32>,
     pending: Vec<f32>,
+    /// Ring of the last [`WAVEFORM_LEN`] samples, oldest at `recent_pos`.
+    recent: Vec<f32>,
+    recent_pos: usize,
     /// Decaying peaks for auto gain: level, bass, mid, high.
     peaks: [f32; 4],
     smoothed: [f32; 4],
@@ -61,6 +66,8 @@ impl Analyzer {
             fft: RealFftPlanner::new().plan_fft_forward(FRAME),
             window,
             pending: Vec::with_capacity(FRAME * 2),
+            recent: vec![0.0; WAVEFORM_LEN],
+            recent_pos: 0,
             peaks: [1e-6; 4],
             smoothed: [0.0; 4],
             bass_history: Vec::new(),
@@ -83,6 +90,10 @@ impl Analyzer {
 
     /// Feeds mono samples in -1..1.
     pub fn push(&mut self, samples: &[f32]) {
+        for &s in samples {
+            self.recent[self.recent_pos] = s;
+            self.recent_pos = (self.recent_pos + 1) % WAVEFORM_LEN;
+        }
         self.pending.extend_from_slice(samples);
         while self.pending.len() >= FRAME {
             self.analyze_frame();
@@ -92,6 +103,16 @@ impl Analyzer {
 
     pub fn levels(&self) -> Levels {
         self.levels
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
+    /// The last [`WAVEFORM_LEN`] mono samples, oldest first.
+    pub fn waveform(&self) -> Vec<f32> {
+        let (newer, older) = self.recent.split_at(self.recent_pos);
+        older.iter().chain(newer).copied().collect()
     }
 
     fn analyze_frame(&mut self) {

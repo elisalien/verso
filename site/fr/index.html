@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verso — logiciel VJ gratuit pour Windows, macOS et Linux</title>
+  <meta name="description" content="Verso est un logiciel VJ libre et gratuit : grille de clips, effets GPU, presets MilkDrop natifs, sortie de mapping vidéo, OSC, MIDI et NDI. Windows, macOS et Linux.">
+  <link rel="icon" href="../verso.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="../">
+  <link rel="alternate" hreflang="fr" href="./">
+  <meta property="og:title" content="Verso — logiciel VJ gratuit">
+  <meta property="og:description" content="Grille de clips, effets GPU, MilkDrop, mapping vidéo, OSC, MIDI, NDI. Libre et gratuit, sur Windows, macOS et Linux.">
+  <meta property="og:image" content="../img/ui.jpg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="../verso.svg" alt="">VERSO</a>
+    <nav>
+      <a class="hide-sm" href="#pourquoi">Pourquoi Verso</a>
+      <a class="hide-sm" href="#fonctions">Fonctions</a>
+      <a href="#telecharger">Télécharger</a>
+      <a href="guide.html">Mode d'emploi</a>
+      <a class="hide-sm" href="https://github.com/elisalien/verso">GitHub</a>
+      <a class="lang" href="../" hreflang="en" lang="en">EN</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Gratuit · Libre · GPL-3.0</div>
+      <h1>Du visuel live, <em>gratuit</em> pour tous.</h1>
+      <p class="lede">Verso est un logiciel VJ pour les concerts, les clubs, le théâtre et les installations. Lancez des clips sur une grille de couches et de colonnes, empilez des effets GPU, jouez des presets MilkDrop en rythme et envoyez le résultat vers des vidéoprojecteurs, des murs LED ou en NDI. Sans licence, sans filigrane, sans compte.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/elisalien/verso/releases/latest" data-download-main
+           data-windows="Télécharger pour Windows" data-macos="Télécharger pour macOS" data-linux="Télécharger pour Linux">Télécharger</a>
+        <a class="btn" href="guide.html">Lire le mode d'emploi</a>
+      </div>
+      <p class="small platforms">Windows 10/11 · macOS 11+ (Apple Silicon et Intel) · Linux x86_64 (Fedora, Ubuntu, Debian…)</p>
+      <div class="shot"><img src="../img/ui.jpg" width="1600" height="937" alt="La fenêtre de Verso : grille de clips à trois couches, panneaux Propriétés, liste de cues, moniteur de sortie et navigateur"></div>
+    </div>
+  </section>
+
+  <section id="pourquoi">
+    <div class="wrap">
+      <h2>Pourquoi Verso</h2>
+      <p class="section-lede">Les logiciels VJ du commerce sont puissants et chers. Verso garde la façon de travailler que les VJ connaissent déjà et retire la barrière d'entrée : tout le monde peut apprendre, s'entraîner et jouer.</p>
+      <div class="why">
+        <div class="card">
+          <div class="tag">Gratuit</div>
+          <h3>Apprendre sans licence</h3>
+          <p>Toutes les fonctions, sur toutes les machines, pour toujours. Idéal pour les élèves, les écoles, les ateliers, les collectifs et pour un premier essai de VJing.</p>
+        </div>
+        <div class="card">
+          <div class="tag">Familier</div>
+          <h3>Le principe de la grille de clips</h3>
+          <p>Couches × colonnes, modes de fusion, crossfader A/B, chaînes d'effets. Ce que vous apprenez dans Verso se transpose aux outils professionnels, et inversement.</p>
+        </div>
+        <div class="card">
+          <div class="tag">Compatible</div>
+          <h3>Fonctionne avec votre matériel</h3>
+          <p>Répond au schéma OSC <code>/composition/…</code> des logiciels VJ courants : les layouts TouchOSC et modèles de contrôleurs existants le pilotent. Lit HAP, DXV3 et ProRes. Importe les presets d'Advanced Output.</p>
+        </div>
+        <div class="card">
+          <div class="tag">Partout</div>
+          <h3>Windows, macOS et Linux</h3>
+          <p>Un même moteur GPU natif (Rust et wgpu) sur les trois systèmes, Linux compris, où les vrais outils VJ sont rares.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="fonctions">
+    <div class="wrap">
+      <h2>Tout pour un spectacle</h2>
+      <p class="section-lede">Verso est jeune, mais couvre déjà une performance complète, du premier clip au vidéoprojecteur.</p>
+      <div class="features">
+        <div class="feature"><h3>Grille de clips</h3><p>Lancez clips et colonnes entières à la souris, avec les touches <kbd>1</kbd>–<kbd>9</kbd>, en MIDI ou en OSC. Groupes de couches, solo, bypass, transitions.</p></div>
+        <div class="feature"><h3>Composition GPU</h3><p>Sept modes de fusion (Add, Screen, Multiply, Difference…), opacité par couche, groupe et master, crossfader A/B.</p></div>
+        <div class="feature"><h3>Vidéos et images</h3><p>Tous les codecs que lit FFmpeg : H.264, H.265, HAP, Resolume DXV3, ProRes. Glissez les fichiers depuis l'explorateur.</p></div>
+        <div class="feature"><h3>MilkDrop natif</h3><p>147 familles de presets audio-réactifs incluses, avec le fondu MilkDrop entre presets et une entrée vidéo depuis une autre couche.</p></div>
+        <div class="feature"><h3>Effets et shaders</h3><p>Effets WGSL et ISF sur les clips, les couches, les groupes et la composition. Recherche et import de shaders ISF et ShaderToy dans l'application.</p></div>
+        <div class="feature"><h3>Advanced Output</h3><p>Écrans et slices, masques polygonaux, corner pin et grilles de déformation, soft edge, mires de test. Une fenêtre par écran, ou NDI.</p></div>
+        <div class="feature"><h3>Liste de cues</h3><p>Enregistrez des états, puis <kbd>Espace</kbd> pour Go : les clips se fondent, les faders glissent, les cues s'enchaînent après des secondes ou des temps.</p></div>
+        <div class="feature"><h3>Contrôle</h3><p>MIDI learn, OSC, analyse audio, tap tempo, modulation LFO et audio sur n'importe quel fader ou paramètre d'effet.</p></div>
+        <div class="feature"><h3>Scripts Lua</h3><p>Automatisations isolées, enregistrées avec la composition : réagir à chaque image ou à chaque temps.</p></div>
+        <div class="feature"><h3>Pilotage par agent (MCP)</h3><p>Un serveur Model Context Protocol local, en option, laisse un agent IA lire et piloter la composition et capturer les images rendues.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="milkdrop">
+    <div class="wrap">
+      <h2>MilkDrop, intégré</h2>
+      <p class="section-lede">Un portage natif du moteur MilkDrop tourne dans la grille de clips et réagit à l'entrée audio. Mixez les presets comme n'importe quel clip, ajoutez-leur des effets, injectez-y une couche vidéo.</p>
+      <div class="gallery">
+        <figure><img src="../img/md-1.jpg" width="960" height="540" alt="Preset MilkDrop Castle in the Air" loading="lazy"><figcaption>Castle in the Air</figcaption></figure>
+        <figure><img src="../img/md-2.jpg" width="960" height="540" alt="Preset MilkDrop fractal" loading="lazy"><figcaption>Fractal / 352</figcaption></figure>
+        <figure><img src="../img/md-3.jpg" width="960" height="540" alt="Preset MilkDrop Dark Heart" loading="lazy"><figcaption>Dark Heart</figcaption></figure>
+        <figure><img src="../img/md-4.jpg" width="960" height="540" alt="Preset MilkDrop dancer" loading="lazy"><figcaption>Dancer / 27</figcaption></figure>
+      </div>
+      <p class="small">Images rendues par Verso. Presets issus de la collection Cream of the Crop, crédités dans l'application.</p>
+    </div>
+  </section>
+
+  <section id="telecharger">
+    <div class="wrap">
+      <h2>Télécharger</h2>
+      <p class="section-lede">Tous les paquets sont sur la <a href="https://github.com/elisalien/verso/releases/latest">page de la dernière version</a>, avec leurs sommes SHA-256. L'installation est détaillée dans le <a href="guide.html#installer">mode d'emploi</a>.</p>
+      <div class="downloads">
+        <div class="card dl" data-os="windows">
+          <h3>Windows <span class="small">x64</span></h3>
+          <ul>
+            <li><code>.zip</code> portable : décompresser, lancer <code>verso.exe</code></li>
+            <li>FFmpeg inclus</li>
+            <li>Windows 10 ou 11, carte graphique DirectX 12 ou Vulkan</li>
+          </ul>
+          <a class="btn" href="https://github.com/elisalien/verso/releases/latest">Windows .zip</a>
+        </div>
+        <div class="card dl" data-os="macos">
+          <h3>macOS <span class="small">universel</span></h3>
+          <ul>
+            <li><code>.dmg</code> avec <code>Verso.app</code>, Apple Silicon et Intel</li>
+            <li>FFmpeg via <code>brew install ffmpeg</code></li>
+            <li>macOS 11 Big Sur ou plus récent</li>
+          </ul>
+          <a class="btn" href="https://github.com/elisalien/verso/releases/latest">macOS .dmg</a>
+        </div>
+        <div class="card dl" data-os="linux">
+          <h3>Linux <span class="small">x86_64</span></h3>
+          <ul>
+            <li><code>.rpm</code> (Fedora), <code>.deb</code> (Ubuntu, Debian)</li>
+            <li><code>.tar.gz</code> portable avec FFmpeg inclus</li>
+            <li>Pilote Vulkan, X11 ou Wayland</li>
+          </ul>
+          <a class="btn" href="https://github.com/elisalien/verso/releases/latest">Paquets Linux</a>
+        </div>
+      </div>
+      <p class="small">Vous préférez compiler ? <code>cargo run --release -p verso-app</code> depuis un clone du <a href="https://github.com/elisalien/verso">dépôt</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>Verso · GPL-3.0-or-later · <a href="https://github.com/elisalien/verso">Code source</a> · <a href="https://github.com/elisalien/verso/issues">Signaler un bug</a></div>
+    <div>Projet indépendant, sans lien avec aucun logiciel VJ commercial. NDI® est une marque déposée de Vizrt NDI AB.</div>
+  </div>
+</footer>
+<script src="../assets/site.js"></script>
+</body>
+</html>

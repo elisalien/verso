@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verso user guide</title>
+  <meta name="description" content="How to install and use Verso, the free VJ software: clips, layers, effects, MilkDrop, output and projection mapping, MIDI, OSC, cue list and scripts.">
+  <link rel="icon" href="verso.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="fr" href="fr/guide.html">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="verso.svg" alt="">VERSO</a>
+    <nav>
+      <a href="./#download">Download</a>
+      <a href="guide.html" aria-current="page">User guide</a>
+      <a class="hide-sm" href="https://github.com/elisalien/verso">GitHub</a>
+      <a class="lang" href="fr/guide.html" hreflang="fr" lang="fr">FR</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap guide">
+  <aside class="toc" aria-label="Contents">
+    <ol>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#interface">The interface</a></li>
+      <li><a href="#clips">Clips and columns</a></li>
+      <li><a href="#layers">Layers and mixing</a></li>
+      <li><a href="#sources">Sources</a></li>
+      <li><a href="#milkdrop">MilkDrop</a></li>
+      <li><a href="#effects">Effects</a></li>
+      <li><a href="#groups">Groups and transitions</a></li>
+      <li><a href="#control">MIDI, OSC and audio</a></li>
+      <li><a href="#cues">Cue list</a></li>
+      <li><a href="#output">Output and mapping</a></li>
+      <li><a href="#scripts">Lua scripts</a></li>
+      <li><a href="#files">Files and saving</a></li>
+      <li><a href="#mcp">Agent control (MCP)</a></li>
+      <li><a href="#shortcuts">Shortcuts</a></li>
+      <li><a href="#trouble">Troubleshooting</a></li>
+    </ol>
+  </aside>
+
+  <article class="doc">
+    <div class="eyebrow">User guide</div>
+    <h1>Using Verso</h1>
+    <p>Verso mixes video live. You place <strong>clips</strong> in a grid, play one clip per <strong>layer</strong>, and the layers stack on the GPU into one image: the <strong>output</strong>. This guide goes from installation to a full show.</p>
+
+    <h2 id="install">Install</h2>
+    <p>Download the package for your system from the <a href="https://github.com/elisalien/verso/releases/latest">latest release</a>.</p>
+
+    <h3>Windows</h3>
+    <ol>
+      <li>Unzip <code>Verso-x.y.z-windows-x64.zip</code> anywhere (Desktop, <code>C:\Tools</code>, a USB stick).</li>
+      <li>Run <code>verso.exe</code>.</li>
+    </ol>
+    <p>FFmpeg is included next to <code>verso.exe</code>. Keep the <code>effects</code>, <code>presets</code> and <code>scripts</code> folders next to the executable: Verso loads its effects and MilkDrop presets from there.</p>
+    <div class="note"><p>Windows SmartScreen may warn that the app is unrecognised, because it is not signed. Click <strong>More info › Run anyway</strong>.</p></div>
+
+    <h3>macOS</h3>
+    <ol>
+      <li>Open <code>Verso-x.y.z-macos-universal.dmg</code> and drag <code>Verso.app</code> to Applications.</li>
+      <li>The first time, <strong>right-click Verso.app › Open</strong>, then confirm. The app is not notarized by Apple, so a double-click alone is refused.</li>
+      <li>Install FFmpeg for video: <code>brew install ffmpeg</code> (with <a href="https://brew.sh">Homebrew</a>).</li>
+    </ol>
+    <p>If macOS still says the app is damaged, run <code>xattr -dr com.apple.quarantine /Applications/Verso.app</code> in Terminal. Allow microphone access when asked: audio-reactive effects and MilkDrop listen to the audio input.</p>
+
+    <h3>Linux</h3>
+    <p>Fedora and other RPM distributions:</p>
+<pre><code>sudo dnf install ./verso-x.y.z-1.x86_64.rpm
+sudo dnf install ffmpeg-free   # or ffmpeg from RPM Fusion for every codec</code></pre>
+    <p>Ubuntu and Debian:</p>
+<pre><code>sudo apt install ./verso_x.y.z_amd64.deb</code></pre>
+    <p>Portable archive, with FFmpeg included:</p>
+<pre><code>tar xzf Verso-x.y.z-linux-x86_64.tar.gz
+./Verso-x.y.z-linux-x86_64/verso</code></pre>
+    <p>Verso needs a Vulkan driver (Mesa on AMD and Intel, the proprietary driver on NVIDIA) and runs on X11 and Wayland.</p>
+
+    <h3>From source</h3>
+<pre><code>git clone https://github.com/elisalien/verso
+cd verso
+cargo run --release -p verso-app</code></pre>
+    <p>Needs stable Rust. On Linux, install the ALSA, udev, xkbcommon, Wayland and X11 development packages first.</p>
+
+    <h2 id="interface">The interface</h2>
+    <img src="img/ui.jpg" width="1600" height="937" alt="Verso window with the clip grid at the top and panels below">
+    <ul>
+      <li><strong>Menu bar</strong>: Composition, Edit, Layer, Column, Output, Window, then <strong>MIDI Learn</strong>, <strong>Control…</strong>, <strong>Scripts…</strong> and <strong>TAP</strong> with the tempo. The frame rate and the composition name sit on the right.</li>
+      <li><strong>Clips</strong>: the grid. One row per layer, one column per scene. The Composition row on top holds the master fader.</li>
+      <li><strong>Crossfader</strong>: under the grid, mixes layers assigned to side A or B.</li>
+      <li><strong>Properties</strong>: Composition, Group, Layer and Clip panels show the settings and effects of the selection.</li>
+      <li><strong>Preview</strong>, <strong>Cues</strong> and <strong>Output</strong> monitors.</li>
+      <li><strong>Browser</strong>: Sources, MilkDrop, Effects, Files and Online tabs. Drag from here onto the grid.</li>
+      <li><strong>Status bar</strong>: the last message. Click it for the history of messages and errors.</li>
+    </ul>
+    <p>Every panel docks: drag a tab to another group or to an edge to split, drag separators to resize, right-click a tab › <strong>Undock</strong> to open it in its own window. The <strong>Window</strong> menu reopens panels, adds more Properties panels, resets the layout or saves yours as the default. <strong>Window › Interface Colors…</strong> changes the theme.</p>
+
+    <h2 id="clips">Clips and columns</h2>
+    <p>A clip is a source in a slot of the grid. Each layer plays at most one clip at a time.</p>
+    <ul>
+      <li><strong>Click a cell</strong> to play its clip on that layer. Clicking an empty cell clears the layer. Clicking the clip already playing restarts it.</li>
+      <li><strong>Click a column header</strong>, or press <kbd>1</kbd>–<kbd>9</kbd>, to launch the whole column on every layer at once.</li>
+      <li><kbd>Esc</kbd> clears every layer.</li>
+      <li><strong>Hover</strong> a clip, layer header or column header: the Preview monitor shows the clip, the layer alone, or what the column would output, without touching the output.</li>
+      <li><strong>Right-click a cell</strong> to change its source or clear it. The small number on a cell counts how many times it was launched (right-click › Reset Counter).</li>
+    </ul>
+    <p>Add or remove layers and columns from the <strong>Layer</strong> and <strong>Column</strong> menus, or right-click a header › Delete. Every structural edit can be undone with <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</p>
+
+    <h2 id="layers">Layers and mixing</h2>
+    <p>Layers stack from the bottom (Layer 1) to the top. Each layer header has:</p>
+    <table>
+      <tr><th>Control</th><th>Key</th><th>Effect</th></tr>
+      <tr><td>X</td><td><kbd>X</kbd></td><td>Eject: stop the clip on this layer</td></tr>
+      <tr><td>B</td><td><kbd>B</kbd></td><td>Bypass: hide the layer without stopping it</td></tr>
+      <tr><td>S</td><td><kbd>S</kbd></td><td>Solo: show only this layer</td></tr>
+      <tr><td>A / B</td><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Assign the layer to a side of the crossfader</td></tr>
+      <tr><td>Fader</td><td>double-click resets</td><td>Layer opacity</td></tr>
+    </table>
+    <p>The blend mode (Alpha, Add, Multiply, Screen, Lighten, Darken, Difference) is set in the Layer panel. Add and Screen brighten, Multiply darkens, Difference inverts where layers overlap. The Composition fader is the master opacity of the whole output.</p>
+
+    <h2 id="sources">Sources</h2>
+    <h3>Generators</h3>
+    <p><strong>Browser › Sources</strong> lists built-in generators (Plasma, Gradient, Stripes, Rings, Solid Color) and generator shaders. Drag one onto a cell, or select a cell and double-click the source. Hover a source to preview it; <strong>Thumbnails</strong> shows them as a grid of live images.</p>
+    <h3>Video and images</h3>
+    <p>Drop image or video files from your file manager onto a cell: they fill that slot and the following ones. <strong>Browser › Files › Open Folder…</strong> lists a folder's media to drag in. Every codec FFmpeg reads plays: H.264, H.265, ProRes, HAP and Resolume DXV3 among others. For many layers of HD video, prefer HAP or DXV: they decode much faster than H.264. The Clip panel has the transport (play, pause, position).</p>
+    <h3>Online shaders</h3>
+    <p><strong>Browser › Online</strong> searches the ISF library and ShaderToy and imports shaders. Generators appear under Sources, filters under Effects. ShaderToy needs your free API key. ShaderToy shaders are usually licensed CC BY-NC-SA: use the commercial-use filter and check the shader page before a paid show.</p>
+
+    <h2 id="milkdrop">MilkDrop</h2>
+    <p>Verso runs MilkDrop presets natively, reacting to the audio input (set it in <strong>Control…</strong>). 147 preset families ship with Verso, sorted by category in <strong>Browser › MilkDrop</strong>. Remixes of one preset are grouped into one source: pick the variant in the Clip panel.</p>
+    <ul>
+      <li><strong>Blend</strong>: changing the preset of a clip, or launching another MilkDrop clip on the same layer, blends like MilkDrop does: the new preset takes over the image left by the previous one.</li>
+      <li><strong>Input</strong>: feed another layer into the preset, as its image texture and mixed into its feedback (<strong>Input Mix</strong>). Set that layer's opacity to 0 to use it only as an input.</li>
+      <li>Your own presets: put Butterchurn <code>.json</code> files in the <code>milkdrop</code> folder of Verso's user folder (see <a href="#files">Files</a>). Raw <code>.milk</code> files are not supported yet.</li>
+    </ul>
+    <div class="note"><p>A fresh preset often starts black and fills in after a second or two. Without audio input, many presets stay dark: check the audio device first.</p></div>
+
+    <h2 id="effects">Effects</h2>
+    <p>Effects process the image at four levels: a <strong>clip</strong> (travels with the clip), a <strong>layer</strong> (applies to every clip on it), a <strong>group</strong>, or the <strong>composition</strong> (the final output).</p>
+    <ul>
+      <li>Drag an effect from <strong>Browser › Effects</strong> onto a clip, a layer header or the Composition header.</li>
+      <li>Or select the target and use <strong>+ Add Effect</strong> in its Properties panel.</li>
+      <li>Effects run in order, top to bottom. Each parameter can be modulated (see <a href="#control">Control</a>).</li>
+    </ul>
+    <p>Write your own effects in WGSL (Verso format) or ISF (<code>.fs</code>). Verso loads them from the <code>effects</code> folder next to the program, and from any folder picked in <strong>Browser › Effects › Load Folder…</strong>. Examples: <code>effects/wave.wgsl</code> and <code>effects/scanlines.fs</code>.</p>
+
+    <h2 id="groups">Groups and transitions</h2>
+    <p><kbd>Ctrl</kbd>/<kbd>Shift</kbd>-click adjacent layer headers, then <kbd>Ctrl</kbd>+<kbd>G</kbd> to group them. A group has its own opacity, blend mode, bypass and effects, applied to its layers mixed together. Groups nest; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> ungroups. The ▸/▾ button collapses a group; its ▶ buttons launch a column inside that group only.</p>
+    <p>A layer's <strong>Transition</strong> (Layer panel) crossfades from one clip to the next over the given duration instead of cutting.</p>
+
+    <h2 id="control">MIDI, OSC and audio</h2>
+    <h3>MIDI learn</h3>
+    <ol>
+      <li>Press <kbd>L</kbd> or click <strong>MIDI Learn</strong>.</li>
+      <li>Click a control in the interface (a fader, a cell, a button).</li>
+      <li>Move or press the MIDI control. Repeat for other controls, then leave learn mode.</li>
+    </ol>
+    <p><strong>Control…</strong> lists MIDI inputs and mappings, the OSC port, the audio input and the modulators.</p>
+    <h3>Modulation and tempo</h3>
+    <p>Right-click any fader or effect parameter to add an <strong>LFO</strong> or an <strong>audio</strong> modulation (level of a frequency band). LFOs are synced to the tempo: tap it with <kbd>T</kbd> or the <strong>TAP</strong> button.</p>
+    <h3>OSC</h3>
+    <p>Enable OSC in Control… (default port 7000). Values go from 0 to 1, indices start at 1.</p>
+    <table>
+      <tr><th>Address</th><th>Action</th></tr>
+      <tr><td><code>/layer/2/opacity 0.5</code></td><td>Layer 2 opacity</td></tr>
+      <tr><td><code>/column/3/launch</code></td><td>Launch column 3</td></tr>
+      <tr><td><code>/layer/1/effect/1/radius 0.8</code></td><td>Effect parameter</td></tr>
+      <tr><td><code>/cue/go</code>, <code>/cue/previous</code>, <code>/cue/2/go</code></td><td>Cue list</td></tr>
+    </table>
+    <p>Verso also answers the <code>/composition/…</code> scheme used by common clip-grid VJ software, so TouchOSC layouts, Chataigne modules and controller templates made for it work unchanged:</p>
+    <table>
+      <tr><th>Address</th><th>Action</th></tr>
+      <tr><td><code>/composition/layers/N/clips/M/connect</code></td><td>Launch a clip</td></tr>
+      <tr><td><code>/composition/columns/M/connect</code></td><td>Launch a column</td></tr>
+      <tr><td><code>/composition/layers/N/clear</code></td><td>Eject a layer</td></tr>
+      <tr><td><code>/composition/disconnectall</code></td><td>Clear all layers</td></tr>
+      <tr><td><code>/composition/layers/N/video/opacity</code></td><td>Layer opacity</td></tr>
+      <tr><td><code>/composition/master</code></td><td>Master</td></tr>
+      <tr><td><code>/composition/crossfader/phase</code></td><td>Crossfader</td></tr>
+      <tr><td><code>/composition/tempocontroller/tempo</code></td><td>Tempo in BPM</td></tr>
+    </table>
+
+    <h2 id="cues">Cue list</h2>
+    <p>The cue list (<strong>Window › Cues</strong>) plays a written show: theatre, dance, a set with fixed moments.</p>
+    <ol>
+      <li>Set up a look: launch clips, place faders.</li>
+      <li>Click <strong>Record</strong>. The cue stores the clip playing and the opacity of every layer, the master and the crossfader.</li>
+      <li>Repeat for each moment. <strong>Update</strong> rewrites the selected cue.</li>
+      <li>During the show, press <strong>GO</strong> or <kbd>Space</kbd>: the next cue plays with its fade (clips crossfade, levels glide). <strong>Back</strong> returns to the previous one.</li>
+    </ol>
+    <p>Each cue either waits for Go or follows on by itself after some seconds or beats. Moving a fader by hand stops a fade in progress.</p>
+
+    <h2 id="output">Output and mapping</h2>
+    <h3>Output window</h3>
+    <p><kbd>F2</kbd> opens the output window. Move it to the projector or second screen and double-click it for full screen.</p>
+    <h3>Advanced Output</h3>
+    <p><strong>Output › Advanced Output…</strong> maps the composition onto several screens and surfaces:</p>
+    <ul>
+      <li><strong>Screens</strong>: one per display (full screen on that monitor) or an NDI source.</li>
+      <li><strong>Slices</strong>: in <em>Input Selection</em>, choose which part of the composition each slice takes; in <em>Output Transformation</em>, place it on the screen. Drag slices, corners, polygon points and warp grid points.</li>
+      <li><strong>Masks</strong>: draw polygons by clicking, or import them from SVG.</li>
+      <li><strong>Soft edge</strong> blends overlapping projectors. <strong>Test patterns</strong>, <strong>Identify</strong> and <strong>Highlight Selection</strong> help align on site.</li>
+      <li>Import and export Advanced Output presets in the Resolume Arena <code>.xml</code> format, or drop one on Verso.</li>
+    </ul>
+    <h3>NDI</h3>
+    <p><strong>Output › NDI® Output</strong> publishes the output on the network, for OBS, a streaming PC or another media server. It needs the NDI runtime (installed with NDI Tools).</p>
+
+    <h2 id="scripts">Lua scripts</h2>
+    <p><strong>Scripts…</strong> opens the editor. A script defines <code>frame(t)</code> (every frame) and/or <code>beat(n)</code> (every beat), and drives Verso with the OSC addresses:</p>
+<pre><code>-- Pump the master on the bass, launch the next column every bar.
+function frame(t)
+  verso.set("/master", 0.6 + 0.4 * t.audio.bass)
+end
+
+function beat(n)
+  if n % 4 == 0 then
+    verso.trigger("/column/" .. (n // 4 % verso.columns() + 1) .. "/launch")
+  end
+end</code></pre>
+    <p><code>t</code> carries the time, the musical time in beats (<code>t.beats</code>) and the audio analysis (<code>t.audio.bass</code>…). <kbd>Ctrl</kbd>+<kbd>Enter</kbd> applies. Scripts are saved in the composition and run sandboxed: no file or system access, endless loops are stopped. <code>verso.get(address)</code> reads a value. This example ships as <code>scripts/beat-chase.lua</code>.</p>
+
+    <h2 id="files">Files and saving</h2>
+    <p><kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>O</kbd> / <kbd>S</kbd> create, open and save <code>.verso</code> compositions (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>: save as). A <code>*</code> in the title means unsaved changes; Verso asks before losing them. A composition also stores its panel layout.</p>
+    <p>A modified composition is copied every two minutes to <code>name.verso.bak</code> next to its file (or <code>Untitled.verso.bak</code> in the user folder). Saving removes the copy.</p>
+    <table>
+      <tr><th>System</th><th>User folder</th></tr>
+      <tr><td>Windows</td><td><code>%APPDATA%\Verso</code></td></tr>
+      <tr><td>macOS</td><td><code>~/Library/Application Support/Verso</code></td></tr>
+      <tr><td>Linux</td><td><code>~/.config/verso</code></td></tr>
+    </table>
+    <p>It holds the layout, the log (<code>verso.log</code>), imported shaders (<code>shaders/</code>) and your MilkDrop presets (<code>milkdrop/</code>).</p>
+
+    <h2 id="mcp">Agent control (MCP)</h2>
+    <p>Verso can run a <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server so an AI agent such as Claude Code reads the composition, drives it and gets rendered images. It is off unless asked for at launch, listens on <code>127.0.0.1</code> only and refuses destructive actions without confirmation.</p>
+<pre><code>verso --mcp 7400
+claude mcp add --transport http verso http://127.0.0.1:7400/mcp</code></pre>
+
+    <h2 id="shortcuts">Shortcuts</h2>
+    <table>
+      <tr><th>Key</th><th>Action</th></tr>
+      <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>Launch column</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Clear all layers</td></tr>
+      <tr><td><kbd>Space</kbd></td><td>Go: next cue</td></tr>
+      <tr><td><kbd>X</kbd> <kbd>B</kbd> <kbd>S</kbd></td><td>Eject, bypass, solo the layer</td></tr>
+      <tr><td><kbd>A</kbd> <kbd>B</kbd></td><td>Crossfader side of the layer</td></tr>
+      <tr><td><kbd>L</kbd></td><td>MIDI learn</td></tr>
+      <tr><td><kbd>T</kbd></td><td>Tap tempo</td></tr>
+      <tr><td><kbd>F2</kbd></td><td>Output window</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>G</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd></td><td>Group / ungroup layers</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></td><td>Undo / redo</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd> <kbd>O</kbd> <kbd>S</kbd></td><td>New, open, save</td></tr>
+    </table>
+    <p>On macOS, <kbd>Ctrl</kbd> is <kbd>Cmd</kbd>.</p>
+
+    <h2 id="trouble">Troubleshooting</h2>
+    <h3>Videos do not play</h3>
+    <p>The status bar says "FFmpeg not found". Install FFmpeg (see <a href="#install">Install</a>) or set the <code>VERSO_FFMPEG</code> and <code>VERSO_FFPROBE</code> variables to the two programs.</p>
+    <h3>No effects or MilkDrop presets</h3>
+    <p>The <code>effects</code> and <code>presets</code> folders must sit next to the executable. Do not move <code>verso.exe</code> out of its folder: create a shortcut instead.</p>
+    <h3>MilkDrop stays dark</h3>
+    <p>Pick the right audio input in <strong>Control…</strong> and play some sound.</p>
+    <h3>The window does not open, or the image is black</h3>
+    <p>Update the graphics driver. On Linux, install the Vulkan driver (<code>mesa-vulkan-drivers</code> on Fedora). The log in the user folder (<code>verso.log</code>) says which GPU was picked and why it failed.</p>
+    <h3>Report a bug</h3>
+    <p>Open an <a href="https://github.com/elisalien/verso/issues">issue on GitHub</a> with your system, GPU, what you did, and <code>verso.log</code> (<strong>Window › Messages</strong> shows its path).</p>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>Verso · GPL-3.0-or-later · <a href="https://github.com/elisalien/verso">Source code</a></div>
+    <div>NDI® is a registered trademark of Vizrt NDI AB.</div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

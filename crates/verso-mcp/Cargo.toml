@@ -1,0 +1,11 @@
+[package]
+name = "verso-mcp"
+description = "Verso MCP server: lets an agent inspect and drive the app over local HTTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+verso-core.workspace = true
+serde_json = "1"

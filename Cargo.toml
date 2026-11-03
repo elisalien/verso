@@ -3,20 +3,23 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/verso-vj/verso"
+publish = false
+repository = "https://github.com/elisalien/verso"
 
 [workspace.dependencies]
 verso-core = { path = "crates/verso-core" }
 verso-render = { path = "crates/verso-render" }
 verso-media = { path = "crates/verso-media" }
-verso-control = { path = "crates/verso-control" }
+verso-control = { path = "crates/verso-control", default-features = false }
 verso-script = { path = "crates/verso-script" }
 verso-io = { path = "crates/verso-io" }
 verso-online = { path = "crates/verso-online" }
-eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"] }
+verso-milkdrop = { path = "crates/verso-milkdrop" }
+verso-mcp = { path = "crates/verso-mcp" }
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11", "persistence", "accesskit"] }
 wgpu = "30.0.1"
 bytemuck = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

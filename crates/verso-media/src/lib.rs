@@ -2,15 +2,21 @@
 //!
 //! Still images decode with the `image` crate. Video decodes in an `ffmpeg`
 //! child process that writes raw RGBA frames to a pipe, so every codec FFmpeg
-//! knows (HAP, H.264, H.265, ProRes, …) plays without linking libav. The
-//! binaries are found on `PATH`, or through `VERSO_FFMPEG` and `VERSO_FFPROBE`.
+//! knows (HAP, Resolume DXV3, H.264, H.265, ProRes, …) plays without linking
+//! libav. The binaries are found through `VERSO_FFMPEG` and `VERSO_FFPROBE`,
+//! next to the Verso executable (release archives ship them there), or on
+//! `PATH`.
 
+pub mod hap;
+mod hap_player;
+pub mod mov;
 mod player;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub use player::VideoPlayer;
+pub use hap_player::{HapFrame, HapPlayer, probe_hap};
+pub use player::{Transport, VideoPlayer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -28,6 +34,8 @@ pub enum Error {
     Tool { program: String, message: String },
     #[error("no video stream in {0}")]
     NoVideo(String),
+    #[error("{0} is not a file")]
+    NotAFile(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -78,8 +86,8 @@ pub struct VideoInfo {
     pub duration: Option<f64>,
 }
 
-/// Path of an FFmpeg tool: `VERSO_<NAME>` if set, else the first match on
-/// `PATH`, else the bare name.
+/// Path of an FFmpeg tool: `VERSO_<NAME>` if set, else the copy next to the
+/// executable, else the first match on `PATH`, else the bare name.
 ///
 /// `PATH` is split by hand: `std::env::split_paths` and `Command` treat a stray
 /// `"` in one entry as an open quote and lose every entry after it.
@@ -89,6 +97,13 @@ pub fn tool_path(name: &str) -> String {
         return path;
     }
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    if let Some(bundled) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&file)))
+        .filter(|path| path.is_file())
+    {
+        return bundled.to_string_lossy().into_owned();
+    }
     let separator = if cfg!(windows) { ';' } else { ':' };
     let paths = std::env::var("PATH").unwrap_or_default();
     paths
@@ -97,6 +112,20 @@ pub fn tool_path(name: &str) -> String {
         .find(|candidate| candidate.is_file())
         .map(|found| found.to_string_lossy().into_owned())
         .unwrap_or_else(|| name.to_owned())
+}
+
+/// Whether `ffmpeg` and `ffprobe` can be run. Checked once at startup so the
+/// app can say so before the first video fails.
+pub fn ffmpeg_available() -> bool {
+    ["ffmpeg", "ffprobe"].iter().all(|name| {
+        let program = tool_path(name);
+        command(&program)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 pub(crate) fn command(program: &str) -> Command {
@@ -109,6 +138,20 @@ pub(crate) fn command(program: &str) -> Command {
         cmd.creation_flags(0x0800_0000);
     }
     cmd
+}
+
+/// Adds `path` as the input of an FFmpeg tool. Only local files are read:
+/// the path must be a file, is passed with the `file:` protocol, and other
+/// protocols are refused, so a composition cannot make FFmpeg reach the
+/// network or read through `concat:`, `subfile:` and the like.
+pub(crate) fn input(cmd: &mut Command, path: &Path) -> Result<()> {
+    if !path.is_file() {
+        return Err(Error::NotAFile(path.display().to_string()));
+    }
+    let mut arg = std::ffi::OsString::from("file:");
+    arg.push(path.as_os_str());
+    cmd.args(["-protocol_whitelist", "file", "-i"]).arg(arg);
+    Ok(())
 }
 
 /// Runs `cmd` to completion and returns its stdout.
@@ -163,8 +206,8 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
         "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
         "-of",
         "default=noprint_wrappers=1",
-    ])
-    .arg(path);
+    ]);
+    input(&mut cmd, path)?;
     let text = String::from_utf8_lossy(&run(cmd, &program)?).into_owned();
 
     let mut info = VideoInfo {
@@ -187,8 +230,10 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
             _ => {}
         }
     }
-    if info.fps <= 0.0 {
-        info.fps = fallback_fps.unwrap_or(30.0);
+    if !(info.fps > 0.0 && info.fps <= 1000.0) {
+        info.fps = fallback_fps
+            .filter(|f| *f > 0.0 && *f <= 1000.0)
+            .unwrap_or(30.0);
     }
     if info.width == 0 || info.height == 0 {
         return Err(Error::NoVideo(path.display().to_string()));
@@ -212,13 +257,13 @@ pub fn poster(path: &Path, max: (u32, u32)) -> Result<Frame> {
     let (width, height) = fit_size((info.width, info.height), max);
     let program = tool_path("ffmpeg");
     let mut cmd = command(&program);
-    cmd.args(["-v", "error", "-i"])
-        .arg(path)
-        .args(["-frames:v", "1", "-vf"])
+    cmd.args(["-v", "error"]);
+    input(&mut cmd, path)?;
+    cmd.args(["-frames:v", "1", "-vf"])
         .arg(format!("scale={width}:{height}"))
         .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
     let data = run(cmd, &program)?;
-    if data.len() != (width * height * 4) as usize {
+    if data.len() != width as usize * height as usize * 4 {
         return Err(Error::NoVideo(path.display().to_string()));
     }
     Ok(Frame {
@@ -275,5 +320,24 @@ mod tests {
         let frame = load_image(&path).unwrap();
         assert_eq!((frame.width, frame.height), (2, 1));
         assert_eq!(frame.data, [255, 0, 0, 255, 0, 255, 0, 128]);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn only_local_files_are_opened() {
+        for url in [
+            "http://127.0.0.1:9/x.mp4",
+            "concat:a.mp4|b.mp4",
+            "/no/such/file.mp4",
+        ] {
+            assert!(
+                matches!(probe(Path::new(url)), Err(Error::NotAFile(_))),
+                "{url}"
+            );
+        }
     }
 }

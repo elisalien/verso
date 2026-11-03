@@ -6,16 +6,24 @@
 mod command;
 mod composition;
 pub mod control;
+pub mod cue;
 mod effect;
+mod groups;
+pub mod mapping;
 pub mod modulation;
+pub mod output;
 mod source;
+mod structure;
+mod validate;
 
-pub use command::Command;
+pub use command::{Command, CommandKind};
 pub use composition::{
     BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master, Script,
 };
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
-pub use source::{Generator, Source};
+pub use source::{Generator, MilkPattern, Source};
+pub use structure::IndexChanges;
+pub use validate::{MAX_SIZE, MIN_SIZE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -33,6 +41,16 @@ pub enum Error {
     NoModulator(usize),
     #[error("script {0} does not exist")]
     NoScript(usize),
+    #[error("only adjacent layers can be grouped")]
+    NotAdjacent,
+    #[error("a composition keeps at least one layer")]
+    LastLayer,
+    #[error("a composition keeps at least one column")]
+    LastColumn,
+    #[error("cue {0} does not exist")]
+    NoCue(usize),
+    #[error("value is not a finite number")]
+    NotFinite,
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

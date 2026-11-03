@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mode d'emploi de Verso</title>
+  <meta name="description" content="Installer et utiliser Verso, le logiciel VJ gratuit : clips, couches, effets, MilkDrop, sortie et mapping vidéo, MIDI, OSC, liste de cues et scripts.">
+  <link rel="icon" href="../verso.svg" type="image/svg+xml">
+  <link rel="alternate" hreflang="en" href="../guide.html">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="../verso.svg" alt="">VERSO</a>
+    <nav>
+      <a href="./#telecharger">Télécharger</a>
+      <a href="guide.html" aria-current="page">Mode d'emploi</a>
+      <a class="hide-sm" href="https://github.com/elisalien/verso">GitHub</a>
+      <a class="lang" href="../guide.html" hreflang="en" lang="en">EN</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap guide">
+  <aside class="toc" aria-label="Sommaire">
+    <ol>
+      <li><a href="#installer">Installer</a></li>
+      <li><a href="#interface">L'interface</a></li>
+      <li><a href="#clips">Clips et colonnes</a></li>
+      <li><a href="#couches">Couches et mixage</a></li>
+      <li><a href="#sources">Sources</a></li>
+      <li><a href="#milkdrop">MilkDrop</a></li>
+      <li><a href="#effets">Effets</a></li>
+      <li><a href="#groupes">Groupes et transitions</a></li>
+      <li><a href="#controle">MIDI, OSC et audio</a></li>
+      <li><a href="#cues">Liste de cues</a></li>
+      <li><a href="#sortie">Sortie et mapping</a></li>
+      <li><a href="#scripts">Scripts Lua</a></li>
+      <li><a href="#fichiers">Fichiers et sauvegarde</a></li>
+      <li><a href="#mcp">Pilotage par agent (MCP)</a></li>
+      <li><a href="#raccourcis">Raccourcis</a></li>
+      <li><a href="#depannage">Dépannage</a></li>
+    </ol>
+  </aside>
+
+  <article class="doc">
+    <div class="eyebrow">Mode d'emploi</div>
+    <h1>Utiliser Verso</h1>
+    <p>Verso mixe de la vidéo en direct. Vous placez des <strong>clips</strong> dans une grille, chaque <strong>couche</strong> joue un clip à la fois, et les couches s'empilent sur la carte graphique pour former une seule image : la <strong>sortie</strong>. Ce guide va de l'installation au spectacle complet.</p>
+
+    <h2 id="installer">Installer</h2>
+    <p>Téléchargez le paquet de votre système sur la <a href="https://github.com/elisalien/verso/releases/latest">dernière version</a>.</p>
+
+    <h3>Windows</h3>
+    <ol>
+      <li>Décompressez <code>Verso-x.y.z-windows-x64.zip</code> où vous voulez (Bureau, <code>C:\Outils</code>, clé USB).</li>
+      <li>Lancez <code>verso.exe</code>.</li>
+    </ol>
+    <p>FFmpeg est fourni à côté de <code>verso.exe</code>. Laissez les dossiers <code>effects</code>, <code>presets</code> et <code>scripts</code> à côté de l'exécutable : Verso y charge ses effets et ses presets MilkDrop.</p>
+    <div class="note"><p>Windows SmartScreen peut signaler une application non reconnue, car elle n'est pas signée. Cliquez sur <strong>Informations complémentaires › Exécuter quand même</strong>.</p></div>
+
+    <h3>macOS</h3>
+    <ol>
+      <li>Ouvrez <code>Verso-x.y.z-macos-universal.dmg</code> et glissez <code>Verso.app</code> dans Applications.</li>
+      <li>La première fois, faites <strong>clic droit sur Verso.app › Ouvrir</strong>, puis confirmez. L'application n'est pas notarisée par Apple : un simple double-clic est refusé.</li>
+      <li>Installez FFmpeg pour la vidéo : <code>brew install ffmpeg</code> (avec <a href="https://brew.sh">Homebrew</a>).</li>
+    </ol>
+    <p>Si macOS dit encore que l'application est endommagée, lancez <code>xattr -dr com.apple.quarantine /Applications/Verso.app</code> dans le Terminal. Autorisez l'accès au micro quand il est demandé : les effets audio-réactifs et MilkDrop écoutent l'entrée audio.</p>
+
+    <h3>Linux</h3>
+    <p>Fedora et autres distributions RPM :</p>
+<pre><code>sudo dnf install ./verso-x.y.z-1.x86_64.rpm
+sudo dnf install ffmpeg-free   # ou ffmpeg depuis RPM Fusion pour tous les codecs</code></pre>
+    <p>Ubuntu et Debian :</p>
+<pre><code>sudo apt install ./verso_x.y.z_amd64.deb</code></pre>
+    <p>Archive portable, FFmpeg inclus :</p>
+<pre><code>tar xzf Verso-x.y.z-linux-x86_64.tar.gz
+./Verso-x.y.z-linux-x86_64/verso</code></pre>
+    <p>Verso demande un pilote Vulkan (Mesa sur AMD et Intel, le pilote propriétaire sur NVIDIA) et fonctionne sous X11 et Wayland.</p>
+
+    <h3>Depuis les sources</h3>
+<pre><code>git clone https://github.com/elisalien/verso
+cd verso
+cargo run --release -p verso-app</code></pre>
+    <p>Demande Rust stable. Sous Linux, installez d'abord les paquets de développement ALSA, udev, xkbcommon, Wayland et X11.</p>
+
+    <h2 id="interface">L'interface</h2>
+    <img src="../img/ui.jpg" width="1600" height="937" alt="Fenêtre de Verso, la grille de clips en haut et les panneaux en dessous">
+    <ul>
+      <li><strong>Barre de menus</strong> : Composition, Edit, Layer, Column, Output, Window, puis <strong>MIDI Learn</strong>, <strong>Control…</strong>, <strong>Scripts…</strong> et <strong>TAP</strong> avec le tempo. Les images par seconde et le nom de la composition sont à droite.</li>
+      <li><strong>Clips</strong> : la grille. Une ligne par couche, une colonne par scène. La ligne Composition, en haut, porte le fader master.</li>
+      <li><strong>Crossfader</strong> : sous la grille, mixe les couches assignées au côté A ou B.</li>
+      <li><strong>Propriétés</strong> : les panneaux Composition, Group, Layer et Clip montrent les réglages et effets de la sélection.</li>
+      <li>Moniteurs <strong>Preview</strong>, <strong>Cues</strong> et <strong>Output</strong>.</li>
+      <li><strong>Browser</strong> : onglets Sources, MilkDrop, Effects, Files et Online. On glisse depuis ici vers la grille.</li>
+      <li><strong>Barre d'état</strong> : le dernier message. Cliquez dessus pour l'historique des messages et erreurs.</li>
+    </ul>
+    <p>Tous les panneaux s'ancrent : glissez un onglet vers un autre groupe ou vers un bord pour diviser, tirez les séparateurs pour redimensionner, clic droit sur un onglet › <strong>Undock</strong> pour l'ouvrir dans sa propre fenêtre. Le menu <strong>Window</strong> rouvre les panneaux, ajoute des panneaux Propriétés, réinitialise la disposition ou enregistre la vôtre par défaut. <strong>Window › Interface Colors…</strong> change le thème.</p>
+    <p class="small">L'interface de Verso est en anglais ; les noms de menus et de boutons sont donnés tels qu'ils apparaissent.</p>
+
+    <h2 id="clips">Clips et colonnes</h2>
+    <p>Un clip est une source placée dans une case de la grille. Chaque couche joue au plus un clip à la fois.</p>
+    <ul>
+      <li><strong>Cliquez une case</strong> pour jouer son clip sur sa couche. Une case vide vide la couche. Recliquer le clip en cours le relance.</li>
+      <li><strong>Cliquez un en-tête de colonne</strong>, ou appuyez sur <kbd>1</kbd>–<kbd>9</kbd>, pour lancer toute la colonne sur toutes les couches.</li>
+      <li><kbd>Échap</kbd> vide toutes les couches.</li>
+      <li><strong>Survolez</strong> un clip, un en-tête de couche ou de colonne : le moniteur Preview montre le clip, la couche seule ou ce que la colonne donnerait, sans toucher la sortie.</li>
+      <li><strong>Clic droit sur une case</strong> pour changer sa source ou la vider. Le petit nombre sur une case compte ses lancements (clic droit › Reset Counter).</li>
+    </ul>
+    <p>Ajoutez ou supprimez couches et colonnes depuis les menus <strong>Layer</strong> et <strong>Column</strong>, ou clic droit sur un en-tête › Delete. Toute modification de structure s'annule avec <kbd>Ctrl</kbd>+<kbd>Z</kbd>.</p>
+
+    <h2 id="couches">Couches et mixage</h2>
+    <p>Les couches s'empilent du bas (Layer 1) vers le haut. Chaque en-tête de couche porte :</p>
+    <table>
+      <tr><th>Contrôle</th><th>Touche</th><th>Effet</th></tr>
+      <tr><td>X</td><td><kbd>X</kbd></td><td>Éjecter : arrête le clip de la couche</td></tr>
+      <tr><td>B</td><td><kbd>B</kbd></td><td>Bypass : masque la couche sans l'arrêter</td></tr>
+      <tr><td>S</td><td><kbd>S</kbd></td><td>Solo : n'affiche que cette couche</td></tr>
+      <tr><td>A / B</td><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Assigne la couche à un côté du crossfader</td></tr>
+      <tr><td>Fader</td><td>double-clic : remise à zéro</td><td>Opacité de la couche</td></tr>
+    </table>
+    <p>Le mode de fusion (Alpha, Add, Multiply, Screen, Lighten, Darken, Difference) se règle dans le panneau Layer. Add et Screen éclaircissent, Multiply assombrit, Difference inverse là où les couches se superposent. Le fader Composition est l'opacité master de toute la sortie.</p>
+
+    <h2 id="sources">Sources</h2>
+    <h3>Générateurs</h3>
+    <p><strong>Browser › Sources</strong> liste les générateurs intégrés (Plasma, Gradient, Stripes, Rings, Solid Color) et les shaders générateurs. Glissez-en un sur une case, ou sélectionnez une case et double-cliquez la source. Survolez une source pour la prévisualiser ; <strong>Thumbnails</strong> les affiche en grille d'images animées.</p>
+    <h3>Vidéos et images</h3>
+    <p>Déposez des images ou vidéos depuis l'explorateur de fichiers sur une case : elles remplissent cette case et les suivantes. <strong>Browser › Files › Open Folder…</strong> liste les médias d'un dossier à glisser. Tout codec lu par FFmpeg fonctionne : H.264, H.265, ProRes, HAP et Resolume DXV3 entre autres. Pour beaucoup de couches de vidéo HD, préférez HAP ou DXV : ils se décodent bien plus vite que le H.264. Le panneau Clip porte le transport (lecture, pause, position).</p>
+    <h3>Shaders en ligne</h3>
+    <p><strong>Browser › Online</strong> cherche dans la bibliothèque ISF et sur ShaderToy et importe les shaders. Les générateurs vont dans Sources, les filtres dans Effects. ShaderToy demande votre clé API gratuite. Les shaders ShaderToy sont en général sous licence CC BY-NC-SA : utilisez le filtre d'usage commercial et vérifiez la page du shader avant une prestation payée.</p>
+
+    <h2 id="milkdrop">MilkDrop</h2>
+    <p>Verso joue les presets MilkDrop nativement, en réaction à l'entrée audio (à régler dans <strong>Control…</strong>). 147 familles de presets sont fournies, classées par catégorie dans <strong>Browser › MilkDrop</strong>. Les remix d'un même preset sont regroupés en une source : choisissez la variante dans le panneau Clip.</p>
+    <ul>
+      <li><strong>Blend</strong> : changer le preset d'un clip, ou lancer un autre clip MilkDrop sur la même couche, fond comme MilkDrop : le nouveau preset reprend l'image laissée par le précédent.</li>
+      <li><strong>Input</strong> : injecte une autre couche dans le preset, comme texture et dans son feedback (<strong>Input Mix</strong>). Mettez l'opacité de cette couche à 0 pour ne l'utiliser que comme entrée.</li>
+      <li>Vos propres presets : placez des fichiers Butterchurn <code>.json</code> dans le dossier <code>milkdrop</code> du dossier utilisateur de Verso (voir <a href="#fichiers">Fichiers</a>). Les fichiers <code>.milk</code> bruts ne sont pas encore pris en charge.</li>
+    </ul>
+    <div class="note"><p>Un preset neuf démarre souvent noir et se remplit en une ou deux secondes. Sans entrée audio, beaucoup de presets restent sombres : vérifiez d'abord le périphérique audio.</p></div>
+
+    <h2 id="effets">Effets</h2>
+    <p>Les effets traitent l'image à quatre niveaux : un <strong>clip</strong> (l'effet suit le clip), une <strong>couche</strong> (s'applique à tous ses clips), un <strong>groupe</strong>, ou la <strong>composition</strong> (la sortie finale).</p>
+    <ul>
+      <li>Glissez un effet depuis <strong>Browser › Effects</strong> sur un clip, un en-tête de couche ou l'en-tête Composition.</li>
+      <li>Ou sélectionnez la cible et utilisez <strong>+ Add Effect</strong> dans son panneau Propriétés.</li>
+      <li>Les effets s'appliquent dans l'ordre, de haut en bas. Chaque paramètre peut être modulé (voir <a href="#controle">Contrôle</a>).</li>
+    </ul>
+    <p>Écrivez vos effets en WGSL (format Verso) ou en ISF (<code>.fs</code>). Verso les charge depuis le dossier <code>effects</code> à côté du programme, et depuis tout dossier choisi dans <strong>Browser › Effects › Load Folder…</strong>. Exemples : <code>effects/wave.wgsl</code> et <code>effects/scanlines.fs</code>.</p>
+
+    <h2 id="groupes">Groupes et transitions</h2>
+    <p><kbd>Ctrl</kbd>/<kbd>Maj</kbd>-clic sur des en-têtes de couches voisines, puis <kbd>Ctrl</kbd>+<kbd>G</kbd> pour les grouper. Un groupe a sa propre opacité, son mode de fusion, son bypass et ses effets, appliqués à ses couches mixées ensemble. Les groupes s'imbriquent ; <kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>G</kbd> dégroupe. Le bouton ▸/▾ replie un groupe ; ses boutons ▶ lancent une colonne dans ce groupe seulement.</p>
+    <p>La <strong>Transition</strong> d'une couche (panneau Layer) fond d'un clip au suivant sur la durée donnée au lieu de couper.</p>
+
+    <h2 id="controle">MIDI, OSC et audio</h2>
+    <h3>MIDI learn</h3>
+    <ol>
+      <li>Appuyez sur <kbd>L</kbd> ou cliquez <strong>MIDI Learn</strong>.</li>
+      <li>Cliquez un contrôle de l'interface (fader, case, bouton).</li>
+      <li>Bougez ou appuyez sur le contrôle MIDI. Recommencez pour d'autres contrôles, puis quittez le mode learn.</li>
+    </ol>
+    <p><strong>Control…</strong> liste les entrées MIDI et les assignations, le port OSC, l'entrée audio et les modulateurs.</p>
+    <h3>Modulation et tempo</h3>
+    <p>Clic droit sur n'importe quel fader ou paramètre d'effet pour ajouter une modulation <strong>LFO</strong> ou <strong>audio</strong> (niveau d'une bande de fréquences). Les LFO sont calés sur le tempo : tapez-le avec <kbd>T</kbd> ou le bouton <strong>TAP</strong>.</p>
+    <h3>OSC</h3>
+    <p>Activez l'OSC dans Control… (port 7000 par défaut). Les valeurs vont de 0 à 1, les numéros commencent à 1.</p>
+    <table>
+      <tr><th>Adresse</th><th>Action</th></tr>
+      <tr><td><code>/layer/2/opacity 0.5</code></td><td>Opacité de la couche 2</td></tr>
+      <tr><td><code>/column/3/launch</code></td><td>Lance la colonne 3</td></tr>
+      <tr><td><code>/layer/1/effect/1/radius 0.8</code></td><td>Paramètre d'effet</td></tr>
+      <tr><td><code>/cue/go</code>, <code>/cue/previous</code>, <code>/cue/2/go</code></td><td>Liste de cues</td></tr>
+    </table>
+    <p>Verso répond aussi au schéma <code>/composition/…</code> des logiciels VJ à grille de clips courants : les layouts TouchOSC, modules Chataigne et modèles de contrôleurs prévus pour lui fonctionnent tels quels :</p>
+    <table>
+      <tr><th>Adresse</th><th>Action</th></tr>
+      <tr><td><code>/composition/layers/N/clips/M/connect</code></td><td>Lance un clip</td></tr>
+      <tr><td><code>/composition/columns/M/connect</code></td><td>Lance une colonne</td></tr>
+      <tr><td><code>/composition/layers/N/clear</code></td><td>Éjecte une couche</td></tr>
+      <tr><td><code>/composition/disconnectall</code></td><td>Vide toutes les couches</td></tr>
+      <tr><td><code>/composition/layers/N/video/opacity</code></td><td>Opacité de couche</td></tr>
+      <tr><td><code>/composition/master</code></td><td>Master</td></tr>
+      <tr><td><code>/composition/crossfader/phase</code></td><td>Crossfader</td></tr>
+      <tr><td><code>/composition/tempocontroller/tempo</code></td><td>Tempo en BPM</td></tr>
+    </table>
+
+    <h2 id="cues">Liste de cues</h2>
+    <p>La liste de cues (<strong>Window › Cues</strong>) joue un spectacle écrit : théâtre, danse, set avec des moments fixes.</p>
+    <ol>
+      <li>Préparez un état : lancez des clips, placez les faders.</li>
+      <li>Cliquez <strong>Record</strong>. La cue enregistre le clip joué et l'opacité de chaque couche, du master et du crossfader.</li>
+      <li>Recommencez pour chaque moment. <strong>Update</strong> réécrit la cue sélectionnée.</li>
+      <li>Pendant le spectacle, appuyez sur <strong>GO</strong> ou <kbd>Espace</kbd> : la cue suivante se joue avec son fondu (les clips se fondent, les niveaux glissent). <strong>Back</strong> revient à la précédente.</li>
+    </ol>
+    <p>Chaque cue attend un Go ou s'enchaîne seule après quelques secondes ou temps. Bouger un fader à la main arrête le fondu en cours.</p>
+
+    <h2 id="sortie">Sortie et mapping</h2>
+    <h3>Fenêtre de sortie</h3>
+    <p><kbd>F2</kbd> ouvre la fenêtre de sortie. Placez-la sur le vidéoprojecteur ou le second écran et double-cliquez pour le plein écran.</p>
+    <h3>Advanced Output</h3>
+    <p><strong>Output › Advanced Output…</strong> répartit la composition sur plusieurs écrans et surfaces :</p>
+    <ul>
+      <li><strong>Écrans</strong> : un par moniteur (plein écran sur celui-ci) ou une source NDI.</li>
+      <li><strong>Slices</strong> : dans <em>Input Selection</em>, choisissez la partie de la composition prise par chaque slice ; dans <em>Output Transformation</em>, placez-la sur l'écran. Glissez slices, coins, points de polygone et points de grille de déformation.</li>
+      <li><strong>Masques</strong> : dessinez des polygones au clic, ou importez-les depuis un SVG.</li>
+      <li>Le <strong>soft edge</strong> fond les zones de recouvrement entre projecteurs. Les <strong>mires de test</strong>, <strong>Identify</strong> et <strong>Highlight Selection</strong> aident au calage sur place.</li>
+      <li>Importez et exportez les presets d'Advanced Output au format <code>.xml</code> de Resolume Arena, ou déposez-en un sur Verso.</li>
+    </ul>
+    <h3>NDI</h3>
+    <p><strong>Output › NDI® Output</strong> publie la sortie sur le réseau, pour OBS, un PC de streaming ou un autre serveur média. Il faut le runtime NDI (installé avec NDI Tools).</p>
+
+    <h2 id="scripts">Scripts Lua</h2>
+    <p><strong>Scripts…</strong> ouvre l'éditeur. Un script définit <code>frame(t)</code> (à chaque image) et/ou <code>beat(n)</code> (à chaque temps), et pilote Verso avec les adresses OSC :</p>
+<pre><code>-- Pompe le master sur les basses, lance la colonne suivante à chaque mesure.
+function frame(t)
+  verso.set("/master", 0.6 + 0.4 * t.audio.bass)
+end
+
+function beat(n)
+  if n % 4 == 0 then
+    verso.trigger("/column/" .. (n // 4 % verso.columns() + 1) .. "/launch")
+  end
+end</code></pre>
+    <p><code>t</code> porte le temps, le temps musical en temps (<code>t.beats</code>) et l'analyse audio (<code>t.audio.bass</code>…). <kbd>Ctrl</kbd>+<kbd>Entrée</kbd> applique. Les scripts sont enregistrés dans la composition et tournent isolés : pas d'accès aux fichiers ni au système, les boucles sans fin sont arrêtées. <code>verso.get(adresse)</code> lit une valeur. Cet exemple est fourni : <code>scripts/beat-chase.lua</code>.</p>
+
+    <h2 id="fichiers">Fichiers et sauvegarde</h2>
+    <p><kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>O</kbd> / <kbd>S</kbd> créent, ouvrent et enregistrent les compositions <code>.verso</code> (<kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>S</kbd> : enregistrer sous). Un <code>*</code> dans le titre signale des modifications non enregistrées ; Verso demande avant de les perdre. Une composition garde aussi la disposition de ses panneaux.</p>
+    <p>Une composition modifiée est copiée toutes les deux minutes dans <code>nom.verso.bak</code> à côté de son fichier (ou <code>Untitled.verso.bak</code> dans le dossier utilisateur). Enregistrer supprime la copie.</p>
+    <table>
+      <tr><th>Système</th><th>Dossier utilisateur</th></tr>
+      <tr><td>Windows</td><td><code>%APPDATA%\Verso</code></td></tr>
+      <tr><td>macOS</td><td><code>~/Library/Application Support/Verso</code></td></tr>
+      <tr><td>Linux</td><td><code>~/.config/verso</code></td></tr>
+    </table>
+    <p>Il contient la disposition, le journal (<code>verso.log</code>), les shaders importés (<code>shaders/</code>) et vos presets MilkDrop (<code>milkdrop/</code>).</p>
+
+    <h2 id="mcp">Pilotage par agent (MCP)</h2>
+    <p>Verso peut lancer un serveur <a href="https://modelcontextprotocol.io">Model Context Protocol</a> pour qu'un agent IA comme Claude Code lise la composition, la pilote et récupère des images rendues. Il est désactivé sauf demande au lancement, n'écoute que sur <code>127.0.0.1</code> et refuse les actions destructives sans confirmation.</p>
+<pre><code>verso --mcp 7400
+claude mcp add --transport http verso http://127.0.0.1:7400/mcp</code></pre>
+
+    <h2 id="raccourcis">Raccourcis</h2>
+    <table>
+      <tr><th>Touche</th><th>Action</th></tr>
+      <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>Lancer une colonne</td></tr>
+      <tr><td><kbd>Échap</kbd></td><td>Vider toutes les couches</td></tr>
+      <tr><td><kbd>Espace</kbd></td><td>Go : cue suivante</td></tr>
+      <tr><td><kbd>X</kbd> <kbd>B</kbd> <kbd>S</kbd></td><td>Éjecter, bypass, solo de la couche</td></tr>
+      <tr><td><kbd>A</kbd> <kbd>B</kbd></td><td>Côté du crossfader de la couche</td></tr>
+      <tr><td><kbd>L</kbd></td><td>MIDI learn</td></tr>
+      <tr><td><kbd>T</kbd></td><td>Tap tempo</td></tr>
+      <tr><td><kbd>F2</kbd></td><td>Fenêtre de sortie</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>G</kbd> / <kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>G</kbd></td><td>Grouper / dégrouper des couches</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Maj</kbd>+<kbd>Z</kbd></td><td>Annuler / rétablir</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd> <kbd>O</kbd> <kbd>S</kbd></td><td>Nouveau, ouvrir, enregistrer</td></tr>
+    </table>
+    <p>Sur macOS, <kbd>Ctrl</kbd> correspond à <kbd>Cmd</kbd>.</p>
+
+    <h2 id="depannage">Dépannage</h2>
+    <h3>Les vidéos ne se lisent pas</h3>
+    <p>La barre d'état indique « FFmpeg not found ». Installez FFmpeg (voir <a href="#installer">Installer</a>) ou réglez les variables <code>VERSO_FFMPEG</code> et <code>VERSO_FFPROBE</code> sur les deux programmes.</p>
+    <h3>Pas d'effets ni de presets MilkDrop</h3>
+    <p>Les dossiers <code>effects</code> et <code>presets</code> doivent être à côté de l'exécutable. Ne sortez pas <code>verso.exe</code> de son dossier : créez plutôt un raccourci.</p>
+    <h3>MilkDrop reste noir</h3>
+    <p>Choisissez la bonne entrée audio dans <strong>Control…</strong> et jouez du son.</p>
+    <h3>La fenêtre ne s'ouvre pas, ou l'image est noire</h3>
+    <p>Mettez à jour le pilote graphique. Sous Linux, installez le pilote Vulkan (<code>mesa-vulkan-drivers</code> sur Fedora). Le journal du dossier utilisateur (<code>verso.log</code>) indique la carte graphique choisie et la cause de l'échec.</p>
+    <h3>Signaler un bug</h3>
+    <p>Ouvrez une <a href="https://github.com/elisalien/verso/issues">issue sur GitHub</a> avec votre système, votre carte graphique, ce que vous faisiez, et <code>verso.log</code> (<strong>Window › Messages</strong> donne son chemin).</p>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>Verso · GPL-3.0-or-later · <a href="https://github.com/elisalien/verso">Code source</a></div>
+    <div>NDI® est une marque déposée de Vizrt NDI AB.</div>
+  </div>
+</footer>
+<script src="../assets/site.js"></script>
+</body>
+</html>

@@ -86,8 +86,61 @@ Composition
 
 - Le modèle est sérialisable (`serde`, RON). Le fichier projet est `*.verso`.
 - Aucune dépendance GPU dans `verso-core` : il est testable sans carte graphique.
-- Les identifiants stables (`LayerId`, `ClipId`) arriveront avec l'édition
-  (déplacement de couches) ; v0.1 utilise des index.
+- Couches et colonnes sont repérées par index. Supprimer, déplacer ou dupliquer
+  (v0.3.2) renumérote les mappings MIDI et les modulateurs pour qu'ils suivent
+  la même couche ou colonne (`IndexChanges`) ; ceux qui visaient un élément
+  supprimé disparaissent. Les adresses écrites dans les scripts Lua ne sont pas
+  réécrites.
+- Annuler/rétablir (v0.3.2) : instantanés de la composition avant chaque édition
+  faite dans l'interface, éditions continues (fader, saisie) fusionnées par
+  contrôle sur 1 s, 100 pas. Lancements, MIDI, OSC et scripts ne sont jamais
+  enregistrés, et annuler ne change pas ce qui joue.
+
+### Document, annulation et dialogues
+
+Chaque `Command` a un `CommandKind` : `Play` (déclencher, éjecter : ne modifie
+pas le document), `Tweak` (faders, paramètres, noms : modifie le document,
+trop fréquent pour une annulation pas à pas) ou `Edit` (clips, couches,
+colonnes, groupes, chaînes d'effets, mappings : modifie le document et
+s'annule). L'app marque la composition « non enregistrée » sur tout `Tweak`
+ou `Edit`, demande confirmation avant Nouveau / Ouvrir / Quitter, et garde
+50 instantanés pour `Ctrl+Z` / `Ctrl+Shift+Z` (restaurer un instantané
+conserve les clips en cours de lecture). `RemoveLayer` et `RemoveColumn`
+décalent ou suppriment les modulateurs et mappings MIDI concernés, comme
+`RemoveGroup` pour les groupes.
+
+Toutes les deux minutes, une composition modifiée est copiée dans
+`nom.verso.bak` à côté de son fichier (ou `Untitled.verso.bak` dans le
+dossier utilisateur si elle n'a pas encore de fichier). Enregistrer supprime
+la copie. Un échec d'enregistrement automatique n'interrompt jamais le set :
+il va seulement dans le journal.
+
+Le journal `verso.log` (dossier utilisateur, run précédent dans
+`verso.log.old`, module `verso-app/src/logging.rs`) reçoit chaque message de
+la barre de statut, les avertissements de wgpu / winit / naga, et tout
+plantage via un panic hook. La fenêtre Messages affiche son chemin.
+
+Les dialogues de fichiers natifs bloquent leur thread ; ils tournent sur un
+thread dédié (`verso-app/src/dialogs.rs`) pour que la sortie continue de
+rendre pendant qu'un dialogue est ouvert (sauf macOS, qui impose le thread
+principal).
+
+## 5 bis. Espace de travail
+
+Tous les panneaux (Clips, Composition, Group, Layer, Clip, Preview, Output,
+Browser) sont des onglets d'un dock maison (`verso-app/src/dock.rs`, egui_dock
+ne suivant pas egui 0.37) : glisser un onglet sur une barre ou le centre d'un
+groupe l'y déplace, sur un bord il scinde le groupe ; les séparateurs se
+redimensionnent ; les onglets se ferment et se rouvrent depuis le menu Window.
+La disposition est enregistrée dans `<dossier utilisateur>/layout.ron` à la
+fermeture.
+
+Les panneaux Properties peuvent être multiples. Chacun suit la sélection
+(🔗) ou reste verrouillé (🔒) sur un groupe, une couche ou un clip ; sa liste
+déroulante choisit la cible directement (en mode suivi, elle change la
+sélection). Un nouveau panneau ouvert depuis Window démarre verrouillé sur la
+cible courante. Sélectionner un élément dans la grille met au premier plan le
+panneau qui suit ce type d'élément.
 
 ## 6. Médias
 
@@ -95,7 +148,7 @@ Composition
 |---|---|---|
 | Images (PNG, JPEG, BMP, WebP, TGA, TIFF) | crate `image`, thread de chargement | v0.2 ✅ |
 | Vidéo : HAP, H.264, H.265, ProRes, GIF… | processus `ffmpeg` → pipe RGBA, `-hwaccel auto` | v0.2 ✅ |
-| HAP natif (upload BC1/BC3/BC7 sans conversion) | démuxage MOV + Snappy | plus tard |
+| HAP natif (upload BC1/BC3/BC7 sans conversion) | démuxage MOV + Snappy | v0.4.1 ✅ |
 | Shaders génératifs | WGSL natif, ISF transpilé | v0.1 / v0.2 |
 
 **Décision : FFmpeg en processus, pas libav lié.** Chaque clip vidéo actif lance
@@ -104,6 +157,28 @@ Avantages : aucun header ni `.lib` à installer, tous les codecs de FFmpeg
 disponibles, crash d'un décodeur isolé du rendu. Coûts : copie CPU des frames
 (≈ 250 Mo/s en 1080p30), seek = relance du processus. Le passage à libav
 (`ffmpeg-next`) ou au HAP natif se fera si ces coûts limitent un set réel.
+
+**Relance sans image figée.** Relancer un clip (retrigger, ou fin de boucle)
+prenait le temps de démarrage d'un nouveau `ffmpeg` (100 à 300 ms de dernière
+image figée). Chaque lecteur garde désormais un décodeur *de secours* déjà
+lancé sur la première image ; la relance l'échange en place et en relance un
+autre sur un thread. Coût : un second processus `ffmpeg` par clip actif,
+bloqué sur un pipe plein.
+
+**Transport.** `VideoPlayer::transport()` donne position, durée, numéro de
+frame et fin de clip ; l'app l'affiche dans Properties (barre `m:ss / m:ss`),
+sous la vignette de la cellule et sous le moniteur de prévisualisation. Pas
+de seek, de vitesse négative ni de points d'entrée/sortie : le pipe ne
+le permet pas sans relance (`-ss`), à faire avec la lecture avancée.
+
+**Vignettes bornées.** Les posters et images passent par une file à 3
+travailleurs (`verso-app/src/media.rs`) : déposer un dossier de 300 clips ne
+lance plus 600 processus d'un coup.
+
+**Mesure (31/10/2026, Windows, 24 cœurs, décodage seul, sans upload GPU) :**
+`cargo test -p verso-media --release -- --ignored --nocapture bench` : 4
+lecteurs 1080p60 HAP à 59,9 fps chacun, 4 lecteurs 1080p60 H.264 à 59,9 fps
+chacun. À refaire sur la machine cible Fedora et dans l'app (upload inclus).
 Les binaires sont cherchés dans `PATH`, ou via `VERSO_FFMPEG` / `VERSO_FFPROBE`.
 
 Ouverture vidéo (ffprobe + lancement), chargement d'image et poster tournent
@@ -111,7 +186,18 @@ sur des threads ; la boucle de rendu n'attend jamais le disque. Pendant
 l'ouverture, la couche affiche le poster du clip.
 
 Le HAP est le format recommandé en live : décodage CPU minimal, scrubbing et
-lecture inversée sans coût. Les codecs inter-frames (H.264/H.265) ont un scrubbing
+lecture inversée sans coût. **HAP natif (v0.4.1)** : quand le GPU a les textures
+BC (`TEXTURE_COMPRESSION_BC`, demandé au démarrage), les fichiers `Hap1` (BC1),
+`Hap5` (BC3), `HapY` (HAP Q, YCoCg en BC3 converti dans le shader) et `Hap7`
+(BC7) sont lus sans FFmpeg : démuxeur QuickTime minimal (`verso-media::mov`,
+tailles vérifiées avant allocation), sections HAP simples ou « complex » par
+blocs, Snappy (`snap`). Un thread lit/décompresse en avance dans le sens de
+lecture ; le seek est immédiat et la vitesse peut être négative. Hap Q Alpha et
+les autres variantes repassent par FFmpeg, qui reste aussi utilisé pour les
+vignettes. Vérifié au pixel contre le décodage FFmpeg du même fichier.
+
+Seek FFmpeg : relance du processus avec `-ss` (rapide sur les images clés,
+plus lent en H.264/H.265 longue GOP). Les codecs inter-frames (H.264/H.265) ont un scrubbing
 lent ; l'UI le signalera et proposera une conversion HAP via FFmpeg.
 
 ## 7. Effets
@@ -170,18 +256,76 @@ use only ». Heuristique : la page du shader fait foi.
 Compatibilité mesurée sur 20 shaders ISF réels : 18 compilent ; échecs restants :
 multi-passe, vertex shader personnalisé (`varying`).
 
+### Presets MilkDrop
+
+Source `Source::Milkdrop { family, variant }` : un preset MilkDrop rendu
+nativement (crate `verso-milkdrop` pour le CPU, `verso-render::milkdrop` pour
+le GPU), porté de Butterchurn (MIT). Format lu : JSON Butterchurn (équations
+EEL d'origine + shaders warp/comp déjà traduits de HLSL en GLSL).
+
+- CPU : interpréteur EEL (ns-eel2 : division par zéro = 0, `megabuf`,
+  `loop`/`while`, variables insensibles à la casse), équations par frame, par
+  sommet (maillage 48×36), formes et ondes personnalisées, ondes de base
+  (modes 0–7), vecteurs de mouvement, bordures. Audio : forme d'onde brute de
+  l'entrée audio (1024 échantillons), FFT égalisée et niveaux bass/mid/treb
+  relatifs à leur moyenne longue, comme MilkDrop.
+- GPU : tampon de rétroaction RGBA8 par clip (clé couche, colonne), passe
+  warp, chaîne de flou à 3 niveaux, sprites, passe comp vers la couche
+  (converti en linéaire). Les passes internes inversent y pour garder l'ordre
+  des lignes d'OpenGL ; les shaders des presets tournent donc sans retouche.
+  Shaders GLSL enveloppés (prélude d'uniformes, textures de bruit, `texture`
+  → `textureLod`) puis traduits en WGSL par naga.
+- Familles : un fichier JSON regroupe les remixes d'un même preset
+  (variantes). Le panneau du clip choisit la variante (◀ ▶, liste).
+- Fondu MilkDrop : une instance par couche. Changer de variante, ou lancer
+  un autre clip MilkDrop sur la même couche, garde le tampon de rétroaction
+  et fond l'ancien preset vers le nouveau pendant `blend` secondes (celui du
+  clip entrant, 2,5 par défaut, 0 = coupe) ; le fondu enchaîné de la couche
+  est alors ignoré. Motif de fondu par sommet tiré au hasard (balayage,
+  plasma, radial), maillage warp mélangé, warp et comp du nouveau preset
+  dessinés en fondu sur l'ancien, sprites des deux presets pondérés.
+- Entrée : `input` désigne une autre couche dont l'image (convertie en
+  couleurs d'affichage) sert de texture image au preset (`sampler_<nom>`,
+  bruit sans entrée) ; `input_mix` la mélange dans la rétroaction à chaque
+  image, que le preset déforme alors comme sa propre image (équivalent de
+  l'entrée NDI/Spout de NestDrop). Mettre l'opacité de la couche source à 0
+  pour ne l'utiliser que comme entrée ; une couche placée au-dessus arrive
+  avec une image de retard.
+- Bibliothèque : `presets/milkdrop` (147 familles, 206 presets, sélection
+  Cream of the Crop de NestDrop croisée avec les presets Butterchurn, voir
+  `presets/milkdrop/CREDITS.md`) et `%APPDATA%\Verso\milkdrop` pour les
+  presets Butterchurn de l'utilisateur.
+
+Compatibilité mesurée sur les 504 presets Butterchurn : 504 équations
+compilent, 489 shaders traduisent (échecs : bugs de conversion d'origine).
+Limites : pas de sprites ni de texte, import des `.milk` bruts (HLSL) non
+géré, choix de variante et entrée non pilotables en MIDI/OSC pour l'instant. Outillage de sélection : `scripts/milkdrop`.
+
 ### Transitions
 
-Durée par couche (0 = coupe). Au changement de clip, la dernière image affichée
-est figée puis fondue vers le nouveau clip ; l'éjection fond vers le vide.
-Limite actuelle : une vidéo sortante est figée sur sa dernière image pendant le
-fondu au lieu de continuer à jouer. Seul le fondu enchaîné existe.
+Durée par couche (0 = coupe). Au changement de clip, le clip sortant continue
+de jouer pendant le fondu (générateurs, shaders, et vidéo : son lecteur est
+gardé jusqu'à la fin du fondu) ; l'éjection fond vers le vide. Un changement
+pendant un fondu repart de l'image mélangée figée. Seul le fondu enchaîné
+existe.
 
 ### Groupes
 
-Les couches d'un groupe se mélangent entre elles, puis le groupe reçoit ses
-effets et se mélange à la composition avec son propre blend, opacité et bypass.
-Un groupe est rendu à la position de sa couche la plus basse.
+Un groupe peut contenir des couches et d'autres groupes (`Group::parent`). Une
+couche appartient à son groupe le plus interne. Rendu récursif : chaque
+groupe se compose dans sa propre paire de textures (une par profondeur), reçoit
+ses effets puis se mélange dans son parent avec son blend, son opacité, son
+bypass ; les opacités se multiplient. Le solo d'un groupe laisse passer toutes
+ses couches.
+
+Grille : en-tête coloré au-dessus de chaque groupe (flèche de repli, nom,
+X, B, S, fader d'opacité, bouton ▶ par colonne qui ne lance que ce groupe),
+bandes de couleur à gauche des couches selon l'imbrication, double-clic ou
+flèche pour replier. Sélection multiple des couches par Ctrl/Maj-clic ;
+`Ctrl+G` groupe la sélection (les couches doivent être adjacentes, un groupe
+sélectionné en partie est inclus en entier et devient imbriqué) ;
+`Ctrl+Shift+G` dissout le groupe courant, son contenu remonte d'un niveau.
+OSC : `/group/N/column/M/launch`.
 
 ## 8. Contrôle et I/O
 
@@ -192,10 +336,10 @@ Un groupe est rendu à la position de sa couche la plus basse.
 | Audio (`cpal` + `realfft`) | Niveaux par bande, beats, tempo détecté | v0.3 ✅ |
 | Tap tempo, horloge en beats | Synchro des LFO | v0.3 ✅ |
 | Scripts Lua (`mlua`, Lua 5.4) | Automations | v0.3 ✅ |
-| Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
-| NDI® | Sortie vidéo réseau ✅ ; entrée à faire | v0.4 |
-| Ableton Link | Synchro tempo | v0.4 |
-| SMPTE / LTC | Timecode | v0.4 |
+| Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 ✅ (à valider sur machine) |
+| NDI® | Sortie et entrée vidéo réseau | v0.4 ✅ |
+| Ableton Link | Synchro tempo et phase | v0.4 ✅ |
+| SMPTE : MTC / LTC | Timecode, cues | v0.4 ✅ |
 | DMX / Art-Net / sACN | Lumières, pixel mapping | plus tard |
 
 ### Espace d'adresses
@@ -215,9 +359,22 @@ valeur vaut un appui) :
 /layer/N/clip/M/effect/I/<param>
 ```
 
+Compatibilité : `Action::parse_osc` accepte aussi le schéma
+`/composition/layers/N/clips/M/connect`, `/composition/columns/M/connect`,
+`/composition/layers/N/clear`, `/composition/layers/N/video/opacity`,
+`/composition/master`, `/composition/crossfader/phase`,
+`/composition/tempocontroller/tempo` (en BPM) et `/composition/disconnectall`,
+documenté publiquement par les logiciels de VJ à grille, pour que les presets
+OSC existants (TouchOSC, Chataigne, contrôleurs) pilotent Verso sans
+modification. Seules les adresses des manuels publics sont reprises ; aucun
+code tiers n'est consulté (voir README § OSC pour la table).
+
 Les déclencheurs réagissent au passage au-dessus de 0,5 (le relâchement d'un
 bouton ne fait rien). Port OSC par défaut : 7000, écoute activée depuis la
-fenêtre Control.
+fenêtre Control. Par défaut seuls les programmes de la machine (127.0.0.1)
+peuvent envoyer ; l'option « Accept from other computers » ouvre le réseau,
+avec une liste d'adresses autorisées. File bornée (4096 messages), paquets
+de plus de 64 bundles imbriqués refusés, valeurs non finies ignorées.
 
 ### MIDI learn
 
@@ -253,6 +410,8 @@ API : `verso.set(adresse, valeur)`, `verso.trigger(adresse)`, `verso.get(adresse
 d'adresses que l'OSC. Bac à sable : bibliothèques `math`, `string`, `table`,
 `utf8` seulement (pas d'`io`, `os`, `require`, `load`) et budget de 5 millions
 d'instructions par appel : une boucle infinie arrête le script, pas le rendu.
+`pcall`/`xpcall` relancent l'erreur de budget (elle ne peut pas être rattrapée)
+et la mémoire est limitée à 64 Mio par script.
 Un script en erreur s'arrête jusqu'à sa prochaine modification.
 
 ### Sorties vers d'autres applications
@@ -261,10 +420,35 @@ Capture asynchrone de l'image de sortie (`FrameGrabber`, 3 buffers mappables) :
 le rendu ne bloque jamais sur la relecture, l'image arrive avec 1 à 2 frames de
 latence. Une sortie active seulement déclenche la capture.
 
-NDI® : runtime chargé à l'exécution (`NDI_RUNTIME_DIR_V6`/`V5`), aucun SDK requis
-pour compiler. Envoi RGBA sur un thread dédié, images sautées si l'envoi est en
-retard. Vérifié par un aller-retour émetteur → récepteur NDI local en test.
-Spout (Windows) et Syphon (macOS) restent à faire.
+NDI® : runtime chargé à l'exécution (`NDI_RUNTIME_DIR_V6`/`V5`, chemins absolus
+seulement sous Windows), aucun SDK requis pour compiler. Envoi RGBA sur un
+thread dédié, images sautées si l'envoi est en retard. Entrée : `Source::Ndi`,
+un récepteur par couche sur son thread, seule l'image la plus récente est
+gardée (RGBX rendu opaque, 8192 px max).
+
+Spout (Windows) : protocole Spout 2 implémenté directement (texture D3D11
+partagée BGRA, mémoire partagée `SharedTextureInfo` au nom de l'émetteur, liste
+`SpoutSenderNames` protégée par `SpoutSenderNames_mutex`, `<nom>_SpoutAccessMutex`
+pendant l'écriture), sans DLL Spout. Syphon (macOS) : `Syphon.framework` chargé
+à l'exécution, `SyphonMetalServer` alimenté par une texture Metal. Les deux
+partent de l'image relue (copie CPU) et sont vérifiés à la compilation pour leur
+plateforme mais **pas encore testés sur machine** : à valider avec
+Resolume/TouchDesigner/OBS.
+
+### Ableton Link
+
+Bibliothèque officielle via `rusty_link` (feature `link`, par défaut ; CMake et
+C++ requis). Le tempo suit la session ; un changement local (tap, fader, MIDI)
+la mène. L'horloge en beats suit la phase de la session (quantum 4) : LFO et
+`beat(n)` tombent sur le même temps que les autres applications.
+
+### Timecode
+
+MTC (quarter frames et SysEx full frame) depuis les entrées MIDI ; LTC décodé
+depuis un canal de l'entrée audio (biphase mark, 23–31 fps, seuil adaptatif).
+Le dernier timecode est extrapolé entre deux trames. Cues : action OSC à une
+position ; déclenchées quand la lecture avance de moins d'une seconde au-delà
+(un saut ne déclenche rien). `t.timecode` dans les scripts.
 
 ### Compteur de lancements
 
@@ -274,22 +458,43 @@ pas au média : remplacer le clip le conserve. Affiché sur la vignette et sur
 le moniteur Preview, remis à zéro par clic droit. Enregistré avec la
 composition.
 
-## 9. Sorties et mapping (v0.5)
+## 9. Sorties et mapping (v0.5 ✅)
 
-- Sortie plein écran par moniteur, fenêtre flottante.
-- Slices : rectangle d'entrée dans la composition → quad de sortie.
-- Warping : grille de Bézier par slice, edge blending, masques.
-- Configuration de sortie séparée de la composition (dépend de la salle).
+Modèle sans GPU dans `verso_core::mapping`, rendu dans `verso_render::mapping`.
+
+- **Configuration de salle séparée de la composition** : `MappingSetup` (RON,
+  `*.versomap`), gardée dans le dossier utilisateur (`mapping.versomap`,
+  rechargée au démarrage) et exportable. Réparée à l'ouverture (tailles,
+  grilles, valeurs non finies).
+- **Écrans** (`Screen`) : un par projecteur, résolution propre, fenêtre
+  dédiée (viewport egui) dont la position/taille et le plein écran sont
+  mémorisés.
+- **Slices** : rectangle d'entrée dans la composition → grille de déformation
+  sur l'écran. 2×2 = corner pin avec perspective (homographie) ; jusqu'à
+  16×16 = surface Catmull-Rom passant par chaque point, maillée à 16
+  subdivisions par case.
+- **Edge blending** par bord (largeur 0–50 %, gamma) : rampe smoothstep dont
+  deux recouvrements somment à 1 en lumière linéaire.
+- **Masques** polygonaux (concaves acceptés, triangulation par oreilles),
+  inversables, rendus dans une texture R8 à la taille de l'écran (2048 max).
+- Testé : corner pin (coins exacts, centre à l'intersection des diagonales),
+  passage par les points, aire du maillage, somme des fondus, aire des
+  masques concaves, et rendu GPU au pixel (entrée, déformation, fondu, masque).
+
+Limites : les fenêtres de sortie sont dessinées par le thread UI (pas encore
+de thread de rendu séparé) ; pas de choix d'écran par nom (déplacer la fenêtre
+puis double-clic) ; pas d'annulation des éditions de mapping.
 
 ## 10. Feuille de route
 
 | Version | Contenu | Critère de sortie |
 |---|---|---|
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
-| v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
+| v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps : 59,9 fps mesurés en décodage seul sur un poste Windows 24 cœurs (§ 6) ; à confirmer dans l'app et sur Fedora |
 | v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
-| v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
-| v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
+| v0.4.1 Médias ✅ | HAP natif GPU, seek, lecture arrière, sortante vivante en fondu | 4 × HAP 1080p60 (banc fourni) |
+| v0.4 Interop ✅ | Spout, Syphon, NDI entrée/sortie, Link, MTC/LTC, banc de mesure | Échange avec TouchDesigner/OBS (à valider sur machine) |
+| v0.5 Mapping ✅ | Écrans, slices, corner pin et grille, edge blending, masques, config de salle | Mapping d'une scène à 2 projecteurs (à valider en salle) |
 
 ## 11. Risques techniques
 
@@ -313,9 +518,12 @@ Verso/
 │   ├── verso-script/       scripts Lua en bac à sable
 │   ├── verso-io/           sorties vers d'autres applications (NDI)
 │   ├── verso-online/       recherche et import ISF / ShaderToy
+│   ├── verso-milkdrop/     presets MilkDrop : EEL, moteur, audio (sans GPU)
 │   ├── verso-render/       moteur wgpu : sources, médias, blend, composition
 │   │   ├── src/shaders/    WGSL des sources, blends et sortie
 │   │   └── tests/          rendu GPU vérifié au pixel
 │   └── verso-app/          application eframe/egui (binaire `verso`)
+├── presets/milkdrop/       presets MilkDrop embarqués, par catégorie
+├── scripts/milkdrop/       outillage de sélection des presets
 └── docs/                   spécification, décisions
 ```

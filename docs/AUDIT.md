@@ -184,3 +184,29 @@ retirés de Lua, limites de taille par défaut de `ureq` et `image`, code
 
 - Packaging (installeur Windows signé, `.app` notarisé, AppImage/Flatpak),
   mises à jour, documentation utilisateur, decks, DMX/Art-Net.
+
+---
+
+## 7. Suivi
+
+### v0.3.1 — fait
+
+| # | Correction | Test |
+|---|---|---|
+| S1 | `pcall`/`xpcall` remplacés : une fois le budget dépassé, l'erreur est relancée hors de l'appel protégé | `pcall_cannot_catch_the_instruction_budget` |
+| S2 | `set_memory_limit(64 Mio)` par script | `memory_is_limited` |
+| S3 | Compteur `u64` saturant | — |
+| S4 | OSC sur 127.0.0.1 par défaut, option réseau + liste d'IP, file bornée (4096), paquets trop imbriqués refusés, compteur de refus | `deeply_nested_bundles_are_dropped`, `senders_outside_the_allow_list_are_ignored` |
+| S5 | `Command::is_finite` : commandes non finies refusées ; `Action::command` ignore NaN | `non_finite_commands_are_refused` |
+| S6 | Entrée FFmpeg : fichier existant, préfixe `file:`, `-protocol_whitelist file` | `only_local_files_are_opened` |
+| S8 | Clé ShaderToy en `0600` (Unix) | — |
+| S9 | NDI : chemins absolus seulement sous Windows (+ dossier de l'exécutable) | — |
+| S10 | Id de code collé = hash FNV du code | — |
+| T1 | `Composition::repair` après chaque ouverture (cellules, indices, tailles, valeurs) ; réparations affichées dans la barre d'état | `inconsistent_files_are_repaired` |
+| T2 | `on_uncaptured_error` + `device lost` : journalisés et affichés au lieu de paniquer ; taille de rendu bornée à la limite du GPU | — |
+| T3 | Hook de panique → `crash.log` (backtrace) + `verso.log` | — |
+| T4 | Sauvegarde atomique (`.tmp` + `rename`) et `.bak` | — |
+| T6 | FPS aberrant → 30 ; tailles de frame en `usize` | — |
+
+Restent : S7 (boucle infinie dans un shader GPU, non détectable avant
+exécution — atténué par T2) et T5 (thread de rendu séparé, prévu en v0.4).

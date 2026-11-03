@@ -3392,7 +3392,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "verso-app"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "eframe",
  "pollster 1.0.1",
@@ -3408,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "verso-control"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "cpal",
  "midir",
@@ -3419,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "verso-core"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "ron",
  "serde",
@@ -3428,7 +3428,7 @@ dependencies = [
 
 [[package]]
 name = "verso-io"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "libloading 0.9.0",
  "thiserror 2.0.21",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "verso-media"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "image",
  "thiserror 2.0.21",
@@ -3444,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "verso-online"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3454,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "verso-render"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "image",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "verso-script"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "mlua",
  "verso-core",

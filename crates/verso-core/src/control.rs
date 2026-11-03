@@ -278,6 +278,9 @@ impl Action {
     /// Command for a control value in 0..1. Triggers fire when the value rises
     /// above 0.5, so a button's release does nothing.
     pub fn command(&self, unit: f32, range: Option<Range>) -> Option<Command> {
+        if !unit.is_finite() {
+            return None;
+        }
         let pressed = unit > 0.5;
         match self {
             Action::Set(param) => {

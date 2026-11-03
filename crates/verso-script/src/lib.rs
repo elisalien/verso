@@ -33,8 +33,11 @@ use verso_core::control::{Action, Param, Range};
 use verso_core::{Command, Composition};
 
 /// Instructions one script may run per call, checked every 1000.
-const INSTRUCTION_BUDGET: u32 = 5_000_000;
+const INSTRUCTION_BUDGET: u64 = 5_000_000;
 const HOOK_STEP: u32 = 1000;
+/// Memory one script may hold.
+const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+const TOO_LONG: &str = "script took too long (endless loop?)";
 /// Console lines kept per script.
 const LOG_LINES: usize = 200;
 
@@ -54,7 +57,7 @@ struct Script {
     source: String,
     lua: Lua,
     /// Instructions run in the current call, in steps of [`HOOK_STEP`].
-    steps: Rc<Cell<u32>>,
+    steps: Rc<Cell<u64>>,
     error: Option<String>,
     log: Vec<String>,
 }
@@ -67,24 +70,44 @@ pub struct ScriptHost {
     last_beat: Option<i64>,
 }
 
-fn sandbox() -> mlua::Result<(Lua, Rc<Cell<u32>>)> {
+fn sandbox() -> mlua::Result<(Lua, Rc<Cell<u64>>)> {
     let lua = Lua::new_with(
         StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8,
         LuaOptions::default(),
     )?;
+    lua.set_memory_limit(MEMORY_LIMIT)?;
     // The base library is always loaded; remove what reaches the file system.
     let globals = lua.globals();
     for name in ["dofile", "loadfile", "load", "require", "collectgarbage"] {
         globals.raw_set(name, Value::Nil)?;
     }
-    let steps = Rc::new(Cell::new(0));
+    let steps = Rc::new(Cell::new(0u64));
+    let over_budget = {
+        let steps = steps.clone();
+        move || steps.get().saturating_mul(HOOK_STEP as u64) > INSTRUCTION_BUDGET
+    };
+    // `pcall` and `xpcall` would catch the error raised when the budget runs
+    // out and let an endless loop continue: once over budget, they raise it
+    // again outside the protected call.
+    for name in ["pcall", "xpcall"] {
+        let original: mlua::Function = globals.get(name)?;
+        let over_budget = over_budget.clone();
+        let wrapped = lua.create_function(move |_, args: mlua::MultiValue| {
+            let results = original.call::<mlua::MultiValue>(args)?;
+            if over_budget() {
+                return Err(mlua::Error::runtime(TOO_LONG));
+            }
+            Ok(results)
+        })?;
+        globals.raw_set(name, wrapped)?;
+    }
     let counter = steps.clone();
     lua.set_hook(
         HookTriggers::new().every_nth_instruction(HOOK_STEP),
         move |_, _| {
-            counter.set(counter.get() + 1);
-            if counter.get() * HOOK_STEP > INSTRUCTION_BUDGET {
-                return Err(mlua::Error::runtime("script took too long (endless loop?)"));
+            counter.set(counter.get().saturating_add(1));
+            if over_budget() {
+                return Err(mlua::Error::runtime(TOO_LONG));
             }
             Ok(VmState::Continue)
         },
@@ -129,7 +152,7 @@ impl ScriptHost {
             }
             Err(e) => {
                 let lua = Lua::new();
-                (lua, Rc::new(Cell::new(0)), Some(e.to_string()))
+                (lua, Rc::new(Cell::new(0u64)), Some(e.to_string()))
             }
         };
         let script = Script {
@@ -418,6 +441,57 @@ mod tests {
         host.load("loop", "function frame(t) while true do end end");
         run(&mut host, &comp, 0.0);
         assert!(host.error("loop").unwrap().contains("too long"));
+    }
+
+    #[test]
+    fn pcall_cannot_catch_the_instruction_budget() {
+        let comp = Composition::demo();
+        let mut host = ScriptHost::default();
+        host.load(
+            "escape",
+            r#"function frame(t)
+                while true do
+                    pcall(function() while true do end end)
+                    xpcall(function() while true do end end, function(e) return e end)
+                end
+            end"#,
+        );
+        let start = std::time::Instant::now();
+        run(&mut host, &comp, 0.0);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        assert!(host.error("escape").unwrap().contains("too long"));
+    }
+
+    #[test]
+    fn pcall_still_catches_ordinary_errors() {
+        let comp = Composition::demo();
+        let mut host = ScriptHost::default();
+        host.load(
+            "safe",
+            r#"function frame(t)
+                local ok, e = pcall(error, "boom")
+                verso.log(tostring(ok), e)
+            end"#,
+        );
+        run(&mut host, &comp, 0.0);
+        assert_eq!(host.error("safe"), None);
+        assert_eq!(host.log("safe"), ["false boom"]);
+    }
+
+    #[test]
+    fn memory_is_limited() {
+        let comp = Composition::demo();
+        let mut host = ScriptHost::default();
+        host.load(
+            "bomb",
+            r#"function frame(t) local s = "x" for i = 1, 40 do s = s .. s end end"#,
+        );
+        run(&mut host, &comp, 0.0);
+        assert!(
+            host.error("bomb").unwrap().contains("memory"),
+            "{:?}",
+            host.error("bomb")
+        );
     }
 
     #[test]

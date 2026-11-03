@@ -6,7 +6,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread;
 
-use crate::{Error, Frame, Result, VideoInfo, command, fit_size, probe, tool_path};
+use crate::{Error, Frame, Result, VideoInfo, command, fit_size, input, probe, tool_path};
 
 /// Decoded frames buffered ahead of playback.
 const QUEUE: usize = 6;
@@ -24,9 +24,10 @@ struct Decoder {
 impl Decoder {
     fn spawn(path: &Path, size: (u32, u32)) -> Result<Self> {
         let program = tool_path("ffmpeg");
-        let mut child = command(&program)
-            .args(["-v", "error", "-hwaccel", "auto", "-i"])
-            .arg(path)
+        let mut cmd = command(&program);
+        cmd.args(["-v", "error", "-hwaccel", "auto"]);
+        input(&mut cmd, path)?;
+        let mut child = cmd
             .args(["-an", "-vf"])
             .arg(format!("scale={}:{}", size.0, size.1))
             .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"])
@@ -39,7 +40,7 @@ impl Decoder {
             })?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let (sender, frames) = sync_channel(QUEUE);
-        let frame_len = (size.0 * size.1 * 4) as usize;
+        let frame_len = size.0 as usize * size.1 as usize * 4;
         thread::Builder::new()
             .name("verso-decoder".into())
             .spawn(move || read_frames(stdout, frame_len, sender))

@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use eframe::egui::{self, Rect, Stroke, StrokeKind, Vec2};
-use verso_control::{AudioInput, Levels, MidiInputs, OscServer, TapTempo};
+use verso_control::{AudioInput, Levels, MidiInputs, OscAccess, OscServer, TapTempo};
 use verso_core::control::{Action, MidiKey, MidiMapping, Param, Range};
 use verso_core::modulation::{AudioBand, ModSource, Modulator, Signals, Waveform};
 use verso_core::{Command, Composition};
@@ -19,6 +19,10 @@ pub const DEFAULT_OSC_PORT: u16 = 7000;
 pub struct Controls {
     pub osc: Option<OscServer>,
     pub osc_port: u16,
+    /// Accept OSC from other computers, not only this one.
+    pub osc_network: bool,
+    /// Comma-separated addresses allowed to send OSC; empty allows all.
+    pub osc_allowed: String,
     pub midi: Option<MidiInputs>,
     pub audio: Option<AudioInput>,
     pub audio_devices: Vec<String>,
@@ -41,6 +45,8 @@ impl Default for Controls {
         Self {
             osc: None,
             osc_port: DEFAULT_OSC_PORT,
+            osc_network: false,
+            osc_allowed: String::new(),
             midi: None,
             audio: None,
             audio_devices: Vec::new(),
@@ -364,9 +370,33 @@ impl VersoApp {
 
     pub(crate) fn start_osc(&mut self) {
         self.controls.osc = None;
-        match OscServer::bind(self.controls.osc_port) {
+        let access = if self.controls.osc_network {
+            let mut allowed = Vec::new();
+            for part in self.controls.osc_allowed.split([',', ' ']) {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                match part.parse() {
+                    Ok(ip) => allowed.push(ip),
+                    Err(_) => {
+                        self.status = format!("OSC: {part} is not an IP address");
+                        return;
+                    }
+                }
+            }
+            OscAccess::Network { allowed }
+        } else {
+            OscAccess::Local
+        };
+        let scope = match &access {
+            OscAccess::Local => "this computer only".to_owned(),
+            OscAccess::Network { allowed } if allowed.is_empty() => "the network".to_owned(),
+            OscAccess::Network { allowed } => format!("{} address(es)", allowed.len()),
+        };
+        match OscServer::bind_with(self.controls.osc_port, access) {
             Ok(server) => {
-                self.status = format!("OSC listening on port {}", server.port());
+                self.status = format!("OSC listening on port {} from {scope}", server.port());
                 self.controls.osc = Some(server);
             }
             Err(e) => self.status = e.to_string(),
@@ -410,6 +440,32 @@ impl VersoApp {
             }
             if listening && ui.button("Stop").clicked() {
                 self.controls.osc = None;
+            }
+            if let Some(server) = &self.controls.osc
+                && server.dropped() > 0
+            {
+                ui.label(
+                    egui::RichText::new(format!("{} refused", server.dropped()))
+                        .small()
+                        .color(theme::WARN),
+                )
+                .on_hover_text("Packets from senders not allowed, malformed or arriving too fast");
+            }
+        });
+        ui.add_enabled_ui(self.controls.osc.is_none(), |ui| {
+            ui.checkbox(&mut self.controls.osc_network, "Accept from other computers")
+                .on_hover_text(
+                    "Off: only programs on this computer can send OSC. On: anyone on the network can control the show, unless you list allowed addresses.",
+                );
+            if self.controls.osc_network {
+                ui.horizontal(|ui| {
+                    ui.label("Allowed");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.controls.osc_allowed)
+                            .hint_text("all — or e.g. 192.168.1.20, 192.168.1.21")
+                            .desired_width(240.0),
+                    );
+                });
             }
         });
         ui.label(

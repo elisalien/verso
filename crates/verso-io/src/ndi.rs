@@ -106,8 +106,23 @@ fn library_paths() -> Vec<std::path::PathBuf> {
         .collect();
     if cfg!(target_os = "macos") {
         paths.push("/Library/NDI SDK for Apple/lib/macOS/libndi.dylib".into());
+        paths.push("/usr/local/lib/libndi.dylib".into());
     }
-    paths.push(file.into());
+    // A runtime shipped next to the executable.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.to_owned()))
+    {
+        paths.push(dir.join(file));
+    }
+    if cfg!(windows) {
+        // Absolute paths only: on Windows a bare name also searches the
+        // working folder, where a planted DLL could be loaded instead.
+        paths.retain(|p| p.is_absolute());
+    } else {
+        // dlopen searches the system library paths, not the working folder.
+        paths.push(file.into());
+    }
     paths
 }
 

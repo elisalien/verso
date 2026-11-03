@@ -70,6 +70,7 @@ pub struct VersoApp {
     pub(crate) online: crate::online_ui::OnlineState,
     /// Commands collected while drawing, applied at the end of the frame.
     pending: Vec<Command>,
+    gpu_errors: crate::diagnostics::GpuErrors,
 }
 
 impl VersoApp {
@@ -81,6 +82,7 @@ impl VersoApp {
             .clone()
             .ok_or("Verso needs the wgpu renderer")?;
         let device = &render_state.device;
+        let gpu_errors = crate::diagnostics::GpuErrors::watch(device);
         let comp = Composition::demo();
         let mut renderer = Renderer::new(device, (comp.width, comp.height));
         let effect_errors: Vec<String> = effect_dirs()
@@ -117,6 +119,7 @@ impl VersoApp {
             output_open: false,
             status: effect_errors.first().cloned().unwrap_or_default(),
             pending: Vec::new(),
+            gpu_errors,
             controls: Default::default(),
             scripts: Default::default(),
             outputs: Default::default(),
@@ -323,7 +326,7 @@ impl VersoApp {
             .comp
             .to_ron()
             .map_err(|e| e.to_string())
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+            .and_then(|text| write_atomic(&path, text.as_bytes()).map_err(|e| e.to_string()));
         self.status = match result {
             Ok(()) => format!("Saved {}", path.display()),
             Err(e) => format!("Save failed: {e}"),
@@ -340,9 +343,14 @@ impl VersoApp {
         };
         let result = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| Composition::from_ron(&text).map_err(|e| e.to_string()));
+            .and_then(|text| Composition::from_ron_with_fixes(&text).map_err(|e| e.to_string()));
         match result {
-            Ok(comp) => self.replace_composition(comp, Some(path)),
+            Ok((comp, fixes)) => {
+                self.replace_composition(comp, Some(path));
+                if !fixes.is_empty() {
+                    self.status = format!("{} — repaired: {}", self.status, fixes.join("; "));
+                }
+            }
             Err(e) => self.status = format!("Open failed: {e}"),
         }
     }
@@ -484,6 +492,12 @@ impl eframe::App for VersoApp {
         self.run_scripts(self.frame_dt);
         self.apply_pending();
         self.render();
+        if let Some(error) = self.gpu_errors.take().pop() {
+            self.status = format!("GPU error: {error}");
+        }
+        if let Some(reason) = self.gpu_errors.lost() {
+            self.status = format!("GPU lost ({reason}): save and restart Verso");
+        }
         ctx.request_repaint();
     }
 
@@ -536,4 +550,25 @@ impl eframe::App for VersoApp {
         self.scripts_window(&ctx);
         self.output_window(&ctx);
     }
+}
+
+/// Writes `data` to `path` without ever leaving a half-written file: the data
+/// goes to a temporary file next to it, the previous version is kept as
+/// `<name>.bak`, then the temporary file replaces `path`.
+pub(crate) fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+    }
+    if path.exists() {
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".bak");
+        let _ = std::fs::copy(path, PathBuf::from(bak));
+    }
+    std::fs::rename(&tmp, path)
 }

@@ -9,6 +9,7 @@ pub mod control;
 mod effect;
 pub mod modulation;
 mod source;
+mod validate;
 
 pub use command::Command;
 pub use composition::{
@@ -16,6 +17,7 @@ pub use composition::{
 };
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
 pub use source::{Generator, Source};
+pub use validate::{MAX_SIZE, MIN_SIZE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -33,6 +35,8 @@ pub enum Error {
     NoModulator(usize),
     #[error("script {0} does not exist")]
     NoScript(usize),
+    #[error("value is not a finite number")]
+    NotFinite,
     #[error("could not parse composition: {0}")]
     Parse(#[from] ron::error::SpannedError),
     #[error("could not serialize composition: {0}")]

@@ -2,6 +2,7 @@
 
 mod app;
 mod control_ui;
+mod diagnostics;
 mod effects_ui;
 mod grid;
 mod media;
@@ -13,6 +14,8 @@ mod theme;
 mod widgets;
 
 fn main() -> eframe::Result {
+    diagnostics::install_panic_hook();
+    diagnostics::log(concat!("Verso ", env!("CARGO_PKG_VERSION"), " starting"));
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()

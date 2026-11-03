@@ -1,9 +1,9 @@
 //! OSC input over UDP.
 
-use std::net::UdpSocket;
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::thread;
 use std::time::Duration;
 
@@ -19,11 +19,33 @@ pub struct OscEvent {
     pub value: Option<f32>,
 }
 
+/// Messages waiting for [`OscServer::poll`]; more are dropped.
+const QUEUE: usize = 4096;
+/// Bundles nested deeper than this are dropped (the decoder recurses).
+const MAX_BUNDLES: usize = 64;
+
+/// Who may send OSC.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum OscAccess {
+    /// Only programs on this computer (127.0.0.1).
+    #[default]
+    Local,
+    /// Any computer on the network, optionally only from these addresses
+    /// (empty allows all).
+    Network { allowed: Vec<IpAddr> },
+}
+
 /// Listens for OSC on a UDP port until dropped.
 pub struct OscServer {
     port: u16,
     events: Receiver<OscEvent>,
     stop: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// Number of bundles in a packet, counted without decoding it.
+fn bundle_count(bytes: &[u8]) -> usize {
+    bytes.windows(8).filter(|w| *w == b"#bundle\0").count()
 }
 
 fn number(arg: &OscType) -> Option<f32> {
@@ -52,10 +74,19 @@ fn flatten(packet: OscPacket, out: &mut Vec<OscEvent>) {
 }
 
 impl OscServer {
-    /// Binds `0.0.0.0:port`. Port 0 picks a free port; see [`Self::port`].
+    /// Listens on `127.0.0.1:port`. Port 0 picks a free port; see [`Self::port`].
     pub fn bind(port: u16) -> Result<Self> {
-        let socket = UdpSocket::bind(("0.0.0.0", port))
-            .map_err(|e| Error::Osc(format!("port {port}: {e}")))?;
+        Self::bind_with(port, OscAccess::Local)
+    }
+
+    /// Listens on `port` for the senders `access` allows.
+    pub fn bind_with(port: u16, access: OscAccess) -> Result<Self> {
+        let (host, allowed) = match access {
+            OscAccess::Local => (IpAddr::V4(Ipv4Addr::LOCALHOST), Vec::new()),
+            OscAccess::Network { allowed } => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), allowed),
+        };
+        let socket =
+            UdpSocket::bind((host, port)).map_err(|e| Error::Osc(format!("port {port}: {e}")))?;
         let port = socket
             .local_addr()
             .map_err(|e| Error::Osc(e.to_string()))?
@@ -66,14 +97,21 @@ impl OscServer {
             .map_err(|e| Error::Osc(e.to_string()))?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
-        let (sender, events) = channel();
+        let (sender, events) = sync_channel(QUEUE);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let dropped_count = dropped.clone();
         thread::Builder::new()
             .name("verso-osc".into())
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                let mut buffer = [0u8; 65536];
+                let mut buffer = vec![0u8; 65536];
                 while !stopped.load(Ordering::Relaxed) {
-                    let len = match socket.recv(&mut buffer) {
-                        Ok(len) => len,
+                    let len = match socket.recv_from(&mut buffer) {
+                        Ok((_, from)) if !allowed.is_empty() && !allowed.contains(&from.ip()) => {
+                            dropped_count.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                        Ok((len, _)) => len,
                         Err(e)
                             if matches!(
                                 e.kind(),
@@ -84,22 +122,43 @@ impl OscServer {
                         }
                         Err(_) => return,
                     };
+                    if bundle_count(&buffer[..len]) > MAX_BUNDLES {
+                        dropped_count.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
                     let Ok((_, packet)) = rosc::decoder::decode_udp(&buffer[..len]) else {
                         continue;
                     };
                     let mut messages = Vec::new();
                     flatten(packet, &mut messages);
-                    if messages.into_iter().any(|m| sender.send(m).is_err()) {
-                        return;
+                    for message in messages {
+                        match sender.try_send(message) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                dropped_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(TrySendError::Disconnected(_)) => return,
+                        }
                     }
                 }
             })
             .map_err(|e| Error::Osc(e.to_string()))?;
-        Ok(Self { port, events, stop })
+        Ok(Self {
+            port,
+            events,
+            stop,
+            dropped,
+        })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Packets refused (sender not allowed, too deep) or messages dropped
+    /// because the queue was full, since the server started.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Messages received since the last call.
@@ -182,6 +241,46 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn deeply_nested_bundles_are_dropped() {
+        let server = OscServer::bind(0).unwrap();
+        let mut packet = OscPacket::Message(OscMessage {
+            addr: "/clear".into(),
+            args: vec![],
+        });
+        for _ in 0..(MAX_BUNDLES + 10) {
+            packet = OscPacket::Bundle(OscBundle {
+                timetag: OscTime::from((0, 1)),
+                content: vec![packet],
+            });
+        }
+        send(server.port(), &packet);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(server.poll().is_empty());
+        assert_eq!(server.dropped(), 1);
+    }
+
+    #[test]
+    fn senders_outside_the_allow_list_are_ignored() {
+        let server = OscServer::bind_with(
+            0,
+            OscAccess::Network {
+                allowed: vec!["10.9.8.7".parse().unwrap()],
+            },
+        )
+        .unwrap();
+        send(
+            server.port(),
+            &OscPacket::Message(OscMessage {
+                addr: "/clear".into(),
+                args: vec![],
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(server.poll().is_empty());
+        assert_eq!(server.dropped(), 1);
     }
 
     #[test]

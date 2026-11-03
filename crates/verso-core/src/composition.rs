@@ -172,7 +172,11 @@ impl Layer {
 
     /// Plays the clip in `column`, counting the launch; an empty slot ejects.
     fn launch(&mut self, column: usize) {
-        self.active = self.clips[column].as_ref().map(|_| column);
+        self.active = self
+            .clips
+            .get(column)
+            .and_then(|c| c.as_ref())
+            .map(|_| column);
         if self.active.is_some() {
             if self.launches.len() <= column {
                 self.launches.resize(column + 1, 0);
@@ -417,8 +421,16 @@ impl Composition {
         )?)
     }
 
+    /// Parses a composition and repairs it (see [`Self::repair`]).
     pub fn from_ron(text: &str) -> Result<Self> {
-        Ok(ron::from_str(text)?)
+        Ok(Self::from_ron_with_fixes(text)?.0)
+    }
+
+    /// Like [`Self::from_ron`], also returning what had to be repaired.
+    pub fn from_ron_with_fixes(text: &str) -> Result<(Self, Vec<String>)> {
+        let mut comp: Self = ron::from_str(text)?;
+        let fixes = comp.repair();
+        Ok((comp, fixes))
     }
 
     pub(crate) fn trigger_clip(&mut self, layer: usize, column: usize) -> Result<()> {

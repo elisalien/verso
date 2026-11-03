@@ -217,7 +217,10 @@ valeur vaut un appui) :
 
 Les déclencheurs réagissent au passage au-dessus de 0,5 (le relâchement d'un
 bouton ne fait rien). Port OSC par défaut : 7000, écoute activée depuis la
-fenêtre Control.
+fenêtre Control. Par défaut seuls les programmes de la machine (127.0.0.1)
+peuvent envoyer ; l'option « Accept from other computers » ouvre le réseau,
+avec une liste d'adresses autorisées. File bornée (4096 messages), paquets
+de plus de 64 bundles imbriqués refusés, valeurs non finies ignorées.
 
 ### MIDI learn
 
@@ -253,6 +256,8 @@ API : `verso.set(adresse, valeur)`, `verso.trigger(adresse)`, `verso.get(adresse
 d'adresses que l'OSC. Bac à sable : bibliothèques `math`, `string`, `table`,
 `utf8` seulement (pas d'`io`, `os`, `require`, `load`) et budget de 5 millions
 d'instructions par appel : une boucle infinie arrête le script, pas le rendu.
+`pcall`/`xpcall` relancent l'erreur de budget (elle ne peut pas être rattrapée)
+et la mémoire est limitée à 64 Mio par script.
 Un script en erreur s'arrête jusqu'à sa prochaine modification.
 
 ### Sorties vers d'autres applications

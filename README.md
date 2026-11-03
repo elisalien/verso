@@ -4,7 +4,7 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.3. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.3.1. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
 > control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
@@ -16,6 +16,8 @@ and Linux.
 - Rust (stable)
 - FFmpeg (`ffmpeg` and `ffprobe`) on `PATH` for video, or set `VERSO_FFMPEG` and
   `VERSO_FFPROBE` to their paths
+- Linux: ALSA headers to build (`sudo apt install libasound2-dev pkg-config` on
+  Debian/Ubuntu, `alsa-lib-devel` on Fedora)
 
 ## Run
 
@@ -91,6 +93,21 @@ Scripts are saved in the composition and run sandboxed (no file or OS access,
 endless loops are stopped).
 
 NDI® is a registered trademark of Vizrt NDI AB.
+
+## Safety
+
+- Scripts saved in a composition run sandboxed: no file, OS or network
+  access, 64 MiB of memory and 5 million instructions per call (`pcall` cannot
+  catch the limit).
+- Compositions are checked when opened: inconsistent or out-of-range values
+  are repaired and listed in the status bar. Saves are atomic and keep the
+  previous version as `<name>.verso.bak`.
+- Media paths are read as local files only.
+- OSC listens to this computer only unless **Accept from other computers** is
+  on in the Control window; you can then list the allowed addresses.
+- Logs and crash reports go to `verso.log` and `crash.log` in Verso's user
+  folder (`%APPDATA%\Verso`, `~/Library/Application Support/Verso` or
+  `~/.config/verso`).
 
 ## Test
 

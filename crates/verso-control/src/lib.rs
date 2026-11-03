@@ -12,7 +12,7 @@ mod tempo;
 pub use analysis::{Analyzer, Levels};
 pub use audio::{AudioInput, input_devices};
 pub use midi::{MidiEvent, MidiInputs};
-pub use osc::{OscEvent, OscServer};
+pub use osc::{OscAccess, OscEvent, OscServer};
 pub use tempo::TapTempo;
 
 #[derive(Debug, thiserror::Error)]

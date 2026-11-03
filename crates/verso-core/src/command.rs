@@ -112,6 +112,9 @@ pub enum Command {
 
 impl Composition {
     pub fn apply(&mut self, command: Command) -> Result<()> {
+        if !command.is_finite() {
+            return Err(Error::NotFinite);
+        }
         match command {
             Command::TriggerClip { layer, column } => self.trigger_clip(layer, column)?,
             Command::TriggerColumn(column) => self.trigger_column(column)?,

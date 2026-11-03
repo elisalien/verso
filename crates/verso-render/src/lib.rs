@@ -667,9 +667,12 @@ impl Renderer {
         &mut self.library
     }
 
-    /// Recreates every size-dependent resource.
+    /// Recreates every size-dependent resource. The size is limited to what
+    /// the GPU supports, so an oversized composition renders smaller instead
+    /// of failing.
     pub fn resize(&mut self, device: &wgpu::Device, size: (u32, u32)) {
-        let size = (size.0.max(1), size.1.max(1));
+        let max = device.limits().max_texture_dimension_2d;
+        let size = (size.0.clamp(1, max), size.1.clamp(1, max));
         if size == self.size {
             return;
         }

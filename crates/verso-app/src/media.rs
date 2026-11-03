@@ -93,6 +93,29 @@ fn still_key(source: &Source) -> Option<&Path> {
 }
 
 impl Media {
+    /// Keeps players with their layer when layers or columns move.
+    pub fn follow(&mut self, changes: &verso_core::IndexChanges) {
+        changes.apply_to_layers(&mut self.players);
+        changes.apply_to_layers(&mut self.opening);
+        let column = |c: usize| changes.columns.get(c).copied().flatten();
+        for player in self.players.iter_mut() {
+            if let Some(p) = player {
+                match column(p.column) {
+                    Some(c) => p.column = c,
+                    None => *player = None,
+                }
+            }
+        }
+        for opening in self.opening.iter_mut() {
+            if let Some((_, c)) = opening {
+                match column(*c) {
+                    Some(new) => *c = new,
+                    None => *opening = None,
+                }
+            }
+        }
+    }
+
     pub fn new() -> Self {
         let (sender, receiver) = channel();
         Self {

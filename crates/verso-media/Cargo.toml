@@ -4,6 +4,7 @@ description = "Verso media decoding: images and FFmpeg video playback"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true

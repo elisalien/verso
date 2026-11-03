@@ -9,6 +9,7 @@ pub mod control;
 mod effect;
 pub mod modulation;
 mod source;
+mod structure;
 mod validate;
 
 pub use command::Command;
@@ -17,6 +18,7 @@ pub use composition::{
 };
 pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
 pub use source::{Generator, Source};
+pub use structure::IndexChanges;
 pub use validate::{MAX_SIZE, MIN_SIZE};
 
 #[derive(Debug, thiserror::Error)]

@@ -104,7 +104,7 @@ impl VersoApp {
             _ => None,
         };
         if let Some(command) = action.command(unit, range) {
-            self.send(command);
+            self.send_live(command);
         }
     }
 
@@ -166,7 +166,7 @@ impl VersoApp {
                 && let Some(bpm) = self.controls.levels.bpm
                 && (bpm - self.comp.bpm).abs() > 0.5
             {
-                self.send(Command::SetBpm(bpm));
+                self.send_live(Command::SetBpm(bpm));
             }
         } else {
             self.controls.levels = Levels::default();
@@ -176,7 +176,7 @@ impl VersoApp {
 
     pub(crate) fn tap_tempo(&mut self) {
         if let Some(bpm) = self.controls.tap.tap(Instant::now()) {
-            self.send(Command::SetBpm(bpm));
+            self.send_live(Command::SetBpm(bpm));
         }
         // Each tap lands on a beat.
         self.controls.beats = self.controls.beats.round();

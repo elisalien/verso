@@ -108,6 +108,25 @@ pub enum Command {
     },
     AddLayer,
     AddColumn,
+    RemoveLayer(usize),
+    RemoveColumn(usize),
+    /// Moves a layer so it ends at index `to`.
+    MoveLayer {
+        from: usize,
+        to: usize,
+    },
+    MoveColumn {
+        from: usize,
+        to: usize,
+    },
+    DuplicateLayer(usize),
+    /// Moves (swapping with a full destination) or copies a clip between
+    /// cells, each given as `(layer, column)`.
+    MoveClip {
+        from: (usize, usize),
+        to: (usize, usize),
+        copy: bool,
+    },
 }
 
 impl Composition {
@@ -215,6 +234,12 @@ impl Composition {
             }
             Command::AddLayer => self.add_layer(),
             Command::AddColumn => self.add_column(),
+            Command::RemoveLayer(layer) => self.remove_layer(layer)?,
+            Command::RemoveColumn(column) => self.remove_column(column)?,
+            Command::MoveLayer { from, to } => self.move_layer(from, to)?,
+            Command::MoveColumn { from, to } => self.move_column(from, to)?,
+            Command::DuplicateLayer(layer) => self.duplicate_layer(layer)?,
+            Command::MoveClip { from, to, copy } => self.move_clip(from, to, copy)?,
         }
         Ok(())
     }

@@ -8,7 +8,7 @@ pub const BG_RAISED: Color32 = Color32::from_rgb(40, 43, 47);
 pub const BG_HEADER: Color32 = Color32::from_rgb(34, 36, 40);
 pub const LINE: Color32 = Color32::from_rgb(54, 57, 62);
 pub const TEXT: Color32 = Color32::from_rgb(208, 210, 214);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(130, 134, 140);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(151, 155, 161);
 /// Playing clips, active toggles, fader fills.
 pub const ACCENT: Color32 = Color32::from_rgb(46, 158, 190);
 /// Bypass.

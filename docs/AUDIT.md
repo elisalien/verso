@@ -210,3 +210,31 @@ retirés de Lua, limites de taille par défaut de `ureq` et `image`, code
 
 Restent : S7 (boucle infinie dans un shader GPU, non détectable avant
 exécution — atténué par T2) et T5 (thread de rendu séparé, prévu en v0.4).
+
+### v0.3.2 — fait
+
+- **Sûreté live** : `Échap` seul ne vide plus rien (`Maj+Échap`) ; préférence
+  « clic lance » ou « clic sélectionne / double-clic lance », `Ctrl+clic`
+  sélectionne toujours sans lancer ; **verrou live** (`Ctrl+Maj+L`) qui ne
+  laisse passer que lancements et contrôles de jeu.
+- **Annuler/rétablir** (`Ctrl+Z`, `Ctrl+Maj+Z`/`Ctrl+Y`, menu Edit avec le nom
+  de l'action) : 100 pas, drags fusionnés, lancements/MIDI/OSC/scripts exclus,
+  ce qui joue n'est jamais changé par une annulation.
+- **Modifications non enregistrées** : `*` dans le titre et la barre,
+  confirmation à Nouveau / Ouvrir / Fermer, copie de récupération chaque minute
+  proposée au démarrage après un crash.
+- **Structure** : supprimer, déplacer, dupliquer couches ; supprimer, déplacer
+  colonnes ; glisser une case sur une autre (échange, `Alt` copie) ; copier /
+  couper / coller / effacer une case. Mappings MIDI et modulateurs suivent
+  (`IndexChanges`), état de rendu et lecteurs vidéo aussi.
+- **QoL** : raccourcis standards, fichiers récents, réouverture du dernier
+  projet, `Maj+1–9` pour les colonnes 10–18, relocalisation des médias manquants,
+  panneau Problèmes (⚠), préférences (taille d'interface 75–200 %), fenêtre
+  mémorisée (eframe `persistence`), AccessKit activé.
+- **Accessibilité** : `TEXT_DIM` passé à `#979BA1` (contraste ≥ 5:1 sur tous les
+  fonds), infobulles sur cellules et en-têtes avec leurs raccourcis.
+- **Bug corrigé** : afficher un clip couleur/générateur envoyait une édition
+  fantôme (aller-retour 8 bits du sélecteur de couleur).
+- **CI** : GitHub Actions Linux/Windows/macOS (fmt, clippy `-D warnings`,
+  tests ; GPU logiciel lavapipe sous Linux) + `cargo deny` (failles, licences,
+  sources). `VERSO_TRACE=1` affiche chaque commande.

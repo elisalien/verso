@@ -667,6 +667,26 @@ impl Renderer {
         &mut self.library
     }
 
+    /// Moves per-layer render state (transitions, last frame) to follow layers
+    /// and columns that moved, so a reorder does not look like a clip change.
+    pub fn follow(&mut self, device: &wgpu::Device, changes: &verso_core::IndexChanges) {
+        let mut states: Vec<Option<LayerState>> = std::mem::take(&mut self.layers)
+            .into_iter()
+            .map(Some)
+            .collect();
+        changes.apply_to_layers(&mut states);
+        self.layers = states
+            .into_iter()
+            .map(|state| {
+                let mut state = state.unwrap_or_else(|| LayerState::new(device, self.size));
+                state.shown = state
+                    .shown
+                    .and_then(|c| changes.columns.get(c).copied().flatten());
+                state
+            })
+            .collect();
+    }
+
     /// Recreates every size-dependent resource. The size is limited to what
     /// the GPU supports, so an oversized composition renders smaller instead
     /// of failing.

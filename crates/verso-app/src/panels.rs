@@ -348,7 +348,7 @@ impl VersoApp {
                     ui.label("Solid Color");
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    color_button(ui, color);
                     ui.end_row();
                 }
                 Source::Generator { kind, color, speed } => {
@@ -362,7 +362,7 @@ impl VersoApp {
                         });
                     ui.end_row();
                     ui.label("Color");
-                    ui.color_edit_button_rgba_unmultiplied(color);
+                    color_button(ui, color);
                     ui.end_row();
                     ui.label("Speed");
                     ui.add(egui::Slider::new(speed, 0.0..=4.0));
@@ -725,4 +725,16 @@ impl FileBrowser {
             .filter_map(|p| SourceTemplate::from_path(p))
             .collect();
     }
+}
+
+/// Color picker that only writes `color` when the user changes it: the
+/// widget converts through 8-bit sRGB, which would otherwise alter the stored
+/// value (and record an edit) just by being shown.
+pub(crate) fn color_button(ui: &mut egui::Ui, color: &mut [f32; 4]) -> egui::Response {
+    let mut edited = *color;
+    let response = ui.color_edit_button_rgba_unmultiplied(&mut edited);
+    if response.changed() {
+        *color = edited;
+    }
+    response
 }

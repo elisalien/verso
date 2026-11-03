@@ -4,7 +4,7 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.3.1. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.3.2. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
 > control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
@@ -29,29 +29,42 @@ cargo run --release -p verso-app
 
 | Input | Action |
 |---|---|
-| Click a cell | Trigger that clip on its layer (empty cell ejects the layer) |
-| Click a column header, or keys `1`–`9` | Trigger the whole column |
+| Click a cell | Trigger that clip on its layer (empty cell ejects the layer). Preferences can make click select and double-click launch |
+| Ctrl+click a cell | Select it without launching |
+| Click a column header, or keys `1`–`9` (`Shift+1`–`9` for columns 10–18) | Trigger the whole column |
+| Drag a cell onto another | Move the clip (swaps with a full cell); hold `Alt` to copy |
 | Drag a source from the Sources browser onto a cell | Load it into that slot |
 | Drop image or video files from your file manager onto a cell | Load them into that slot and the next ones |
 | Browser › Files › Open Folder… | List a folder's media to drag onto cells |
 | Click the playing clip again | Restart it |
 | Drag an effect from Browser › Effects onto a clip, layer header or Composition header | Add it to that chain |
 | Properties › + Add Effect | Add an effect to the selected composition, group, layer or clip |
+| Right-click a layer or column header | Duplicate, move, delete (layers); rename, move, delete (columns) |
 | Layer › Group Selected Layer | Put the selected layer in a new group |
-| Right-click a cell | Change its source or clear it |
+| Right-click a cell | Copy, paste, change its source or clear it |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Del` | Copy, cut, paste, clear the selected cell |
+| `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) | Undo / redo edits (launching clips is never undone) |
+| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` | New, open, save, save as |
+| `Ctrl+D` | Duplicate the selected layer |
+| `Ctrl+Shift+L` | Live lock: only launching and performance controls work |
 | `X` / `B` / `S` on a layer | Eject / bypass / solo |
 | `A` / `B` on a layer | Assign it to a crossfader side |
 | Double-click a fader | Reset it |
 | `L` or **MIDI Learn** | Learn mode: click a control, then move a MIDI control |
 | `T` or **TAP** | Tap tempo |
 | Right-click a fader or effect parameter | Add an LFO or audio modulation |
-| **Control…** | OSC port, MIDI inputs and mappings, audio input, modulators |
+| **Control…** | OSC port and access, MIDI inputs and mappings, audio input, modulators |
 | **Scripts…** | Write Lua automations (Ctrl+Enter applies) |
-| `Esc` | Clear all layers |
+| `Shift+Esc` | Clear all layers (plain `Esc` only closes menus) |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 | Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
+| ⚠ in the status bar | Problems of the session (media, effects, GPU, repaired files) |
+| Composition › Preferences… | Click behaviour, interface size, recovery copy, reopen last file |
+
+Unsaved work is copied every minute and offered back after a crash. Missing
+media files can be relinked by picking a folder when a composition opens.
 
 ## Workspace
 

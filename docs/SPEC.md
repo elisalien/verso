@@ -86,8 +86,15 @@ Composition
 
 - Le modèle est sérialisable (`serde`, RON). Le fichier projet est `*.verso`.
 - Aucune dépendance GPU dans `verso-core` : il est testable sans carte graphique.
-- Les identifiants stables (`LayerId`, `ClipId`) arriveront avec l'édition
-  (déplacement de couches) ; v0.1 utilise des index.
+- Couches et colonnes sont repérées par index. Supprimer, déplacer ou dupliquer
+  (v0.3.2) renumérote les mappings MIDI et les modulateurs pour qu'ils suivent
+  la même couche ou colonne (`IndexChanges`) ; ceux qui visaient un élément
+  supprimé disparaissent. Les adresses écrites dans les scripts Lua ne sont pas
+  réécrites.
+- Annuler/rétablir (v0.3.2) : instantanés de la composition avant chaque édition
+  faite dans l'interface, éditions continues (fader, saisie) fusionnées par
+  contrôle sur 1 s, 100 pas. Lancements, MIDI, OSC et scripts ne sont jamais
+  enregistrés, et annuler ne change pas ce qui joue.
 
 ## 6. Médias
 

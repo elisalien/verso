@@ -406,7 +406,7 @@ impl Composition {
         self.layers.get_mut(layer).ok_or(Error::NoLayer(layer))
     }
 
-    fn check_column(&self, column: usize) -> Result<()> {
+    pub(crate) fn check_column(&self, column: usize) -> Result<()> {
         if column < self.columns.len() {
             Ok(())
         } else {

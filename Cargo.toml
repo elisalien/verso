@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 publish = false
@@ -13,7 +13,7 @@ repository = "https://github.com/verso-vj/verso"
 verso-core = { path = "crates/verso-core" }
 verso-render = { path = "crates/verso-render" }
 verso-media = { path = "crates/verso-media" }
-verso-control = { path = "crates/verso-control" }
+verso-control = { path = "crates/verso-control", default-features = false }
 verso-script = { path = "crates/verso-script" }
 verso-io = { path = "crates/verso-io" }
 verso-online = { path = "crates/verso-online" }

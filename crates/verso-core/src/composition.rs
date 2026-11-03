@@ -243,6 +243,9 @@ pub struct Composition {
     pub midi: Vec<MidiMapping>,
     #[serde(default)]
     pub scripts: Vec<Script>,
+    /// Actions fired by incoming timecode, sorted by time.
+    #[serde(default)]
+    pub cues: Vec<crate::control::Cue>,
 }
 
 impl Composition {
@@ -266,6 +269,7 @@ impl Composition {
             modulators: Vec::new(),
             midi: Vec::new(),
             scripts: Vec::new(),
+            cues: Vec::new(),
         }
     }
 

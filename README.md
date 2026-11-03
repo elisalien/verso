@@ -4,11 +4,12 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.3.2. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.4. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
 > control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
-> Lua scripts.
+> Lua scripts. Ableton Link, MIDI and audio (LTC) timecode with cues, NDI® input
+> and output, Spout (Windows) and Syphon (macOS) output.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 ## Requirements
@@ -16,6 +17,8 @@ and Linux.
 - Rust (stable)
 - FFmpeg (`ffmpeg` and `ffprobe`) on `PATH` for video, or set `VERSO_FFMPEG` and
   `VERSO_FFPROBE` to their paths
+- CMake and a C++ compiler for Ableton Link (build without it:
+  `cargo build --release -p verso-app --no-default-features`)
 - Linux: ALSA headers to build (`sudo apt install libasound2-dev pkg-config` on
   Debian/Ubuntu, `alsa-lib-devel` on Fedora)
 
@@ -58,6 +61,10 @@ cargo run --release -p verso-app
 | `Shift+Esc` | Clear all layers (plain `Esc` only closes menus) |
 | `F2` | Toggle the output window (double-click it for fullscreen) |
 | Output › NDI® Output | Publish the output as an NDI source (needs NDI Tools or the NDI runtime) |
+| Output › Spout / Syphon Output | Share the output with apps on the same computer (Windows: Spout; macOS: Syphon, needs `Syphon.framework` in `/Library/Frameworks`) |
+| Browser › Sources › NDI® sources › Find | List NDI senders on the network; drag one onto a cell to play it live |
+| **LINK** | Join the Ableton Link session: shared tempo and beat phase (number of peers shown) |
+| Control › Timecode | Read MIDI Time Code or LTC on an audio channel; add cues that fire an OSC address at a timecode |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
 | ⚠ in the status bar | Problems of the session (media, effects, GPU, repaired files) |
@@ -101,7 +108,8 @@ otherwise: use the "Commercial use only" filter and check the shader page.
 
 Lua scripts define `frame(t)` and/or `beat(n)` and drive the composition with
 `verso.set(address, value)`, `verso.trigger(address)` and `verso.get(address)`,
-using the OSC addresses. See [scripts/beat-chase.lua](scripts/beat-chase.lua).
+using the OSC addresses. `t.timecode` gives the incoming timecode in seconds.
+See [scripts/beat-chase.lua](scripts/beat-chase.lua).
 Scripts are saved in the composition and run sandboxed (no file or OS access,
 endless loops are stopped).
 
@@ -127,6 +135,16 @@ NDI® is a registered trademark of Vizrt NDI AB.
 ```bash
 cargo test --workspace
 ```
+
+## Bench
+
+```bash
+cargo run --release -p verso-app --example bench
+```
+
+Measures compositing (1, 4, 8 layers), FFmpeg decoding of 1080p H.264 and HAP
+(1 and 4 players) and the full path of 4 HAP 1080p layers against 60 fps. Run it
+on the show computer.
 
 GPU tests in `verso-render/tests` check output pixels and write
 `target/verso-demo.png`. They skip when no GPU adapter is available.

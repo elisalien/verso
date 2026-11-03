@@ -104,7 +104,12 @@ impl GeneratorParams {
         let (kind, color, speed) = match *source {
             Source::Solid { color } => (SOLID_KIND, color, 0.0),
             Source::Generator { kind, color, speed } => (kind.shader_index(), color, speed),
-            Source::Image { .. } | Source::Video { .. } | Source::Shader(_) => return None,
+            Source::Image { .. }
+            | Source::Video { .. }
+            | Source::Shader(_)
+            | Source::Ndi { .. } => {
+                return None;
+            }
         };
         Some(Self {
             time,

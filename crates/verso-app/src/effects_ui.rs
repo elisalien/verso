@@ -195,13 +195,8 @@ impl VersoApp {
                 .button("Load Folder…")
                 .on_hover_text("Load .wgsl (Verso) and .fs (ISF) effects from a folder")
                 .clicked()
-                && let Some(folder) = rfd::FileDialog::new().pick_folder()
             {
-                let errors = self.renderer.library_mut().load_dir(&folder);
-                self.status = match errors.first() {
-                    Some(first) => format!("{} effect(s) failed. {first}", errors.len()),
-                    None => format!("Loaded effects from {}", folder.display()),
-                };
+                self.file_request(crate::dialogs::FileRequest::EffectsFolder);
             }
         });
         ui.label(

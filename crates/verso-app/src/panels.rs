@@ -405,6 +405,18 @@ impl VersoApp {
                     ui.end_row();
                     file_row(ui, path);
                 }
+                Source::Ndi { name } => {
+                    ui.label("Source");
+                    ui.label("NDI® input");
+                    ui.end_row();
+                    ui.label("Sender");
+                    ui.label(name.as_str());
+                    ui.end_row();
+                    ui.label("");
+                    let state = self.media.live_state(layer, column);
+                    ui.label(egui::RichText::new(state).small().color(theme::TEXT_DIM));
+                    ui.end_row();
+                }
                 Source::Video {
                     path,
                     speed,
@@ -531,6 +543,30 @@ impl VersoApp {
                         self.browser_item(ui, template);
                     }
                 }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    hint(ui, "NDI® sources");
+                    let searching = self.media.ndi_searching();
+                    if ui
+                        .add_enabled(!searching, egui::Button::new(if searching { "Searching…" } else { "Find" }).small())
+                        .on_hover_text("Look for NDI senders on the network (needs NDI Tools or the NDI runtime)")
+                        .clicked()
+                    {
+                        self.media.search_ndi();
+                    }
+                });
+                let sources: Vec<SourceTemplate> = self
+                    .media
+                    .ndi_sources()
+                    .iter()
+                    .map(|name| SourceTemplate {
+                        name: name.clone(),
+                        source: Source::Ndi { name: name.clone() },
+                    })
+                    .collect();
+                for template in sources {
+                    self.browser_item(ui, template);
+                }
             }
             BrowserTab::Effects => self.effect_browser(ui),
             BrowserTab::Files => self.file_list(ui),
@@ -540,10 +576,8 @@ impl VersoApp {
 
     fn file_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("Open Folder…").clicked()
-                && let Some(folder) = rfd::FileDialog::new().pick_folder()
-            {
-                self.files.open(folder);
+            if ui.button("Open Folder…").clicked() {
+                self.file_request(crate::dialogs::FileRequest::FilesFolder);
             }
             if self.files.folder.is_some() && ui.button("⟳").on_hover_text("Refresh").clicked() {
                 self.files.refresh();
@@ -672,6 +706,7 @@ fn source_kind(source: &Source) -> &'static str {
         Source::Generator { .. } => "generator",
         Source::Image { .. } => "image",
         Source::Video { .. } => "video",
+        Source::Ndi { .. } => "NDI",
     }
 }
 

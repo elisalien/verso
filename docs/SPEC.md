@@ -199,10 +199,10 @@ Un groupe est rendu à la position de sa couche la plus basse.
 | Audio (`cpal` + `realfft`) | Niveaux par bande, beats, tempo détecté | v0.3 ✅ |
 | Tap tempo, horloge en beats | Synchro des LFO | v0.3 ✅ |
 | Scripts Lua (`mlua`, Lua 5.4) | Automations | v0.3 ✅ |
-| Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 |
-| NDI® | Sortie vidéo réseau ✅ ; entrée à faire | v0.4 |
-| Ableton Link | Synchro tempo | v0.4 |
-| SMPTE / LTC | Timecode | v0.4 |
+| Spout (Windows) / Syphon (macOS) | Partage de texture local | v0.4 ✅ (à valider sur machine) |
+| NDI® | Sortie et entrée vidéo réseau | v0.4 ✅ |
+| Ableton Link | Synchro tempo et phase | v0.4 ✅ |
+| SMPTE : MTC / LTC | Timecode, cues | v0.4 ✅ |
 | DMX / Art-Net / sACN | Lumières, pixel mapping | plus tard |
 
 ### Espace d'adresses
@@ -273,10 +273,35 @@ Capture asynchrone de l'image de sortie (`FrameGrabber`, 3 buffers mappables) :
 le rendu ne bloque jamais sur la relecture, l'image arrive avec 1 à 2 frames de
 latence. Une sortie active seulement déclenche la capture.
 
-NDI® : runtime chargé à l'exécution (`NDI_RUNTIME_DIR_V6`/`V5`), aucun SDK requis
-pour compiler. Envoi RGBA sur un thread dédié, images sautées si l'envoi est en
-retard. Vérifié par un aller-retour émetteur → récepteur NDI local en test.
-Spout (Windows) et Syphon (macOS) restent à faire.
+NDI® : runtime chargé à l'exécution (`NDI_RUNTIME_DIR_V6`/`V5`, chemins absolus
+seulement sous Windows), aucun SDK requis pour compiler. Envoi RGBA sur un
+thread dédié, images sautées si l'envoi est en retard. Entrée : `Source::Ndi`,
+un récepteur par couche sur son thread, seule l'image la plus récente est
+gardée (RGBX rendu opaque, 8192 px max).
+
+Spout (Windows) : protocole Spout 2 implémenté directement (texture D3D11
+partagée BGRA, mémoire partagée `SharedTextureInfo` au nom de l'émetteur, liste
+`SpoutSenderNames` protégée par `SpoutSenderNames_mutex`, `<nom>_SpoutAccessMutex`
+pendant l'écriture), sans DLL Spout. Syphon (macOS) : `Syphon.framework` chargé
+à l'exécution, `SyphonMetalServer` alimenté par une texture Metal. Les deux
+partent de l'image relue (copie CPU) et sont vérifiés à la compilation pour leur
+plateforme mais **pas encore testés sur machine** : à valider avec
+Resolume/TouchDesigner/OBS.
+
+### Ableton Link
+
+Bibliothèque officielle via `rusty_link` (feature `link`, par défaut ; CMake et
+C++ requis). Le tempo suit la session ; un changement local (tap, fader, MIDI)
+la mène. L'horloge en beats suit la phase de la session (quantum 4) : LFO et
+`beat(n)` tombent sur le même temps que les autres applications.
+
+### Timecode
+
+MTC (quarter frames et SysEx full frame) depuis les entrées MIDI ; LTC décodé
+depuis un canal de l'entrée audio (biphase mark, 23–31 fps, seuil adaptatif).
+Le dernier timecode est extrapolé entre deux trames. Cues : action OSC à une
+position ; déclenchées quand la lecture avance de moins d'une seconde au-delà
+(un saut ne déclenche rien). `t.timecode` dans les scripts.
 
 ### Compteur de lancements
 
@@ -300,7 +325,7 @@ composition.
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
 | v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
 | v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
-| v0.4 Interop | Spout, Syphon, NDI, Link, SMPTE | Échange avec TouchDesigner/OBS |
+| v0.4 Interop ✅ | Spout, Syphon, NDI entrée/sortie, Link, MTC/LTC, banc de mesure | Échange avec TouchDesigner/OBS (à valider sur machine) |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
 
 ## 11. Risques techniques

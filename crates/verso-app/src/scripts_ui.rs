@@ -53,6 +53,7 @@ impl VersoApp {
             beats: self.controls.beats,
             bpm: self.comp.bpm,
             audio: self.controls.levels.bands(),
+            timecode: self.controls.timecode.map(|(_, seconds)| seconds),
         };
         let commands = host.run(&self.comp, &info, &|p| self.param_range(&self.comp, p));
         self.scripts.host = host;

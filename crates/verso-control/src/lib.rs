@@ -5,9 +5,12 @@
 
 mod analysis;
 mod audio;
+#[cfg(feature = "link")]
+pub mod link;
 mod midi;
 mod osc;
 mod tempo;
+pub mod timecode;
 
 pub use analysis::{Analyzer, Levels};
 pub use audio::{AudioInput, input_devices};

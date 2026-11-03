@@ -161,6 +161,13 @@ impl Composition {
                 Some(m)
             })
             .collect();
+        self.cues = std::mem::take(&mut self.cues)
+            .into_iter()
+            .filter_map(|mut c| {
+                c.action = map_action(&c.action, layer, column)?;
+                Some(c)
+            })
+            .collect();
         self.modulators = std::mem::take(&mut self.modulators)
             .into_iter()
             .filter_map(|mut m| {

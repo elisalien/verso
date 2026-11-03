@@ -37,6 +37,8 @@ pub enum Error {
     NoModulator(usize),
     #[error("script {0} does not exist")]
     NoScript(usize),
+    #[error("cue {0} does not exist")]
+    NoCue(usize),
     #[error("value is not a finite number")]
     NotFinite,
     #[error("could not parse composition: {0}")]

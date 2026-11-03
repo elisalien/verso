@@ -63,6 +63,9 @@ pub enum Source {
         speed: f32,
         looping: bool,
     },
+    /// Live video from an NDI® source on the network, by its full name
+    /// (`MACHINE (Source)`).
+    Ndi { name: String },
 }
 
 impl Source {
@@ -70,12 +73,15 @@ impl Source {
     pub fn path(&self) -> Option<&std::path::Path> {
         match self {
             Source::Image { path } | Source::Video { path, .. } => Some(path),
-            Source::Solid { .. } | Source::Generator { .. } | Source::Shader(_) => None,
+            _ => None,
         }
     }
 
     /// Whether the GPU renders this source without any decoded media.
     pub fn is_procedural(&self) -> bool {
-        self.path().is_none()
+        matches!(
+            self,
+            Source::Solid { .. } | Source::Generator { .. } | Source::Shader(_)
+        )
     }
 }

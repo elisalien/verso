@@ -23,5 +23,10 @@ verso-script.workspace = true
 verso-io.workspace = true
 verso-online.workspace = true
 
+[features]
+default = ["link"]
+# Ableton Link tempo sync (builds the official Link library: needs CMake and a C++ compiler).
+link = ["verso-control/link"]
+
 [dev-dependencies]
 pollster = "1.0.1"

@@ -1,4 +1,4 @@
-//! NDI® sender, and a minimal finder/receiver used to check it.
+//! NDI® sender, source finder and receiver.
 //!
 //! The NDI runtime library is loaded dynamically: from `NDI_RUNTIME_DIR_V6`
 //! (or V5), else from the library search path. Declarations follow the
@@ -17,6 +17,9 @@ const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
 }
 
 const FOURCC_RGBA: u32 = fourcc(b'R', b'G', b'B', b'A');
+const FOURCC_RGBX: u32 = fourcc(b'R', b'G', b'B', b'X');
+/// Received frames larger than this on either side are dropped.
+const MAX_RECEIVED: u32 = 8192;
 const FRAME_FORMAT_PROGRESSIVE: i32 = 1;
 /// Lets the SDK make a timecode.
 const TIMECODE_SYNTHESIZE: i64 = i64::MAX;
@@ -287,6 +290,170 @@ pub fn find_sources(wait: Duration) -> Result<Vec<String>> {
     }
 }
 
+/// One received RGBA8 frame, rows top to bottom, straight alpha.
+#[derive(Clone)]
+pub struct NdiFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+}
+
+/// Copies a captured RGBA/RGBX frame out of NDI's buffer. `None` for other
+/// formats or unreasonable sizes.
+///
+/// # Safety
+/// `frame` must be a video frame just returned by `recv_capture_v2`.
+unsafe fn copy_frame(frame: &VideoFrameV2) -> Option<NdiFrame> {
+    let (w, h) = (frame.xres, frame.yres);
+    if w <= 0 || h <= 0 || w as u32 > MAX_RECEIVED || h as u32 > MAX_RECEIVED {
+        return None;
+    }
+    let opaque = match frame.four_cc {
+        FOURCC_RGBA => false,
+        FOURCC_RGBX => true,
+        _ => return None,
+    };
+    let (w, h) = (w as usize, h as usize);
+    let stride = frame.line_stride_in_bytes as usize;
+    if stride < w * 4 || frame.p_data.is_null() {
+        return None;
+    }
+    let mut data = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        // SAFETY: NDI frames hold `yres` rows of `line_stride_in_bytes`.
+        let line = unsafe { std::slice::from_raw_parts(frame.p_data.add(row * stride), w * 4) };
+        data.extend_from_slice(line);
+    }
+    if opaque {
+        for pixel in data.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+    }
+    Some(NdiFrame {
+        width: w as u32,
+        height: h as u32,
+        data,
+    })
+}
+
+/// Receives video from one NDI source on a background thread, keeping only
+/// the newest frame. Stops when dropped.
+pub struct NdiReceiver {
+    source: String,
+    shared: Arc<Shared>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// Number of the last frame handed out by [`Self::take`].
+    taken: u64,
+}
+
+#[derive(Default)]
+struct Shared {
+    stop: std::sync::atomic::AtomicBool,
+    /// Newest frame and its number (1 for the first).
+    latest: std::sync::Mutex<(u64, Option<NdiFrame>)>,
+    error: std::sync::Mutex<Option<String>>,
+}
+
+impl NdiReceiver {
+    /// Connects to the source named `source` (as [`find_sources`] lists it).
+    pub fn new(source: &str) -> Result<Self> {
+        let api = api()?;
+        let c_source = CString::new(source).map_err(|e| Error::Ndi(e.to_string()))?;
+        let shared = Arc::new(Shared::default());
+        let worker = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("verso-ndi-recv".into())
+            .spawn(move || receive_loop(api, c_source, &worker))
+            .map_err(|e| Error::Ndi(e.to_string()))?;
+        Ok(Self {
+            source: source.to_owned(),
+            shared,
+            thread: Some(thread),
+            taken: 0,
+        })
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The newest frame if it arrived since the last call.
+    pub fn take(&mut self) -> Option<NdiFrame> {
+        let mut latest = self.shared.latest.lock().ok()?;
+        if latest.0 == self.taken {
+            return None;
+        }
+        self.taken = latest.0;
+        latest.1.take()
+    }
+
+    /// Frames received so far.
+    pub fn received(&self) -> u64 {
+        self.shared.latest.lock().map(|l| l.0).unwrap_or(0)
+    }
+
+    /// Why receiving stopped, if it did.
+    pub fn error(&self) -> Option<String> {
+        self.shared.error.lock().ok().and_then(|e| e.clone())
+    }
+}
+
+impl Drop for NdiReceiver {
+    fn drop(&mut self) {
+        self.shared
+            .stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn receive_loop(api: Arc<Api>, source: CString, shared: &Shared) {
+    let create = RecvCreateV3 {
+        source_to_connect_to: Source {
+            p_ndi_name: source.as_ptr(),
+            p_url_address: std::ptr::null(),
+        },
+        color_format: RECV_COLOR_RGBX_RGBA,
+        bandwidth: RECV_BANDWIDTH_HIGHEST,
+        allow_video_fields: false,
+        p_ndi_recv_name: std::ptr::null(),
+    };
+    // SAFETY: valid create struct; `source` outlives the receiver, which is
+    // destroyed at the end of this function.
+    let receiver = unsafe { (api.recv_create_v3)(&create) };
+    if receiver.is_null() {
+        if let Ok(mut error) = shared.error.lock() {
+            *error = Some("could not create receiver".into());
+        }
+        return;
+    }
+    while !shared.stop.load(std::sync::atomic::Ordering::Relaxed) {
+        // SAFETY: zeroed frame filled by the SDK; freed right after copying.
+        unsafe {
+            let mut frame: VideoFrameV2 = std::mem::zeroed();
+            let kind = (api.recv_capture_v2)(
+                receiver,
+                &mut frame,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                100,
+            );
+            if kind == FRAME_TYPE_VIDEO {
+                let copied = copy_frame(&frame);
+                (api.recv_free_video_v2)(receiver, &frame);
+                if let (Some(frame), Ok(mut latest)) = (copied, shared.latest.lock()) {
+                    latest.0 += 1;
+                    latest.1 = Some(frame);
+                }
+            }
+        }
+    }
+    // SAFETY: created above, destroyed once.
+    unsafe { (api.recv_destroy)(receiver) };
+}
+
 /// Receives one RGBA frame from the source named `source`, waiting up to
 /// `wait`. Used to check senders.
 pub fn receive_frame(source: &str, wait: Duration) -> Result<(u32, u32, Vec<u8>)> {
@@ -319,16 +486,11 @@ pub fn receive_frame(source: &str, wait: Duration) -> Result<(u32, u32, Vec<u8>)
                 200,
             );
             if kind == FRAME_TYPE_VIDEO {
-                let (w, h) = (frame.xres as u32, frame.yres as u32);
-                let stride = frame.line_stride_in_bytes as usize;
-                let mut data = Vec::with_capacity((w * h * 4) as usize);
-                for row in 0..h as usize {
-                    let line =
-                        std::slice::from_raw_parts(frame.p_data.add(row * stride), w as usize * 4);
-                    data.extend_from_slice(line);
-                }
+                let copied = copy_frame(&frame);
                 (api.recv_free_video_v2)(receiver, &frame);
-                break Ok((w, h, data));
+                if let Some(frame) = copied {
+                    break Ok((frame.width, frame.height, frame.data));
+                }
             }
             if std::time::Instant::now() > deadline {
                 break Err(Error::Ndi(format!("no frame from {source}")));
@@ -385,6 +547,17 @@ mod tests {
             })
         };
         let received = receive_frame(&full_name, Duration::from_secs(10));
+        // The background receiver used for NDI input clips gets frames too.
+        let mut receiver = NdiReceiver::new(&full_name).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut live = None;
+        while live.is_none() && std::time::Instant::now() < deadline {
+            live = receiver.take();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(receiver);
+        let live = live.expect("NdiReceiver got no frame");
+        assert_eq!((live.width, live.height), (w, h));
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         sending.join().unwrap();
 

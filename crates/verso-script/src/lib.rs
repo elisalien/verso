@@ -4,7 +4,8 @@
 //!
 //! ```lua
 //! function frame(t)   -- every frame; t.time, t.dt, t.beats, t.bpm,
-//!                     -- t.audio.level|bass|mid|high|beat
+//!                     -- t.audio.level|bass|mid|high|beat,
+//!                     -- t.timecode (seconds, nil without timecode)
 //!   verso.set("/layer/1/opacity", 0.5 + 0.5 * math.sin(t.beats * math.pi))
 //! end
 //!
@@ -50,6 +51,8 @@ pub struct FrameInfo {
     pub bpm: f32,
     /// level, bass, mid, high, beat.
     pub audio: [f32; 5],
+    /// Incoming SMPTE timecode in seconds, when there is one.
+    pub timecode: Option<f64>,
 }
 
 struct Script {
@@ -325,6 +328,7 @@ fn run_script(
             t.set("dt", info.dt)?;
             t.set("beats", info.beats)?;
             t.set("bpm", info.bpm)?;
+            t.set("timecode", info.timecode)?;
             let audio = lua.create_table()?;
             for (name, value) in ["level", "bass", "mid", "high", "beat"]
                 .iter()

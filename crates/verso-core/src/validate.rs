@@ -37,7 +37,7 @@ fn source_finite(source: &Source) -> bool {
         }
         Source::Shader(effect) => effect_finite(effect),
         Source::Video { speed, .. } => speed.is_finite(),
-        Source::Image { .. } => true,
+        Source::Image { .. } | Source::Ndi { .. } => true,
     }
 }
 
@@ -72,6 +72,9 @@ impl Command {
             },
             Command::AddModulator(m) | Command::SetModulator { modulator: m, .. } => {
                 modulator_finite(m)
+            }
+            Command::AddCue(c) | Command::SetCue { cue: c, .. } => {
+                c.seconds.is_finite() && c.value.is_finite()
             }
             _ => true,
         }
@@ -110,6 +113,10 @@ fn repair_source(source: &mut Source, fixes: &mut Vec<String>, at: &str) {
 }
 
 impl Composition {
+    pub(crate) fn sort_cues(&mut self) {
+        self.cues.sort_by(|a, b| a.seconds.total_cmp(&b.seconds));
+    }
+
     /// Makes a composition from a file safe to use: every layer has one cell
     /// per column, indices point at things that exist, numbers are finite and
     /// in range. Returns a description of each fix.
@@ -171,6 +178,13 @@ impl Composition {
             repair_effects(&mut group.effects, &mut fixes, &format!("group {}", g + 1));
         }
         repair_effects(&mut self.effects, &mut fixes, "composition");
+        let cues = self.cues.len();
+        self.cues
+            .retain(|c| c.seconds.is_finite() && c.seconds >= 0.0 && c.value.is_finite());
+        if self.cues.len() != cues {
+            fixes.push("invalid timecode cues removed".into());
+        }
+        self.sort_cues();
         let before = self.modulators.len();
         self.modulators.retain(modulator_finite);
         if self.modulators.len() != before {

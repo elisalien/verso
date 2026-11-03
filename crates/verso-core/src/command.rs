@@ -110,6 +110,13 @@ pub enum Command {
     AddColumn,
     RemoveLayer(usize),
     RemoveColumn(usize),
+    /// Adds a timecode cue, keeping cues sorted by time.
+    AddCue(crate::control::Cue),
+    RemoveCue(usize),
+    SetCue {
+        index: usize,
+        cue: crate::control::Cue,
+    },
     /// Moves a layer so it ends at index `to`.
     MoveLayer {
         from: usize,
@@ -234,6 +241,20 @@ impl Composition {
             }
             Command::AddLayer => self.add_layer(),
             Command::AddColumn => self.add_column(),
+            Command::AddCue(cue) => {
+                self.cues.push(cue);
+                self.sort_cues();
+            }
+            Command::RemoveCue(index) => {
+                if index >= self.cues.len() {
+                    return Err(Error::NoCue(index));
+                }
+                self.cues.remove(index);
+            }
+            Command::SetCue { index, cue } => {
+                *self.cues.get_mut(index).ok_or(Error::NoCue(index))? = cue;
+                self.sort_cues();
+            }
             Command::RemoveLayer(layer) => self.remove_layer(layer)?,
             Command::RemoveColumn(column) => self.remove_column(column)?,
             Command::MoveLayer { from, to } => self.move_layer(from, to)?,

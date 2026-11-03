@@ -354,6 +354,37 @@ impl MidiKey {
     }
 }
 
+/// An action fired when incoming timecode passes `seconds`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cue {
+    /// Position in seconds from 00:00:00:00.
+    pub seconds: f64,
+    pub action: Action,
+    /// Control value in 0..1 (1 presses a trigger).
+    #[serde(default = "Cue::default_value")]
+    pub value: f32,
+}
+
+impl Cue {
+    fn default_value() -> f32 {
+        1.0
+    }
+
+    /// Indices of `cues` passed when the timecode moves from `from` to `to`
+    /// seconds. Only forward motion of under a second fires cues, so a jump
+    /// (seek, new song) does not fire everything in between.
+    pub fn passed(cues: &[Cue], from: f64, to: f64) -> Vec<usize> {
+        if !(to > from && to - from < 1.0) {
+            return Vec::new();
+        }
+        cues.iter()
+            .enumerate()
+            .filter(|(_, c)| c.seconds > from && c.seconds <= to)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
 /// A MIDI control bound to an action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MidiMapping {
@@ -459,6 +490,23 @@ mod tests {
         param.write(&mut comp, 0.25, Range::UNIT);
         assert_eq!(param.get(&comp), Some(0.25));
         assert_eq!(Param::LayerOpacity(99).get(&comp), None);
+    }
+
+    #[test]
+    fn cues_fire_on_forward_play_only() {
+        let cue = |seconds| Cue {
+            seconds,
+            action: Action::ClearAll,
+            value: 1.0,
+        };
+        let cues = [cue(10.0), cue(10.5), cue(30.0)];
+        assert_eq!(Cue::passed(&cues, 9.98, 10.02), [0]);
+        assert_eq!(Cue::passed(&cues, 10.0, 10.5), [1], "start is exclusive");
+        assert!(
+            Cue::passed(&cues, 0.0, 30.0).is_empty(),
+            "a jump fires nothing"
+        );
+        assert!(Cue::passed(&cues, 10.6, 10.4).is_empty(), "backwards");
     }
 
     #[test]

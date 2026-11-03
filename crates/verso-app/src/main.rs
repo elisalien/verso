@@ -3,6 +3,7 @@
 mod app;
 mod control_ui;
 mod diagnostics;
+mod dialogs;
 mod effects_ui;
 mod grid;
 mod history;

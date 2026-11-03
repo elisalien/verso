@@ -1,8 +1,8 @@
-//! Video outputs to other applications (NDI), fed from the rendered frame.
+//! Video outputs to other applications (NDI, Spout, Syphon), fed from the
+//! rendered frame.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::{egui, wgpu};
@@ -12,43 +12,100 @@ use verso_render::{FrameGrabber, GrabbedFrame, Renderer};
 use crate::app::VersoApp;
 use crate::theme;
 
-/// Sends frames on its own thread: NDI converts and compresses each frame,
-/// which must not delay rendering. Frames arriving while one is being sent
-/// are dropped.
-struct NdiWorker {
-    frames: SyncSender<GrabbedFrame>,
-    connections: Arc<AtomicUsize>,
+/// Sends frames to one output on its own thread: NDI compresses each frame
+/// and texture sharing uploads it, which must not delay rendering. Frames
+/// arriving while one is being sent are dropped.
+struct Worker {
+    frames: SyncSender<Arc<GrabbedFrame>>,
+    /// Short state for the menu (receivers, last error).
+    status: Arc<Mutex<String>>,
     name: String,
 }
 
-impl NdiWorker {
-    fn start(name: &str) -> verso_io::Result<Self> {
-        let mut sender = NdiSender::new(name)?;
-        let (frames, incoming) = sync_channel::<GrabbedFrame>(1);
-        let connections = Arc::new(AtomicUsize::new(0));
-        let count = connections.clone();
+impl Worker {
+    /// Runs `send` for each frame; it returns the status to show.
+    fn start(
+        name: &str,
+        mut send: impl FnMut(&GrabbedFrame) -> String + Send + 'static,
+    ) -> Result<Self, String> {
+        let (frames, incoming) = sync_channel::<Arc<GrabbedFrame>>(1);
+        let status = Arc::new(Mutex::new(String::new()));
+        let shown = status.clone();
         thread::Builder::new()
-            .name("verso-ndi".into())
+            .name(format!("verso-output-{name}"))
             .spawn(move || {
                 // Ends when the worker, and so the channel, is dropped.
                 for frame in incoming {
-                    sender.send(frame.width, frame.height, &frame.data, 60);
-                    count.store(sender.connections(), Ordering::Relaxed);
+                    let text = send(&frame);
+                    if let Ok(mut status) = shown.lock() {
+                        *status = text;
+                    }
                 }
             })
-            .map_err(|e| verso_io::Error::Ndi(e.to_string()))?;
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             frames,
-            connections,
+            status,
             name: name.to_owned(),
         })
     }
+
+    fn status(&self) -> String {
+        self.status.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
+fn start_ndi(name: &str) -> Result<Worker, String> {
+    let mut sender = NdiSender::new(name).map_err(|e| e.to_string())?;
+    Worker::start(name, move |frame| {
+        sender.send(frame.width, frame.height, &frame.data, 60);
+        format!("{} receiver(s) connected", sender.connections())
+    })
+}
+
+/// Name of the local texture sharing system of this platform.
+pub const SHARE_NAME: Option<&str> = if cfg!(windows) {
+    Some("Spout")
+} else if cfg!(target_os = "macos") {
+    Some("Syphon")
+} else {
+    None
+};
+
+#[cfg(windows)]
+fn start_share(name: &str) -> Result<Worker, String> {
+    let mut sender = verso_io::spout::SpoutSender::new(name).map_err(|e| e.to_string())?;
+    Worker::start(name, move |frame| {
+        match sender.send(frame.width, frame.height, &frame.data) {
+            Ok(()) => format!("{}×{}", frame.width, frame.height),
+            Err(e) => e.to_string(),
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn start_share(name: &str) -> Result<Worker, String> {
+    let mut server = verso_io::syphon::SyphonServer::new(name).map_err(|e| e.to_string())?;
+    Worker::start(name, move |frame| {
+        match server.send(frame.width, frame.height, &frame.data) {
+            Ok(()) => format!("{}×{}", frame.width, frame.height),
+            Err(e) => e.to_string(),
+        }
+    })
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn start_share(_name: &str) -> Result<Worker, String> {
+    Err("texture sharing needs Windows (Spout) or macOS (Syphon)".into())
 }
 
 pub struct Outputs {
     grabber: Option<FrameGrabber>,
-    ndi: Option<NdiWorker>,
+    ndi: Option<Worker>,
     pub ndi_name: String,
+    /// Spout (Windows) or Syphon (macOS) sender.
+    share: Option<Worker>,
+    pub share_name: String,
 }
 
 impl Default for Outputs {
@@ -57,13 +114,15 @@ impl Default for Outputs {
             grabber: None,
             ndi: None,
             ndi_name: "Verso".into(),
+            share: None,
+            share_name: "Verso".into(),
         }
     }
 }
 
 impl Outputs {
     fn active(&self) -> bool {
-        self.ndi.is_some()
+        self.ndi.is_some() || self.share.is_some()
     }
 
     /// Records a copy of the output when an output needs it. Call before submit.
@@ -98,10 +157,15 @@ impl Outputs {
         let Some(frame) = grabber.poll(device) else {
             return;
         };
-        if let Some(ndi) = &self.ndi
-            && let Err(TrySendError::Disconnected(_)) = ndi.frames.try_send(frame)
-        {
-            self.ndi = None;
+        // Shared by the outputs without copying the pixels.
+        let frame = Arc::new(frame);
+        for output in [&mut self.ndi, &mut self.share] {
+            if let Some(worker) = output
+                && let Err(TrySendError::Disconnected(_)) =
+                    worker.frames.try_send(Arc::clone(&frame))
+            {
+                *output = None;
+            }
         }
     }
 }
@@ -113,12 +177,12 @@ impl VersoApp {
         ui.horizontal(|ui| {
             if ui.checkbox(&mut ndi_on, "NDI® Output").changed() {
                 if ndi_on {
-                    match NdiWorker::start(&self.outputs.ndi_name) {
+                    match start_ndi(&self.outputs.ndi_name) {
                         Ok(worker) => {
                             self.status = format!("NDI output \"{}\" started", worker.name);
                             self.outputs.ndi = Some(worker);
                         }
-                        Err(e) => self.status = e.to_string(),
+                        Err(e) => self.problem(e),
                     }
                 } else {
                     self.outputs.ndi = None;
@@ -131,12 +195,7 @@ impl VersoApp {
             .on_hover_text("NDI source name");
         });
         if let Some(ndi) = &self.outputs.ndi {
-            let receivers = ndi.connections.load(Ordering::Relaxed);
-            ui.label(
-                egui::RichText::new(format!("{receivers} receiver(s) connected"))
-                    .small()
-                    .color(theme::TEXT_DIM),
-            );
+            status_line(ui, &ndi.status());
         } else if !verso_io::ndi::available() {
             ui.label(
                 egui::RichText::new("NDI runtime not found: install NDI Tools")
@@ -144,5 +203,36 @@ impl VersoApp {
                     .color(theme::WARN),
             );
         }
+
+        let Some(share) = SHARE_NAME else { return };
+        ui.separator();
+        let mut on = self.outputs.share.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut on, format!("{share} Output")).changed() {
+                if on {
+                    match start_share(&self.outputs.share_name) {
+                        Ok(worker) => {
+                            self.status = format!("{share} output \"{}\" started", worker.name);
+                            self.outputs.share = Some(worker);
+                        }
+                        Err(e) => self.problem(e),
+                    }
+                } else {
+                    self.outputs.share = None;
+                }
+            }
+            ui.add_enabled(
+                self.outputs.share.is_none(),
+                egui::TextEdit::singleline(&mut self.outputs.share_name).desired_width(110.0),
+            )
+            .on_hover_text(format!("{share} sender name"));
+        });
+        if let Some(worker) = &self.outputs.share {
+            status_line(ui, &worker.status());
+        }
     }
+}
+
+fn status_line(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM));
 }

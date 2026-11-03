@@ -35,6 +35,9 @@ jobs:
         run: cargo clippy --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+      - name: Build without Ableton Link
+        if: runner.os == 'Linux'
+        run: cargo check -p verso-app --no-default-features
 
   deny:
     name: Dependencies (advisories, licenses)

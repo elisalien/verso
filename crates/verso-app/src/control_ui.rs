@@ -38,6 +38,32 @@ pub struct Controls {
     pub learn_target: Option<Action>,
     pub last_message: String,
     pub window_open: bool,
+    /// Where timecode comes from.
+    pub tc_source: TcSource,
+    pub mtc: verso_control::timecode::MtcDecoder,
+    pub mtc_clock: verso_control::timecode::TimecodeClock,
+    /// Current timecode and its position in seconds (extrapolated).
+    pub timecode: Option<(verso_control::timecode::Timecode, f64)>,
+    /// Position at the previous frame, to fire cues passed since.
+    last_tc_seconds: Option<f64>,
+    /// Text of the cue being added: an OSC address.
+    pub cue_address: String,
+    /// Ableton Link session, while joined.
+    #[cfg(feature = "link")]
+    pub link: Option<verso_control::link::Link>,
+    /// Tempo last agreed with the Link session, to tell local changes apart.
+    link_bpm: f32,
+}
+
+/// Source of SMPTE timecode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TcSource {
+    #[default]
+    Off,
+    /// MIDI Time Code from any MIDI input.
+    Mtc,
+    /// Linear Timecode on an audio input channel (0-based).
+    Ltc(usize),
 }
 
 impl Default for Controls {
@@ -59,6 +85,15 @@ impl Default for Controls {
             learn_target: None,
             last_message: String::new(),
             window_open: false,
+            tc_source: TcSource::Off,
+            mtc: Default::default(),
+            mtc_clock: Default::default(),
+            timecode: None,
+            last_tc_seconds: None,
+            cue_address: "/column/1/launch".into(),
+            #[cfg(feature = "link")]
+            link: None,
+            link_bpm: 0.0,
         }
     }
 }
@@ -136,6 +171,12 @@ impl VersoApp {
             .map(|m| m.poll())
             .unwrap_or_default();
         for event in midi_events {
+            if self.controls.tc_source == TcSource::Mtc
+                && let Some(tc) = self.controls.mtc.push(&event.bytes)
+            {
+                self.controls.mtc_clock.set(tc);
+                continue;
+            }
             let Some((key, value)) = MidiKey::parse(&event.bytes) else {
                 continue;
             };
@@ -171,7 +212,88 @@ impl VersoApp {
         } else {
             self.controls.levels = Levels::default();
         }
-        self.controls.beats += dt * self.comp.bpm as f64 / 60.0;
+        #[cfg(feature = "link")]
+        let link = self.controls.link.as_mut();
+        #[cfg(not(feature = "link"))]
+        let link: Option<&mut NoLink> = None;
+        match link {
+            Some(link) => {
+                let (bpm, beats) = link.capture();
+                let bpm = bpm as f32;
+                if (self.comp.bpm - self.controls.link_bpm).abs() > 0.01 {
+                    // Changed here (tap, fader, MIDI): lead the session.
+                    link.set_tempo(self.comp.bpm as f64);
+                    self.controls.link_bpm = self.comp.bpm;
+                } else if (bpm - self.comp.bpm).abs() > 0.01 {
+                    // Changed by another peer: follow.
+                    self.controls.link_bpm = bpm;
+                    self.send_live(Command::SetBpm(bpm));
+                }
+                // Beats follow the session phase, so LFOs and beat()
+                // scripts land on the same downbeat as the other apps.
+                self.controls.beats = beats;
+            }
+            None => self.controls.beats += dt * self.comp.bpm as f64 / 60.0,
+        }
+        self.update_timecode();
+    }
+
+    /// Reads the timecode source and fires the cues passed since last frame.
+    fn update_timecode(&mut self) {
+        use verso_control::timecode::TimecodeClock;
+        let clock: Option<TimecodeClock> = match self.controls.tc_source {
+            TcSource::Off => None,
+            TcSource::Mtc => Some(self.controls.mtc_clock),
+            TcSource::Ltc(_) => self
+                .controls
+                .audio
+                .as_ref()
+                .and_then(|a| a.ltc())
+                .map(|(_, clock)| clock),
+        };
+        self.controls.timecode = clock.and_then(|c| Some((c.current()?, c.seconds()?)));
+        let now = self.controls.timecode.map(|(_, s)| s);
+        if let (Some(from), Some(to)) = (self.controls.last_tc_seconds, now) {
+            for index in verso_core::control::Cue::passed(&self.comp.cues, from, to) {
+                let cue = self.comp.cues[index].clone();
+                self.run_action(&cue.action, cue.value);
+            }
+        }
+        self.controls.last_tc_seconds = now;
+    }
+
+    #[cfg(not(feature = "link"))]
+    pub(crate) fn toggle_link(&mut self) {
+        self.status = "This build of Verso has no Ableton Link (feature `link`)".into();
+    }
+
+    #[cfg(feature = "link")]
+    pub(crate) fn toggle_link(&mut self) {
+        if self.controls.link.take().is_some() {
+            self.status = "Left the Link session".into();
+        } else {
+            self.controls.link = Some(verso_control::link::Link::new(self.comp.bpm as f64));
+            self.controls.link_bpm = self.comp.bpm;
+            self.status = "Joined the Link session".into();
+        }
+    }
+
+    /// Applies the timecode source choice (LTC needs the audio input).
+    pub(crate) fn set_tc_source(&mut self, source: TcSource) {
+        self.controls.tc_source = source;
+        let ltc = match source {
+            TcSource::Ltc(channel) => Some(channel),
+            _ => None,
+        };
+        if ltc.is_some() && self.controls.audio.is_none() {
+            self.start_audio();
+        }
+        if let Some(audio) = &mut self.controls.audio {
+            audio.set_ltc_channel(ltc);
+        }
+        if source == TcSource::Mtc && self.controls.midi.is_none() {
+            self.status = "MTC: open the MIDI inputs (Control › MIDI) to receive timecode".into();
+        }
     }
 
     pub(crate) fn tap_tempo(&mut self) {
@@ -308,6 +430,26 @@ impl VersoApp {
             4.5,
             if on { theme::ACCENT } else { theme::BG_DEEP },
         );
+        #[cfg(feature = "link")]
+        let peers = self.controls.link.as_ref().map(|l| l.peers());
+        #[cfg(not(feature = "link"))]
+        let peers: Option<u64> = None;
+        let link_label = match peers {
+            Some(n) => egui::RichText::new(format!("LINK {n}")).color(theme::BG_DEEP),
+            None => egui::RichText::new("LINK"),
+        };
+        let link_button = egui::Button::new(link_label).fill(if peers.is_some() {
+            theme::ACCENT
+        } else {
+            theme::BG_RAISED
+        });
+        if ui
+            .add(link_button)
+            .on_hover_text("Ableton Link: share tempo and beat phase with apps on the network (number of peers)")
+            .clicked()
+        {
+            self.toggle_link();
+        }
         if ui.button("TAP").on_hover_text("Tap tempo (T)").clicked() {
             self.tap_tempo();
         }
@@ -322,6 +464,15 @@ impl VersoApp {
             .changed()
         {
             self.send(Command::SetBpm(bpm));
+        }
+        if let Some((tc, _)) = self.controls.timecode {
+            ui.separator();
+            ui.label(
+                egui::RichText::new(tc.to_string())
+                    .monospace()
+                    .color(theme::SOLO),
+            )
+            .on_hover_text(format!("Timecode ({} fps)", tc.rate.name()));
         }
         if self.controls.audio.is_some() {
             ui.separator();
@@ -406,8 +557,11 @@ impl VersoApp {
     fn start_audio(&mut self) {
         self.controls.audio = None;
         match AudioInput::start(self.controls.audio_choice.as_deref()) {
-            Ok(input) => {
+            Ok(mut input) => {
                 self.status = format!("Audio: {}", input.name());
+                if let TcSource::Ltc(channel) = self.controls.tc_source {
+                    input.set_ltc_channel(Some(channel));
+                }
                 self.controls.audio = Some(input);
             }
             Err(e) => self.status = e.to_string(),
@@ -580,6 +734,9 @@ impl VersoApp {
         }
 
         ui.add_space(8.0);
+        self.timecode_section(ui);
+
+        ui.add_space(8.0);
         widgets::header(ui, "Modulation");
         if self.comp.modulators.is_empty() {
             ui.label(
@@ -676,5 +833,135 @@ impl VersoApp {
                 .monospace()
                 .color(theme::TEXT_DIM),
         );
+    }
+}
+
+impl VersoApp {
+    fn timecode_section(&mut self, ui: &mut egui::Ui) {
+        widgets::header(ui, "Timecode");
+        let channels = self
+            .controls
+            .audio
+            .as_ref()
+            .map(|a| a.channels())
+            .unwrap_or(2);
+        let label = |source: TcSource| match source {
+            TcSource::Off => "Off".to_owned(),
+            TcSource::Mtc => "MIDI (MTC)".to_owned(),
+            TcSource::Ltc(c) => format!("Audio LTC · channel {}", c + 1),
+        };
+        ui.horizontal(|ui| {
+            ui.label("Source");
+            let mut source = self.controls.tc_source;
+            egui::ComboBox::from_id_salt("tc source")
+                .selected_text(label(source))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut source, TcSource::Off, label(TcSource::Off));
+                    ui.selectable_value(&mut source, TcSource::Mtc, label(TcSource::Mtc));
+                    for c in 0..channels.min(8) {
+                        ui.selectable_value(&mut source, TcSource::Ltc(c), label(TcSource::Ltc(c)));
+                    }
+                });
+            if source != self.controls.tc_source {
+                self.set_tc_source(source);
+            }
+            let text = match (self.controls.tc_source, self.controls.timecode) {
+                (TcSource::Off, _) => String::new(),
+                (_, Some((tc, _))) => format!("{tc}  ({} fps)", tc.rate.name()),
+                (_, None) => "no signal".into(),
+            };
+            ui.label(egui::RichText::new(text).monospace().color(theme::TEXT_DIM));
+        });
+
+        ui.label(
+            egui::RichText::new(
+                "Cues fire an OSC address when the timecode plays past them (jumps do not fire).",
+            )
+            .small()
+            .color(theme::TEXT_DIM),
+        );
+        let mut remove = None;
+        let mut edit = None;
+        for (index, cue) in self.comp.cues.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut seconds = cue.seconds;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.0..=86_400.0)
+                            .speed(0.04)
+                            .custom_formatter(|v, _| format_seconds(v)),
+                    )
+                    .changed()
+                {
+                    edit = Some((
+                        index,
+                        verso_core::control::Cue {
+                            seconds,
+                            ..cue.clone()
+                        },
+                    ));
+                }
+                ui.label(egui::RichText::new(cue.action.address()).monospace());
+                if ui.small_button("✕").on_hover_text("Remove cue").clicked() {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some((index, cue)) = edit {
+            self.send(Command::SetCue { index, cue });
+        }
+        if let Some(index) = remove {
+            self.send(Command::RemoveCue(index));
+        }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.controls.cue_address)
+                    .desired_width(180.0)
+                    .hint_text("/column/1/launch"),
+            );
+            let at = self.controls.timecode.map(|(_, s)| s).unwrap_or(0.0);
+            let action = Action::parse(self.controls.cue_address.trim());
+            if ui
+                .add_enabled(
+                    action.is_some(),
+                    egui::Button::new(format!("Add at {}", format_seconds(at))),
+                )
+                .on_hover_text("Adds a cue at the current timecode; drag its time to adjust")
+                .on_disabled_hover_text("Not a Verso OSC address")
+                .clicked()
+                && let Some(action) = action
+            {
+                self.send(Command::AddCue(verso_core::control::Cue {
+                    seconds: at,
+                    action,
+                    value: 1.0,
+                }));
+            }
+        });
+    }
+}
+
+/// `h:mm:ss.ss` for cue times.
+fn format_seconds(seconds: f64) -> String {
+    let total = seconds.max(0.0);
+    let h = (total / 3600.0) as u64;
+    let m = (total / 60.0) as u64 % 60;
+    let s = total % 60.0;
+    format!("{h}:{m:02}:{s:05.2}")
+}
+
+/// Stand-in for builds without Ableton Link: has no values.
+#[cfg(not(feature = "link"))]
+enum NoLink {}
+
+#[cfg(not(feature = "link"))]
+impl NoLink {
+    fn capture(&mut self) -> (f64, f64) {
+        match *self {}
+    }
+
+    fn set_tempo(&mut self, _bpm: f64) {
+        match *self {}
     }
 }

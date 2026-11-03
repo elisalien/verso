@@ -238,3 +238,29 @@ exécution — atténué par T2) et T5 (thread de rendu séparé, prévu en v0.4
 - **CI** : GitHub Actions Linux/Windows/macOS (fmt, clippy `-D warnings`,
   tests ; GPU logiciel lavapipe sous Linux) + `cargo deny` (failles, licences,
   sources). `VERSO_TRACE=1` affiche chaque commande.
+
+### v0.4 — fait
+
+- **Dialogues de fichiers non bloquants** (`rfd` asynchrone sondé à chaque
+  frame) : la sortie ne gèle plus pendant Ouvrir / Enregistrer / dossiers.
+- **NDI® entrée** : source de clip `Ndi`, recherche des émetteurs dans
+  Browser › Sources, un récepteur par couche sur son thread.
+- **Spout** (Windows) et **Syphon** (macOS) en sortie, sans SDK à la
+  compilation. Vérifiés par compilation croisée (`x86_64-pc-windows-gnu`,
+  `aarch64-apple-darwin`) ; **pas testés sur machine** faute de Windows/macOS
+  ici : à valider avant un show.
+- **Ableton Link** : tempo et phase partagés (deux pairs testés en local).
+- **Timecode** : MTC et LTC (décodeur testé par aller-retour encodeur →
+  décodeur, 25 et 30 fps, passage d'heure, bruit rejeté), cues de timecode
+  enregistrées dans la composition, `t.timecode` dans Lua.
+- **Banc de mesure** : `cargo run --release -p verso-app --example bench`.
+  Sur ce conteneur (4 cœurs, GPU logiciel llvmpipe, non représentatif) :
+  décodage FFmpeg 1080p ≈ 185 fps H.264 / 122 fps HAP pour un lecteur, mais
+  ≈ 36 fps par lecteur à 4 en parallèle → le chemin FFmpeg→RGBA est le goulot,
+  ce qui confirme la priorité du HAP natif (v0.4.x).
+
+**Reporté** : séparer le rendu du thread UI. La fenêtre de sortie est une
+vue egui dessinée par le thread UI ; un thread de rendu seul ne la libère pas.
+Il faut une fenêtre de sortie avec sa propre surface wgpu présentée hors du
+thread UI, à faire avec le mapping multi-sorties (v0.5), où chaque sortie aura
+sa surface. Les dialogues bloquants, principale cause de gel, sont réglés.

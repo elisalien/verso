@@ -7,6 +7,7 @@ use eframe::{egui_wgpu, wgpu};
 use verso_core::{Clip, Command, Composition, IndexChanges, Source};
 use verso_render::{Renderer, Thumbnails};
 
+use crate::dialogs::{FileDialogs, FileRequest};
 use crate::history::{self, History};
 use crate::media::Media;
 use crate::prefs::{Prefs, recovery};
@@ -91,6 +92,7 @@ pub struct VersoApp {
     /// Set once the user agreed to close with unsaved changes.
     quit_confirmed: bool,
     title: String,
+    file_dialogs: FileDialogs,
     /// Prints every command to stderr (`VERSO_TRACE=1`), for debugging.
     trace: bool,
 }
@@ -273,6 +275,7 @@ impl VersoApp {
             last_autosave: Instant::now(),
             quit_confirmed: false,
             title: String::new(),
+            file_dialogs: FileDialogs::default(),
             trace: std::env::var_os("VERSO_TRACE").is_some(),
             controls: Default::default(),
             scripts: Default::default(),
@@ -523,7 +526,7 @@ impl VersoApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() || self.dialog.is_some() {
+        if ctx.egui_wants_keyboard_input() || self.dialog.is_some() || self.file_dialogs.is_open() {
             return;
         }
         use egui::{Key, Modifiers};
@@ -683,15 +686,52 @@ impl VersoApp {
         }
     }
 
+    /// Saves to the current file, or asks for one; `then` runs once saved.
+    fn save_then(&mut self, save_as: bool, then: Option<AfterSave>) {
+        match (&self.path, save_as) {
+            (Some(path), false) => {
+                let path = path.clone();
+                self.save_to(path);
+                if let Some(then) = then.filter(|_| !self.dirty) {
+                    self.after_save(then);
+                }
+            }
+            _ => self.file_request(FileRequest::SaveAs(then)),
+        }
+    }
+
     fn save(&mut self, save_as: bool) {
-        let path = match (&self.path, save_as) {
-            (Some(path), false) => Some(path.clone()),
-            _ => rfd::FileDialog::new()
-                .add_filter("Verso composition", &["verso"])
-                .set_file_name(format!("{}.verso", self.comp.name))
-                .save_file(),
-        };
+        self.save_then(save_as, None);
+    }
+
+    pub(crate) fn file_request(&mut self, request: FileRequest) {
+        self.file_dialogs.start(request, &self.comp.name);
+    }
+
+    /// Acts on a file dialog that just closed.
+    fn file_chosen(&mut self, request: FileRequest, path: Option<PathBuf>) {
         let Some(path) = path else { return };
+        match request {
+            FileRequest::SaveAs(then) => {
+                self.save_to(path);
+                if let Some(then) = then.filter(|_| !self.dirty) {
+                    self.after_save(then);
+                }
+            }
+            FileRequest::Open => self.open_path(path),
+            FileRequest::Relink => self.relink_media(&path),
+            FileRequest::FilesFolder => self.files.open(path),
+            FileRequest::EffectsFolder => {
+                let errors = self.renderer.library_mut().load_dir(&path);
+                self.status = format!("Loaded effects from {}", path.display());
+                for error in errors {
+                    self.problem(error);
+                }
+            }
+        }
+    }
+
+    fn save_to(&mut self, path: PathBuf) {
         let result = self
             .comp
             .to_ron()
@@ -710,13 +750,7 @@ impl VersoApp {
     }
 
     fn open(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Verso composition", &["verso"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.open_path(path);
+        self.file_request(FileRequest::Open);
     }
 
     pub(crate) fn open_path(&mut self, path: PathBuf) {
@@ -1028,6 +1062,9 @@ impl VersoApp {
 
 impl eframe::App for VersoApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some((request, path)) = self.file_dialogs.poll() {
+            self.file_chosen(request, path);
+        }
         let now = Instant::now();
         self.frame_dt = (now - self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -1157,17 +1194,14 @@ impl VersoApp {
         }
     }
 
-    fn relink_media(&mut self) {
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
-            return;
-        };
+    fn relink_media(&mut self, dir: &std::path::Path) {
         let missing = missing_media(&self.comp);
         let names: Vec<_> = missing
             .iter()
             .filter_map(|p| p.file_name())
             .map(|n| n.to_owned())
             .collect();
-        let found = find_files(&dir, &names);
+        let found = find_files(dir, &names);
         let mut relinked = 0;
         for layer in &mut self.comp.layers {
             for clip in layer.clips.iter_mut().flatten() {
@@ -1268,12 +1302,7 @@ impl VersoApp {
         let Some(choice) = choice else { return };
         self.dialog = None;
         match (dialog, choice) {
-            (Dialog::Unsaved(then), 1) => {
-                self.save(false);
-                if !self.dirty {
-                    self.after_save(then);
-                }
-            }
+            (Dialog::Unsaved(then), 1) => self.save_then(false, Some(then)),
             (Dialog::Unsaved(then), 2) => self.after_save(then),
             (Dialog::Recover, 1) => {
                 let recovered = recovery::autosave_path()
@@ -1289,7 +1318,7 @@ impl VersoApp {
                 }
             }
             (Dialog::Recover, _) => recovery::discard(),
-            (Dialog::Missing(_), 1) => self.relink_media(),
+            (Dialog::Missing(_), 1) => self.file_request(FileRequest::Relink),
             _ => {}
         }
     }

@@ -67,6 +67,15 @@ struct LayerPlayer {
     texture: Option<Texture>,
 }
 
+/// Live NDI® input of one layer.
+struct LayerLive {
+    name: String,
+    column: usize,
+    receiver: Option<verso_io::ndi::NdiReceiver>,
+    error: Option<String>,
+    texture: Option<Texture>,
+}
+
 /// Result of a worker thread.
 enum Loaded {
     Still(PathBuf, verso_media::Result<Frame>),
@@ -83,6 +92,10 @@ pub struct Media {
     players: Vec<Option<LayerPlayer>>,
     /// Player being opened per layer: (path, column).
     opening: Vec<Option<(PathBuf, usize)>>,
+    live: Vec<Option<LayerLive>>,
+    /// NDI sources found by the last search, and a search in progress.
+    ndi_sources: Vec<String>,
+    ndi_search: Option<Receiver<Result<Vec<String>, String>>>,
     sender: Sender<Loaded>,
     receiver: Receiver<Loaded>,
 }
@@ -97,6 +110,15 @@ impl Media {
     pub fn follow(&mut self, changes: &verso_core::IndexChanges) {
         changes.apply_to_layers(&mut self.players);
         changes.apply_to_layers(&mut self.opening);
+        changes.apply_to_layers(&mut self.live);
+        for live in self.live.iter_mut() {
+            if let Some(l) = live {
+                match changes.columns.get(l.column).copied().flatten() {
+                    Some(c) => l.column = c,
+                    None => *live = None,
+                }
+            }
+        }
         let column = |c: usize| changes.columns.get(c).copied().flatten();
         for player in self.players.iter_mut() {
             if let Some(p) = player {
@@ -122,6 +144,9 @@ impl Media {
             stills: HashMap::new(),
             players: Vec::new(),
             opening: Vec::new(),
+            live: Vec::new(),
+            ndi_sources: Vec::new(),
+            ndi_search: None,
             sender,
             receiver,
         }
@@ -180,6 +205,17 @@ impl Media {
         let mut errors = Vec::new();
         self.players.resize_with(comp.layers.len(), || None);
         self.opening.resize_with(comp.layers.len(), || None);
+        self.live.resize_with(comp.layers.len(), || None);
+        self.update_live(device, queue, egui, comp, &mut errors);
+        if let Some(search) = &self.ndi_search
+            && let Ok(result) = search.try_recv()
+        {
+            self.ndi_search = None;
+            match result {
+                Ok(sources) => self.ndi_sources = sources,
+                Err(e) => errors.push(e),
+            }
+        }
 
         for loaded in self.receiver.try_iter().collect::<Vec<_>>() {
             match loaded {
@@ -272,6 +308,108 @@ impl Media {
         errors
     }
 
+    /// Opens, feeds and closes NDI receivers to match the playing clips.
+    fn update_live(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        egui: &mut egui_wgpu::Renderer,
+        comp: &Composition,
+        errors: &mut Vec<String>,
+    ) {
+        for (index, layer) in comp.layers.iter().enumerate() {
+            let wanted =
+                layer
+                    .active
+                    .zip(layer.active_clip())
+                    .and_then(|(column, clip)| match &clip.source {
+                        Source::Ndi { name } => Some((column, name)),
+                        _ => None,
+                    });
+            let Some((column, name)) = wanted else {
+                self.live[index] = None;
+                continue;
+            };
+            let current = &mut self.live[index];
+            if current
+                .as_ref()
+                .is_none_or(|l| l.name != *name || l.column != column)
+            {
+                let (receiver, error) = match verso_io::ndi::NdiReceiver::new(name) {
+                    Ok(r) => (Some(r), None),
+                    Err(e) => {
+                        errors.push(e.to_string());
+                        (None, Some(e.to_string()))
+                    }
+                };
+                *current = Some(LayerLive {
+                    name: name.clone(),
+                    column,
+                    receiver,
+                    error,
+                    texture: None,
+                });
+            }
+            let Some(live) = current else { continue };
+            let Some(frame) = live.receiver.as_mut().and_then(|r| r.take()) else {
+                continue;
+            };
+            let frame = Frame {
+                width: frame.width,
+                height: frame.height,
+                data: frame.data,
+            };
+            match &mut live.texture {
+                Some(texture) => texture.upload(device, queue, egui, &frame),
+                None => live.texture = Some(Texture::new(device, queue, egui, &frame)),
+            }
+        }
+    }
+
+    /// Starts looking for NDI sources on the network (takes a second or two).
+    pub fn search_ndi(&mut self) {
+        if self.ndi_search.is_some() {
+            return;
+        }
+        let (sender, receiver) = channel();
+        self.ndi_search = Some(receiver);
+        thread::spawn(move || {
+            let result = verso_io::ndi::find_sources(std::time::Duration::from_secs(2))
+                .map_err(|e| e.to_string());
+            let _ = sender.send(result);
+        });
+    }
+
+    pub fn ndi_searching(&self) -> bool {
+        self.ndi_search.is_some()
+    }
+
+    pub fn ndi_sources(&self) -> &[String] {
+        &self.ndi_sources
+    }
+
+    /// State of the live input of the clip at (`layer`, `column`), for the
+    /// Properties panel.
+    pub fn live_state(&self, layer: usize, column: usize) -> String {
+        match self.live.get(layer).and_then(|l| l.as_ref()) {
+            Some(live) if live.column == column => {
+                if let Some(error) = live
+                    .error
+                    .clone()
+                    .or_else(|| live.receiver.as_ref().and_then(|r| r.error()))
+                {
+                    error
+                } else {
+                    match live.receiver.as_ref().map(|r| r.received()).unwrap_or(0) {
+                        0 => "Connecting… (no frame yet)".into(),
+                        n => format!("Receiving · {n} frames"),
+                    }
+                }
+            }
+            _ => "Launch the clip to connect".into(),
+        }
+    }
+
     fn still(&self, source: &Source) -> Option<&Texture> {
         match self.stills.get(still_key(source)?) {
             Some(Still::Ready(texture)) => Some(texture),
@@ -288,6 +426,15 @@ impl Media {
     /// it is playing, else the image or poster.
     fn texture(&self, comp: &Composition, layer: usize, column: usize) -> Option<&Texture> {
         let clip = comp.layers.get(layer)?.clips.get(column)?.as_ref()?;
+        if let Source::Ndi { name } = &clip.source {
+            return self
+                .live
+                .get(layer)?
+                .as_ref()
+                .filter(|l| l.column == column && l.name == *name)?
+                .texture
+                .as_ref();
+        }
         let live = self
             .players
             .get(layer)?

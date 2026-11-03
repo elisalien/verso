@@ -3629,6 +3629,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "snap"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
+
+[[package]]
 name = "spirv"
 version = "0.4.0+sdk-1.4.341.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4080,7 +4086,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "verso-app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "eframe",
  "pollster 1.0.1",
@@ -4098,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "verso-control"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cpal",
  "midir",
@@ -4110,7 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "verso-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ron 0.10.1",
  "serde",
@@ -4119,7 +4125,7 @@ dependencies = [
 
 [[package]]
 name = "verso-io"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libloading 0.9.0",
  "objc2 0.6.5",
@@ -4131,15 +4137,16 @@ dependencies = [
 
 [[package]]
 name = "verso-media"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
+ "snap",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "verso-online"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4149,7 +4156,7 @@ dependencies = [
 
 [[package]]
 name = "verso-render"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bytemuck",
  "image",
@@ -4157,12 +4164,13 @@ dependencies = [
  "pollster 1.0.1",
  "serde_json",
  "verso-core",
+ "verso-media",
  "wgpu",
 ]
 
 [[package]]
 name = "verso-script"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "mlua",
  "verso-core",

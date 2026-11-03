@@ -5,11 +5,15 @@
 //! knows (HAP, H.264, H.265, ProRes, …) plays without linking libav. The
 //! binaries are found on `PATH`, or through `VERSO_FFMPEG` and `VERSO_FFPROBE`.
 
+pub mod hap;
+mod hap_player;
+pub mod mov;
 mod player;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+pub use hap_player::{HapFrame, HapPlayer, probe_hap};
 pub use player::VideoPlayer;
 
 #[derive(Debug, thiserror::Error)]

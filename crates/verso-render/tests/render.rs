@@ -560,3 +560,51 @@ fn generator_shader_is_a_clip_source() {
     let got = first_pixel(&render_frame(&gpu, &mut renderer, &comp, &[], 0.0));
     assert!(close(got, [0, 255, 0]), "{got:?}");
 }
+
+#[test]
+fn outgoing_clip_keeps_playing_during_transition() {
+    let Some(gpu) = gpu() else {
+        eprintln!("no GPU adapter, skipping");
+        return;
+    };
+    let mut comp = Composition::new("fade", 1, 2);
+    comp.width = 32;
+    comp.height = 16;
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 0,
+        clip: Some(Clip::new(
+            "plasma",
+            Source::Generator {
+                kind: verso_core::Generator::Plasma,
+                color: WHITE,
+                speed: 20.0,
+            },
+        )),
+    })
+    .unwrap();
+    comp.apply(Command::SetClip {
+        layer: 0,
+        column: 1,
+        clip: solid([0.0, 0.0, 0.0, 0.0]),
+    })
+    .unwrap();
+    // A fade so long that its progress barely moves between the frames.
+    comp.apply(Command::SetLayerTransition {
+        layer: 0,
+        seconds: 30.0,
+    })
+    .unwrap();
+    let mut renderer = Renderer::new(&gpu.device, (32, 16));
+    comp.apply(Command::TriggerColumn(0)).unwrap();
+    render_frame(&gpu, &mut renderer, &comp, &[], 0.0);
+    comp.apply(Command::TriggerColumn(1)).unwrap();
+    let a = render_frame(&gpu, &mut renderer, &comp, &[], 0.50);
+    let b = render_frame(&gpu, &mut renderer, &comp, &[], 0.55);
+    let difference: u32 = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y) as u32).sum();
+    // A frozen outgoing image would only change by the fade step (0.2 %).
+    assert!(
+        difference > 32 * 16 * 4,
+        "outgoing generator froze: {difference}"
+    );
+}

@@ -264,3 +264,20 @@ vue egui dessinée par le thread UI ; un thread de rendu seul ne la libère pas.
 Il faut une fenêtre de sortie avec sa propre surface wgpu présentée hors du
 thread UI, à faire avec le mapping multi-sorties (v0.5), où chaque sortie aura
 sa surface. Les dialogues bloquants, principale cause de gel, sont réglés.
+
+### v0.4.1 — fait
+
+- **HAP natif sur GPU** : démuxeur MOV, sections HAP simples et par blocs,
+  Snappy, upload BC1/BC3/BC7 direct, HAP Q converti en YCoCg→RGB dans le
+  shader. Testé : décodage de fichiers réels encodés par FFmpeg (5 variantes),
+  rendu GPU comparé au décodage FFmpeg (±6/255 par canal), fichier corrompu
+  rejeté sans panique. Repli automatique sur FFmpeg (GPU sans BC, Hap Q Alpha).
+- **Seek** : immédiat en HAP ; relance FFmpeg avec `-ss` sinon. Curseur de
+  position dans Properties › Clip pendant la lecture.
+- **Lecture arrière** (vitesse négative) en HAP natif.
+- **Fondus** : le clip sortant continue de jouer (vidéo, générateurs,
+  shaders). Test de non-régression qui échoue avec l'ancien comportement figé.
+- **Banc** : décodage HAP natif ≈ 4 900 images/s par lecteur sur ce conteneur
+  (contre ≈ 33 via FFmpeg à 4 lecteurs). Le chemin complet 4 × 1080p60 y est
+  limité par le compositing sur GPU logiciel (≈ 5 fps) : la mesure du critère
+  60 fps doit se faire sur la machine de show.

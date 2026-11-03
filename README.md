@@ -4,12 +4,14 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.4. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.4.1. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
 > control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
 > Lua scripts. Ableton Link, MIDI and audio (LTC) timecode with cues, NDI® input
-> and output, Spout (Windows) and Syphon (macOS) output.
+> and output, Spout (Windows) and Syphon (macOS) output. HAP plays natively on
+> the GPU (instant seeking, reverse playback) and outgoing clips keep playing
+> during transitions.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 ## Requirements
@@ -67,6 +69,7 @@ cargo run --release -p verso-app
 | Control › Timecode | Read MIDI Time Code or LTC on an audio channel; add cues that fire an OSC address at a timecode |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |
+| Properties › Clip › Position / Speed | Scrub a playing video; HAP files also play backwards (negative speed) |
 | ⚠ in the status bar | Problems of the session (media, effects, GPU, repaired files) |
 | Composition › Preferences… | Click behaviour, interface size, recovery copy, reopen last file |
 

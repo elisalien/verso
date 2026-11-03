@@ -22,10 +22,16 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn spawn(path: &Path, size: (u32, u32)) -> Result<Self> {
+    /// Starts decoding `path` from `start` seconds.
+    fn spawn(path: &Path, size: (u32, u32), start: f64) -> Result<Self> {
         let program = tool_path("ffmpeg");
         let mut cmd = command(&program);
         cmd.args(["-v", "error", "-hwaccel", "auto"]);
+        if start > 0.0 {
+            // Before the input: fast seek to the nearest key frame, then
+            // decode up to `start`.
+            cmd.arg("-ss").arg(format!("{start:.3}"));
+        }
         input(&mut cmd, path)?;
         let mut child = cmd
             .args(["-an", "-vf"])
@@ -93,7 +99,7 @@ impl VideoPlayer {
             path: path.to_owned(),
             info,
             size,
-            decoder: Decoder::spawn(path, size)?,
+            decoder: Decoder::spawn(path, size, 0.0)?,
             position: 0.0,
             received: 0,
             current: None,
@@ -121,11 +127,28 @@ impl VideoPlayer {
 
     /// Restarts from the first frame.
     pub fn restart(&mut self) -> Result<()> {
-        self.decoder = Decoder::spawn(&self.path, self.size)?;
-        self.position = 0.0;
-        self.received = 0;
+        self.seek(0.0)
+    }
+
+    /// Jumps to `seconds`. FFmpeg restarts there, so this takes a moment with
+    /// long-GOP codecs; HAP files use [`crate::HapPlayer`] instead.
+    pub fn seek(&mut self, seconds: f64) -> Result<()> {
+        let end = self.info.duration.unwrap_or(f64::INFINITY);
+        let seconds = if seconds.is_finite() {
+            seconds.clamp(0.0, (end - 1.0 / self.info.fps).max(0.0))
+        } else {
+            0.0
+        };
+        self.decoder = Decoder::spawn(&self.path, self.size, seconds)?;
+        self.position = seconds * self.info.fps;
+        self.received = self.position.floor() as u64;
         self.ended = false;
         Ok(())
+    }
+
+    /// Position of the shown frame, in seconds.
+    pub fn position(&self) -> f64 {
+        self.received.saturating_sub(1) as f64 / self.info.fps
     }
 
     /// Moves playback forward by `dt` seconds at `speed`, and returns the frame

@@ -103,7 +103,7 @@ fn repair_source(source: &mut Source, fixes: &mut Vec<String>, at: &str) {
     }
     match source {
         Source::Generator { speed, .. } => *speed = finite(*speed, 1.0, -100.0, 100.0),
-        Source::Video { speed, .. } => *speed = finite(*speed, 1.0, 0.0, 100.0),
+        Source::Video { speed, .. } => *speed = finite(*speed, 1.0, -100.0, 100.0),
         Source::Shader(effect) => repair_effects(std::slice::from_mut(effect), fixes, at),
         _ => {}
     }

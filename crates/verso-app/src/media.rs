@@ -10,8 +10,9 @@ use std::thread;
 use eframe::egui::TextureId;
 use eframe::{egui_wgpu, wgpu};
 use verso_core::{Composition, Source};
-use verso_media::{Frame, VideoPlayer};
-use verso_render::{MediaTexture, MediaView};
+use verso_media::hap::HapFormat;
+use verso_media::{Frame, HapPlayer, VideoPlayer};
+use verso_render::{MediaFormat, MediaTexture, MediaView};
 
 /// Poster size for video clip cells.
 const POSTER: (u32, u32) = (320, 180);
@@ -19,6 +20,92 @@ const POSTER: (u32, u32) = (320, 180);
 struct Texture {
     texture: MediaTexture,
     id: TextureId,
+}
+
+fn media_format(format: HapFormat) -> MediaFormat {
+    match format {
+        HapFormat::Bc1 => MediaFormat::Bc1,
+        HapFormat::Bc3 => MediaFormat::Bc3,
+        HapFormat::YCoCgBc3 => MediaFormat::YCoCgBc3,
+        HapFormat::Bc7 => MediaFormat::Bc7,
+    }
+}
+
+/// A video file being played: natively for HAP when the GPU reads BC
+/// textures, else through FFmpeg.
+enum Player {
+    Ffmpeg(VideoPlayer),
+    Hap(HapPlayer),
+}
+
+impl Player {
+    fn restart(&mut self) -> verso_media::Result<()> {
+        match self {
+            Player::Ffmpeg(p) => p.restart(),
+            Player::Hap(p) => {
+                p.restart();
+                Ok(())
+            }
+        }
+    }
+
+    fn seek(&mut self, seconds: f64) -> verso_media::Result<()> {
+        match self {
+            Player::Ffmpeg(p) => p.seek(seconds),
+            Player::Hap(p) => {
+                p.seek(seconds);
+                Ok(())
+            }
+        }
+    }
+
+    fn position(&self) -> f64 {
+        match self {
+            Player::Ffmpeg(p) => p.position(),
+            Player::Hap(p) => p.position(),
+        }
+    }
+
+    fn duration(&self) -> Option<f64> {
+        match self {
+            Player::Ffmpeg(p) => p.info().duration,
+            Player::Hap(p) => p.info().duration,
+        }
+    }
+
+    /// Advances and uploads the new frame into `texture`, if any.
+    #[allow(clippy::too_many_arguments)]
+    fn advance(
+        &mut self,
+        dt: f64,
+        speed: f64,
+        looping: bool,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        egui: &mut egui_wgpu::Renderer,
+        texture: &mut Option<Texture>,
+    ) -> verso_media::Result<()> {
+        match self {
+            Player::Ffmpeg(p) => {
+                if let Some(frame) = p.advance(dt, speed, looping)? {
+                    match texture {
+                        Some(t) => t.upload(device, queue, egui, frame),
+                        None => *texture = Some(Texture::new(device, queue, egui, frame)),
+                    }
+                }
+            }
+            Player::Hap(p) => {
+                if let Some(frame) = p.advance(dt, speed, looping)? {
+                    let format = media_format(frame.format);
+                    let size = (frame.width, frame.height);
+                    let t =
+                        texture.get_or_insert_with(|| Texture::empty(device, egui, size, format));
+                    t.upload_as(device, queue, egui, size, format, &frame.data);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Texture {
@@ -33,6 +120,41 @@ impl Texture {
         texture.upload(device, queue, size, &frame.data);
         let id = egui.register_native_texture(device, texture.view(), wgpu::FilterMode::Linear);
         Self { texture, id }
+    }
+
+    fn empty(
+        device: &wgpu::Device,
+        egui: &mut egui_wgpu::Renderer,
+        size: (u32, u32),
+        format: MediaFormat,
+    ) -> Self {
+        let texture = MediaTexture::with_format(device, size, format);
+        let id = egui.register_native_texture(device, texture.view(), wgpu::FilterMode::Linear);
+        Self { texture, id }
+    }
+
+    fn upload_as(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        egui: &mut egui_wgpu::Renderer,
+        size: (u32, u32),
+        format: MediaFormat,
+        data: &[u8],
+    ) {
+        if self.texture.upload_as(device, queue, size, format, data) {
+            egui.update_egui_texture_from_wgpu_texture(
+                device,
+                self.texture.view(),
+                wgpu::FilterMode::Linear,
+                self.id,
+            );
+        }
+    }
+
+    /// Whether egui can show it as is (HAP Q holds YCoCg, not colors).
+    fn displayable(&self) -> bool {
+        self.texture.format() != MediaFormat::YCoCgBc3
     }
 
     fn upload(
@@ -63,8 +185,17 @@ enum Still {
 struct LayerPlayer {
     path: PathBuf,
     column: usize,
-    player: VideoPlayer,
+    player: Player,
     texture: Option<Texture>,
+}
+
+/// A video still playing while its layer fades to another clip.
+struct Outgoing {
+    player: LayerPlayer,
+    /// Seconds of fade left.
+    remaining: f64,
+    speed: f64,
+    looping: bool,
 }
 
 /// Live NDI® input of one layer.
@@ -83,7 +214,7 @@ enum Loaded {
         layer: usize,
         path: PathBuf,
         column: usize,
-        player: verso_media::Result<VideoPlayer>,
+        player: verso_media::Result<Player>,
     },
 }
 
@@ -92,10 +223,13 @@ pub struct Media {
     players: Vec<Option<LayerPlayer>>,
     /// Player being opened per layer: (path, column).
     opening: Vec<Option<(PathBuf, usize)>>,
+    outgoing: Vec<Option<Outgoing>>,
     live: Vec<Option<LayerLive>>,
     /// NDI sources found by the last search, and a search in progress.
     ndi_sources: Vec<String>,
     ndi_search: Option<Receiver<Result<Vec<String>, String>>>,
+    /// The GPU reads BC textures: HAP plays without FFmpeg.
+    native_hap: bool,
     sender: Sender<Loaded>,
     receiver: Receiver<Loaded>,
 }
@@ -111,6 +245,7 @@ impl Media {
         changes.apply_to_layers(&mut self.players);
         changes.apply_to_layers(&mut self.opening);
         changes.apply_to_layers(&mut self.live);
+        changes.apply_to_layers(&mut self.outgoing);
         for live in self.live.iter_mut() {
             if let Some(l) = live {
                 match changes.columns.get(l.column).copied().flatten() {
@@ -144,9 +279,11 @@ impl Media {
             stills: HashMap::new(),
             players: Vec::new(),
             opening: Vec::new(),
+            outgoing: Vec::new(),
             live: Vec::new(),
             ndi_sources: Vec::new(),
             ndi_search: None,
+            native_hap: false,
             sender,
             receiver,
         }
@@ -178,9 +315,12 @@ impl Media {
             return;
         }
         self.opening[layer] = wanted;
-        let (path, sender) = (path.to_owned(), self.sender.clone());
+        let (path, sender, native) = (path.to_owned(), self.sender.clone(), self.native_hap);
         thread::spawn(move || {
-            let player = VideoPlayer::open(&path, max);
+            let player = match native.then(|| HapPlayer::open(&path).ok()).flatten() {
+                Some(hap) => Ok(Player::Hap(hap)),
+                None => VideoPlayer::open(&path, max).map(Player::Ffmpeg),
+            };
             let _ = sender.send(Loaded::Player {
                 layer,
                 path,
@@ -203,9 +343,13 @@ impl Media {
         dt: f64,
     ) -> Vec<String> {
         let mut errors = Vec::new();
+        self.native_hap = device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         self.players.resize_with(comp.layers.len(), || None);
         self.opening.resize_with(comp.layers.len(), || None);
         self.live.resize_with(comp.layers.len(), || None);
+        self.outgoing.resize_with(comp.layers.len(), || None);
         self.update_live(device, queue, egui, comp, &mut errors);
         if let Some(search) = &self.ndi_search
             && let Ok(result) = search.try_recv()
@@ -263,6 +407,48 @@ impl Media {
 
         let max = (comp.width, comp.height);
         for (index, layer) in comp.layers.iter().enumerate() {
+            // A player whose clip is no longer the playing one fades out.
+            let replaced = self.players[index].as_ref().is_some_and(|p| {
+                layer.active != Some(p.column)
+                    || layer.active_clip().and_then(|c| c.source.path()) != Some(p.path.as_path())
+            });
+            if replaced && layer.transition > 0.0 && self.outgoing[index].is_none() {
+                let speed = layer
+                    .clips
+                    .get(self.players[index].as_ref().map(|p| p.column).unwrap_or(0))
+                    .and_then(|c| c.as_ref())
+                    .map(|c| match c.source {
+                        Source::Video { speed, looping, .. } => (speed as f64, looping),
+                        _ => (1.0, true),
+                    })
+                    .unwrap_or((1.0, true));
+                self.outgoing[index] = self.players[index].take().map(|player| Outgoing {
+                    player,
+                    remaining: layer.transition as f64,
+                    speed: speed.0,
+                    looping: speed.1,
+                });
+            }
+            if let Some(out) = &mut self.outgoing[index] {
+                out.remaining -= dt;
+                let done = out.remaining <= 0.0
+                    || out
+                        .player
+                        .player
+                        .advance(
+                            dt,
+                            out.speed,
+                            out.looping,
+                            device,
+                            queue,
+                            egui,
+                            &mut out.player.texture,
+                        )
+                        .is_err();
+                if done {
+                    self.outgoing[index] = None;
+                }
+            }
             let video =
                 layer
                     .active
@@ -293,12 +479,17 @@ impl Media {
             {
                 errors.push(e.to_string());
             }
-            match playing.player.advance(dt, speed as f64, looping) {
-                Ok(Some(frame)) => match &mut playing.texture {
-                    Some(texture) => texture.upload(device, queue, egui, frame),
-                    None => playing.texture = Some(Texture::new(device, queue, egui, frame)),
-                },
-                Ok(None) => {}
+            let result = playing.player.advance(
+                dt,
+                speed as f64,
+                looping,
+                device,
+                queue,
+                egui,
+                &mut playing.texture,
+            );
+            match result {
+                Ok(()) => {}
                 Err(e) => {
                     errors.push(e.to_string());
                     self.players[index] = None;
@@ -451,8 +642,54 @@ impl Media {
         layer: usize,
         column: usize,
     ) -> Option<(TextureId, (u32, u32))> {
+        let clip = comp.layers.get(layer)?.clips.get(column)?.as_ref()?;
         self.texture(comp, layer, column)
+            .filter(|t| t.displayable())
+            .or_else(|| self.still(&clip.source))
             .map(|t| (t.id, t.texture.size()))
+    }
+
+    /// Playing video of the clip at (`layer`, `column`).
+    fn playing(&self, layer: usize, column: usize) -> Option<&LayerPlayer> {
+        self.players
+            .get(layer)?
+            .as_ref()
+            .filter(|p| p.column == column)
+    }
+
+    /// Position and duration in seconds of the clip's video while it plays,
+    /// and whether it can play backwards (HAP read natively).
+    pub fn playback(&self, layer: usize, column: usize) -> Option<(f64, Option<f64>, bool)> {
+        let playing = self.playing(layer, column)?;
+        Some((
+            playing.player.position(),
+            playing.player.duration(),
+            matches!(playing.player, Player::Hap(_)),
+        ))
+    }
+
+    /// Jumps the video of the clip at (`layer`, `column`) to `seconds`.
+    pub fn seek(&mut self, layer: usize, column: usize, seconds: f64) -> Option<String> {
+        let playing = self
+            .players
+            .get_mut(layer)?
+            .as_mut()
+            .filter(|p| p.column == column)?;
+        playing.player.seek(seconds).err().map(|e| e.to_string())
+    }
+
+    /// Frame of the video each layer is fading out of, in layer order.
+    pub fn outgoing_views(&self) -> Vec<Option<MediaView<'_>>> {
+        self.outgoing
+            .iter()
+            .map(|o| {
+                o.as_ref()?
+                    .player
+                    .texture
+                    .as_ref()
+                    .map(|t| t.texture.media_view())
+            })
+            .collect()
     }
 
     /// Frame to composite for each layer, in layer order.

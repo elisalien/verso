@@ -102,7 +102,7 @@ Composition
 |---|---|---|
 | Images (PNG, JPEG, BMP, WebP, TGA, TIFF) | crate `image`, thread de chargement | v0.2 ✅ |
 | Vidéo : HAP, H.264, H.265, ProRes, GIF… | processus `ffmpeg` → pipe RGBA, `-hwaccel auto` | v0.2 ✅ |
-| HAP natif (upload BC1/BC3/BC7 sans conversion) | démuxage MOV + Snappy | plus tard |
+| HAP natif (upload BC1/BC3/BC7 sans conversion) | démuxage MOV + Snappy | v0.4.1 ✅ |
 | Shaders génératifs | WGSL natif, ISF transpilé | v0.1 / v0.2 |
 
 **Décision : FFmpeg en processus, pas libav lié.** Chaque clip vidéo actif lance
@@ -118,7 +118,18 @@ sur des threads ; la boucle de rendu n'attend jamais le disque. Pendant
 l'ouverture, la couche affiche le poster du clip.
 
 Le HAP est le format recommandé en live : décodage CPU minimal, scrubbing et
-lecture inversée sans coût. Les codecs inter-frames (H.264/H.265) ont un scrubbing
+lecture inversée sans coût. **HAP natif (v0.4.1)** : quand le GPU a les textures
+BC (`TEXTURE_COMPRESSION_BC`, demandé au démarrage), les fichiers `Hap1` (BC1),
+`Hap5` (BC3), `HapY` (HAP Q, YCoCg en BC3 converti dans le shader) et `Hap7`
+(BC7) sont lus sans FFmpeg : démuxeur QuickTime minimal (`verso-media::mov`,
+tailles vérifiées avant allocation), sections HAP simples ou « complex » par
+blocs, Snappy (`snap`). Un thread lit/décompresse en avance dans le sens de
+lecture ; le seek est immédiat et la vitesse peut être négative. Hap Q Alpha et
+les autres variantes repassent par FFmpeg, qui reste aussi utilisé pour les
+vignettes. Vérifié au pixel contre le décodage FFmpeg du même fichier.
+
+Seek FFmpeg : relance du processus avec `-ss` (rapide sur les images clés,
+plus lent en H.264/H.265 longue GOP). Les codecs inter-frames (H.264/H.265) ont un scrubbing
 lent ; l'UI le signalera et proposera une conversion HAP via FFmpeg.
 
 ## 7. Effets
@@ -179,10 +190,11 @@ multi-passe, vertex shader personnalisé (`varying`).
 
 ### Transitions
 
-Durée par couche (0 = coupe). Au changement de clip, la dernière image affichée
-est figée puis fondue vers le nouveau clip ; l'éjection fond vers le vide.
-Limite actuelle : une vidéo sortante est figée sur sa dernière image pendant le
-fondu au lieu de continuer à jouer. Seul le fondu enchaîné existe.
+Durée par couche (0 = coupe). Au changement de clip, le clip sortant continue
+de jouer pendant le fondu (générateurs, shaders, et vidéo : son lecteur est
+gardé jusqu'à la fin du fondu) ; l'éjection fond vers le vide. Un changement
+pendant un fondu repart de l'image mélangée figée. Seul le fondu enchaîné
+existe.
 
 ### Groupes
 
@@ -325,6 +337,7 @@ composition.
 | **v0.1 Core** | Grille couches × colonnes, sources génératives WGSL et couleurs, blend modes, opacité, master, preview, sortie plein écran, sauvegarde `.verso` | Un set de 30 min jouable au clavier/souris |
 | v0.2 Médias ✅ | FFmpeg, HAP, images, effets ISF/WGSL sur clip/couche/groupe/composition, transitions, groupes | Lecture HAP 1080p × 4 couches à 60 fps (à mesurer) |
 | v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
+| v0.4.1 Médias ✅ | HAP natif GPU, seek, lecture arrière, sortante vivante en fondu | 4 × HAP 1080p60 (banc fourni) |
 | v0.4 Interop ✅ | Spout, Syphon, NDI entrée/sortie, Link, MTC/LTC, banc de mesure | Échange avec TouchDesigner/OBS (à valider sur machine) |
 | v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
 

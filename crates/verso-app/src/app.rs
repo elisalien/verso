@@ -439,9 +439,17 @@ impl VersoApp {
         );
         let rendered = self.modulated();
         let views = self.media.layer_views(&self.comp);
-        self.renderer
-            .render(device, queue, &mut encoder, &rendered, &views, time);
-        drop(views);
+        let outgoing = self.media.outgoing_views();
+        self.renderer.render_with_outgoing(
+            device,
+            queue,
+            &mut encoder,
+            &rendered,
+            &views,
+            &outgoing,
+            time,
+        );
+        drop((views, outgoing));
 
         let mut new_cells = Vec::new();
         for (l, layer) in self.comp.layers.iter().enumerate() {

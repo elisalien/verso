@@ -150,8 +150,12 @@ impl SyphonServer {
         }
         let texture = self.texture(width, height)?;
         self.bgra.clear();
-        self.bgra
-            .extend(rgba.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]));
+        self.bgra.extend(
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], p[3]]),
+        );
         let region = MTLRegion {
             origin: MTLOrigin { x: 0, y: 0, z: 0 },
             size: MTLSize {

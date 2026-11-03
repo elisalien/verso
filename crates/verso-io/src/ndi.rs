@@ -325,7 +325,7 @@ unsafe fn copy_frame(frame: &VideoFrameV2) -> Option<NdiFrame> {
         data.extend_from_slice(line);
     }
     if opaque {
-        for pixel in data.chunks_exact_mut(4) {
+        for pixel in data.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
     }

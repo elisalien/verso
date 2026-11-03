@@ -120,8 +120,10 @@ fn complex(payload: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<(), HapErr
         let (kind, body) = section(rest)?;
         let header = if rest[..3] == [0, 0, 0] { 8 } else { 4 };
         let words = || {
-            body.chunks_exact(4)
-                .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]) as usize)
+            body.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w) as usize)
                 .collect::<Vec<_>>()
         };
         match kind {

@@ -4,6 +4,7 @@ description = "Verso MilkDrop preset model, EEL interpreter and frame engine (GP
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 bytemuck.workspace = true

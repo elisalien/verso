@@ -57,7 +57,7 @@ pub struct VersoApp {
     /// Layers whose clip was launched again since the last media update.
     restarted: Vec<usize>,
     pub(crate) files: crate::panels::FileBrowser,
-    start: Instant,
+    pub(crate) start: Instant,
     last_frame: Instant,
     /// Seconds since the previous frame.
     frame_dt: f64,
@@ -93,6 +93,7 @@ pub struct VersoApp {
     quit_confirmed: bool,
     title: String,
     file_dialogs: FileDialogs,
+    pub(crate) mapping: crate::mapping_ui::MappingState,
     /// Prints every command to stderr (`VERSO_TRACE=1`), for debugging.
     trace: bool,
 }
@@ -276,6 +277,7 @@ impl VersoApp {
             quit_confirmed: false,
             title: String::new(),
             file_dialogs: FileDialogs::default(),
+            mapping: crate::mapping_ui::MappingState::load(),
             trace: std::env::var_os("VERSO_TRACE").is_some(),
             controls: Default::default(),
             scripts: Default::default(),
@@ -502,11 +504,14 @@ impl VersoApp {
                 .clip_monitor
                 .render(device, queue, &mut encoder, (), source, time),
         });
+        self.mapping
+            .render(device, queue, &mut encoder, self.renderer.output_view());
         self.outputs.capture(device, &mut encoder, &self.renderer);
         queue.submit([encoder.finish()]);
         self.outputs.deliver(device);
 
         let mut egui_renderer = self.render_state.renderer.write();
+        self.mapping.register(device, &mut egui_renderer);
         for key in new_cells {
             let view = self.cell_thumbs.view(&key).expect("just rendered");
             let id = egui_renderer.register_native_texture(device, view, wgpu::FilterMode::Linear);
@@ -729,6 +734,7 @@ impl VersoApp {
             FileRequest::Open => self.open_path(path),
             FileRequest::Relink => self.relink_media(&path),
             FileRequest::FilesFolder => self.files.open(path),
+            FileRequest::OpenMapping | FileRequest::SaveMapping => self.mapping_file(request, path),
             FileRequest::EffectsFolder => {
                 let errors = self.renderer.library_mut().load_dir(&path);
                 self.status = format!("Loaded effects from {}", path.display());
@@ -994,6 +1000,7 @@ impl VersoApp {
             });
             ui.menu_button("Output", |ui| {
                 ui.checkbox(&mut self.output_open, "Output Window (F2)");
+                self.mapping_menu(ui);
                 self.outputs_menu(ui);
             });
 
@@ -1159,12 +1166,16 @@ impl eframe::App for VersoApp {
         self.scripts_window(&ctx);
         self.output_window(&ctx);
         self.prefs_window(&ctx);
+        self.mapping_editor(&ctx);
+        self.mapping_windows(&ctx);
+        self.mapping.autosave(self.start.elapsed().as_secs_f64());
         self.problems_window(&ctx);
         self.dialog_window(&ctx);
     }
 
     fn on_exit(&mut self) {
         self.prefs.save();
+        self.mapping.save_default();
         recovery::finish();
     }
 }

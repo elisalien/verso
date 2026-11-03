@@ -323,12 +323,32 @@ pas au média : remplacer le clip le conserve. Affiché sur la vignette et sur
 le moniteur Preview, remis à zéro par clic droit. Enregistré avec la
 composition.
 
-## 9. Sorties et mapping (v0.5)
+## 9. Sorties et mapping (v0.5 ✅)
 
-- Sortie plein écran par moniteur, fenêtre flottante.
-- Slices : rectangle d'entrée dans la composition → quad de sortie.
-- Warping : grille de Bézier par slice, edge blending, masques.
-- Configuration de sortie séparée de la composition (dépend de la salle).
+Modèle sans GPU dans `verso_core::mapping`, rendu dans `verso_render::mapping`.
+
+- **Configuration de salle séparée de la composition** : `MappingSetup` (RON,
+  `*.versomap`), gardée dans le dossier utilisateur (`mapping.versomap`,
+  rechargée au démarrage) et exportable. Réparée à l'ouverture (tailles,
+  grilles, valeurs non finies).
+- **Écrans** (`Screen`) : un par projecteur, résolution propre, fenêtre
+  dédiée (viewport egui) dont la position/taille et le plein écran sont
+  mémorisés.
+- **Slices** : rectangle d'entrée dans la composition → grille de déformation
+  sur l'écran. 2×2 = corner pin avec perspective (homographie) ; jusqu'à
+  16×16 = surface Catmull-Rom passant par chaque point, maillée à 16
+  subdivisions par case.
+- **Edge blending** par bord (largeur 0–50 %, gamma) : rampe smoothstep dont
+  deux recouvrements somment à 1 en lumière linéaire.
+- **Masques** polygonaux (concaves acceptés, triangulation par oreilles),
+  inversables, rendus dans une texture R8 à la taille de l'écran (2048 max).
+- Testé : corner pin (coins exacts, centre à l'intersection des diagonales),
+  passage par les points, aire du maillage, somme des fondus, aire des
+  masques concaves, et rendu GPU au pixel (entrée, déformation, fondu, masque).
+
+Limites : les fenêtres de sortie sont dessinées par le thread UI (pas encore
+de thread de rendu séparé) ; pas de choix d'écran par nom (déplacer la fenêtre
+puis double-clic) ; pas d'annulation des éditions de mapping.
 
 ## 10. Feuille de route
 
@@ -339,7 +359,7 @@ composition.
 | v0.3 Contrôle ✅ | MIDI, OSC, learn, audio FFT/BPM, modulation (LFO, audio), Lua | Set piloté entièrement par contrôleur (à valider sur matériel) |
 | v0.4.1 Médias ✅ | HAP natif GPU, seek, lecture arrière, sortante vivante en fondu | 4 × HAP 1080p60 (banc fourni) |
 | v0.4 Interop ✅ | Spout, Syphon, NDI entrée/sortie, Link, MTC/LTC, banc de mesure | Échange avec TouchDesigner/OBS (à valider sur machine) |
-| v0.5 Mapping | Slices, warping, edge blending, multi-sorties | Mapping d'une scène à 2 projecteurs |
+| v0.5 Mapping ✅ | Écrans, slices, corner pin et grille, edge blending, masques, config de salle | Mapping d'une scène à 2 projecteurs (à valider en salle) |
 
 ## 11. Risques techniques
 

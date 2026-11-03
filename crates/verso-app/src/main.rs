@@ -7,6 +7,7 @@ mod dialogs;
 mod effects_ui;
 mod grid;
 mod history;
+mod mapping_ui;
 mod media;
 mod online_ui;
 mod outputs;

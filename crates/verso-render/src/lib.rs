@@ -9,6 +9,7 @@
 
 mod effects;
 mod grab;
+pub mod mapping;
 mod media;
 mod thumbnails;
 

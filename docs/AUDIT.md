@@ -281,3 +281,26 @@ sa surface. Les dialogues bloquants, principale cause de gel, sont réglés.
   (contre ≈ 33 via FFmpeg à 4 lecteurs). Le chemin complet 4 × 1080p60 y est
   limité par le compositing sur GPU logiciel (≈ 5 fps) : la mesure du critère
   60 fps doit se faire sur la machine de show.
+
+### v0.5 — fait
+
+- **Mapping** : écrans multiples (une fenêtre chacun, position et plein écran
+  mémorisés), slices avec rectangle d'entrée, corner pin à perspective exacte
+  ou grille courbe jusqu'à 16×16, edge blending par bord avec gamma, masques
+  polygonaux (concaves, inversables), opacité par slice.
+- **Configuration de salle** séparée de la composition (`.versomap`), gardée
+  dans le dossier utilisateur et réparée à l'ouverture.
+- **Éditeur** : listes écrans/slices, rectangle d'entrée et points de grille
+  à la souris, ajout/suppression de points de masque, vérifié dans l'appli
+  sous Xvfb (corner pin, fondu, masque, fenêtre d'écran).
+- Tests : 8 tests de géométrie + rendu GPU au pixel.
+
+## 8. Reste à faire
+
+- **Valider sur machine** Spout (Windows), Syphon (macOS), NDI (avec le
+  runtime), et le critère 60 fps avec le banc sur la machine de show.
+- **Thread de rendu séparé** avec une surface wgpu par sortie (aujourd'hui les
+  fenêtres d'écran sont des viewports egui dessinés par le thread UI).
+- Mapping : annulation des éditions, choix de l'écran physique par nom,
+  masques adoucis (feather), mire de calage.
+- Packaging (installeurs signés), documentation utilisateur, decks, DMX.

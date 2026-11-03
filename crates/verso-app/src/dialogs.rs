@@ -23,6 +23,9 @@ pub enum FileRequest {
     FilesFolder,
     /// Folder of effects to load.
     EffectsFolder,
+    /// A mapping setup to open, or a file to save it to.
+    OpenMapping,
+    SaveMapping,
 }
 
 type Pending = Pin<Box<dyn Future<Output = Option<rfd::FileHandle>>>>;
@@ -53,6 +56,17 @@ impl FileDialogs {
             FileRequest::Relink | FileRequest::FilesFolder | FileRequest::EffectsFolder => {
                 Box::pin(rfd::AsyncFileDialog::new().pick_folder())
             }
+            FileRequest::OpenMapping => Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter("Verso mapping", &["versomap"])
+                    .pick_file(),
+            ),
+            FileRequest::SaveMapping => Box::pin(
+                rfd::AsyncFileDialog::new()
+                    .add_filter("Verso mapping", &["versomap"])
+                    .set_file_name("venue.versomap")
+                    .save_file(),
+            ),
         };
         self.open = Some((request, future));
     }

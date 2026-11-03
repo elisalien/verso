@@ -4,14 +4,15 @@ Free and open source VJ software. Clip grid of layers × columns, GPU compositin
 with blend modes, live output window. Written in Rust on wgpu, for Windows, macOS
 and Linux.
 
-> Status: v0.4.1. Generative sources, images and video (any codec FFmpeg reads,
+> Status: v0.5. Generative sources, images and video (any codec FFmpeg reads,
 > including HAP and ProRes), effect chains (WGSL and ISF) on clips, layers,
 > groups and the composition, clip transitions and layer groups. OSC and MIDI
 > control with MIDI learn, audio analysis, tap tempo, LFO or audio modulation and
 > Lua scripts. Ableton Link, MIDI and audio (LTC) timecode with cues, NDI® input
 > and output, Spout (Windows) and Syphon (macOS) output. HAP plays natively on
 > the GPU (instant seeking, reverse playback) and outgoing clips keep playing
-> during transitions.
+> during transitions. Projection mapping: several screens, slices with corner
+> pin or curved warp grids, soft edges for overlapping projectors and masks.
 > See [docs/SPEC.md](docs/SPEC.md) (French) for the architecture and roadmap.
 
 ## Requirements
@@ -66,6 +67,9 @@ cargo run --release -p verso-app
 | Output › Spout / Syphon Output | Share the output with apps on the same computer (Windows: Spout; macOS: Syphon, needs `Syphon.framework` in `/Library/Frameworks`) |
 | Browser › Sources › NDI® sources › Find | List NDI senders on the network; drag one onto a cell to play it live |
 | **LINK** | Join the Ableton Link session: shared tempo and beat phase (number of peers shown) |
+| Output › Mapping Editor… | Screens (projectors) and their slices: drag the input rectangle, the warp grid points (2×2 corner pin, up to 16×16 curved), edge blend, mask points |
+| Output › Mapping Outputs | One window per screen: move it to its projector, double-click for fullscreen; position is remembered |
+| Output › Open Setup… / Save Setup As… | Mapping setups are saved apart from compositions (`.versomap`); the last one reopens at startup |
 | Control › Timecode | Read MIDI Time Code or LTC on an audio channel; add cues that fire an OSC address at a timecode |
 | Browser › Online | Search and import ISF and ShaderToy shaders (ShaderToy needs your free API key) |
 | Cell badge | Times that slot was launched; right-click › Reset Counter |

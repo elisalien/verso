@@ -7,6 +7,7 @@ mod command;
 mod composition;
 pub mod control;
 mod effect;
+pub mod mapping;
 pub mod modulation;
 mod source;
 mod structure;

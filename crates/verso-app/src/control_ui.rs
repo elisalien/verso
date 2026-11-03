@@ -903,7 +903,7 @@ impl VersoApp {
                     ));
                 }
                 ui.label(egui::RichText::new(cue.action.address()).monospace());
-                if ui.small_button("✕").on_hover_text("Remove cue").clicked() {
+                if ui.small_button("×").on_hover_text("Remove cue").clicked() {
                     remove = Some(index);
                 }
             });

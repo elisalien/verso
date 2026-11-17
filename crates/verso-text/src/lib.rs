@@ -28,9 +28,11 @@ const WDTH: Tag = Tag::from_be_bytes(*b"wdth");
 
 /// Seconds since midnight, local time.
 pub fn local_seconds() -> f64 {
-    use chrono::Timelike;
-    let now = chrono::Local::now();
-    now.num_seconds_from_midnight() as f64 + now.nanosecond() as f64 / 1e9
+    let now = jiff::Zoned::now();
+    f64::from(now.hour()) * 3600.0
+        + f64::from(now.minute()) * 60.0
+        + f64::from(now.second())
+        + f64::from(now.subsec_nanosecond()) / 1e9
 }
 
 /// Rasterized glyphs kept before the cache starts over.
@@ -105,6 +107,16 @@ impl FontFamily {
         choices.dedup();
         choices
     }
+}
+
+/// Whether a `wght` axis is on the usual 100–900 scale, so the standard
+/// weights mean something on it. Some fonts (Skia on macOS: 0.48 to 3.2)
+/// use a scale of their own; their faces are then listed as static.
+fn usable_weight_axis(lo: f32, hi: f32) -> bool {
+    hi > lo
+        && WEIGHTS
+            .iter()
+            .any(|(w, _)| (lo..=hi).contains(&f32::from(*w)))
 }
 
 /// A letter placed in the frame, at rest.
@@ -210,7 +222,7 @@ impl TextRenderer {
                     width_axis: false,
                 });
             match axes {
-                Some((Some((lo, hi)), width)) if hi > lo => {
+                Some((Some((lo, hi)), width)) if usable_weight_axis(lo, hi) => {
                     let (a, b) = family.weight_axis.unwrap_or((lo, hi));
                     family.weight_axis = Some((a.min(lo), b.max(hi)));
                     family.width_axis |= width;
@@ -812,6 +824,15 @@ mod tests {
             width_axis: true,
         };
         assert_eq!(variable.weight_choices(), vec![300, 400, 500, 600, 700]);
+    }
+
+    #[test]
+    fn weight_axis_on_another_scale_is_not_variable() {
+        assert!(usable_weight_axis(300.0, 700.0));
+        assert!(usable_weight_axis(400.0, 400.5));
+        assert!(!usable_weight_axis(0.48, 3.2), "Skia on macOS");
+        assert!(!usable_weight_axis(410.0, 490.0));
+        assert!(!usable_weight_axis(400.0, 400.0));
     }
 
     #[test]

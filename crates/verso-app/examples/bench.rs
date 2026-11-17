@@ -68,9 +68,9 @@ fn decode_native(path: &Path, count: usize, seconds: f64) -> Vec<f64> {
 /// Like [`full_path`] with HAP read natively and uploaded block-compressed.
 fn full_path_native(device: &wgpu::Device, queue: &wgpu::Queue, path: &Path, count: usize) -> f64 {
     let mut comp = generators(count);
-    for l in 0..count {
-        comp.layers[l].effects.clear();
-        comp.layers[l].clips[0] = Some(Clip::new(
+    for layer in comp.layers.iter_mut().take(count) {
+        layer.effects.clear();
+        layer.clips[0] = Some(Clip::new(
             "video",
             Source::Video {
                 path: path.to_owned(),

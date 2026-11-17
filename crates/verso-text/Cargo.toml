@@ -1,0 +1,15 @@
+[package]
+name = "verso-text"
+description = "Verso text sources: layout and per-letter animation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+cosmic-text = "0.19.0"
+# Already used by cosmic-text: rasterizes the letters of variable fonts at
+# any point of their axes, for the Breather animation.
+swash = "0.2.10"
+verso-core.workspace = true

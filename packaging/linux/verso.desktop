@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Verso
+GenericName=VJ Software
+GenericName[fr]=Logiciel VJ
+Comment=Live video mixing: clip grid, GPU effects, MilkDrop, projection mapping
+Comment[fr]=Mixage vidéo live : grille de clips, effets GPU, MilkDrop, mapping vidéo
+Exec=verso
+Icon=verso
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=VJ;video;mixing;projection;mapping;MilkDrop;OSC;MIDI;
+StartupWMClass=verso

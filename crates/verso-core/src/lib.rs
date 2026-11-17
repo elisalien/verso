@@ -1,0 +1,64 @@
+//! GPU-free composition model for Verso.
+//!
+//! Every change goes through [`Command`] so that UI, MIDI, OSC and scripts all
+//! mutate the composition the same way.
+
+pub mod blend;
+mod command;
+mod composition;
+pub mod control;
+pub mod cue;
+mod effect;
+mod groups;
+pub mod modulation;
+pub mod output;
+mod source;
+mod structure;
+pub mod text;
+mod validate;
+
+pub use blend::{BLEND_PARAM_SLOTS, BlendCategory, BlendParamKind, BlendParamSpec, BlendParams};
+pub use command::{Command, CommandKind};
+pub use composition::{
+    BlendMode, Clip, Column, Composition, FaderSide, Group, Layer, Master, Script,
+};
+pub use effect::{Effect, EffectEdit, EffectTarget, ParamValue};
+pub use source::{Generator, GeneratorParams, MilkPattern, ShapeParam, Source};
+pub use structure::IndexChanges;
+pub use validate::{MAX_SIZE, MIN_SIZE};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("layer {0} does not exist")]
+    NoLayer(usize),
+    #[error("column {0} does not exist")]
+    NoColumn(usize),
+    #[error("group {0} does not exist")]
+    NoGroup(usize),
+    #[error("clip slot is empty")]
+    NoClip,
+    #[error("effect {0} does not exist")]
+    NoEffect(usize),
+    #[error("modulator {0} does not exist")]
+    NoModulator(usize),
+    #[error("script {0} does not exist")]
+    NoScript(usize),
+    #[error("only adjacent layers can be grouped")]
+    NotAdjacent,
+    #[error("a composition keeps at least one layer")]
+    LastLayer,
+    #[error("a composition keeps at least one column")]
+    LastColumn,
+    #[error("cue {0} does not exist")]
+    NoCue(usize),
+    #[error("blend mode {0} has no parameter {1}")]
+    NoBlendParam(&'static str, String),
+    #[error("value is not a finite number")]
+    NotFinite,
+    #[error("could not parse composition: {0}")]
+    Parse(#[from] ron::error::SpannedError),
+    #[error("could not serialize composition: {0}")]
+    Serialize(#[from] ron::Error),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;

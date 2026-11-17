@@ -1,0 +1,36 @@
+name: Bug report / Signaler un bug
+description: Something does not work as expected. / Quelque chose ne marche pas comme prévu.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / Que s'est-il passé ?
+      description: What you did, what you expected, what happened instead. / Ce que vous avez fait, ce que vous attendiez, ce qui s'est passé.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Verso version / Version de Verso
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System / Système
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and system version / Carte graphique et version du système
+      placeholder: Windows 11, NVIDIA RTX 3060
+  - type: textarea
+    id: log
+    attributes:
+      label: verso.log
+      description: Window › Messages shows where it is. Paste the end of it. / Window › Messages indique où il se trouve. Collez-en la fin.
+      render: text
